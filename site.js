@@ -1,10 +1,70 @@
-const c = window.SITE_CONTENT;
-function safeHref(v) { return (/^(https?:\/\/|#|\/|\.\/)/i).test(v || '') ? v : '#'; }
-function featured() {
- const x=document.querySelector('#featured-content'); if(!x)return;
- x.innerHTML = `<div class="featured-art"><img src="${c.featured.image}" alt="${c.featured.title} official film poster"></div><div class="featured-copy"><span class="eyebrow red">${c.featured.eyebrow}</span><h2>${c.featured.title}</h2><span class="mini-line"></span><p>${c.featured.description}</p><div class="button-row"><a class="btn btn-primary" href="${safeHref(c.featured.primaryUrl)}" target="_blank" rel="noopener noreferrer">${c.featured.primaryText} <span>↗</span></a><a class="btn btn-outline" href="${safeHref(c.featured.secondaryUrl)}" target="_blank" rel="noopener noreferrer">${c.featured.secondaryText} <span>↗</span></a></div></div>`;
+const c = window.SITE_CONTENT || {};
+
+function safeHref(value) {
+  return (/^(https?:\/\/|#|\/|\.\/)/i).test(value || "") ? value : "#";
 }
-function announcement(){const x=document.querySelector('#announcement-content');if(!x)return;x.innerHTML=`<span class="eyebrow">${c.announcement.label}</span><h2>${c.announcement.title}</h2><p>${c.announcement.body}</p><a class="text-link" href="${safeHref(c.announcement.buttonUrl)}">${c.announcement.buttonText} <span>↗</span></a>`;}
-function contact(){const el=document.querySelector('#email-link');if(!el)return; if(c.contactEmail){el.href='mailto:'+c.contactEmail;el.textContent=c.contactEmail;}else{el.remove();}}
-function nav(){const b=document.querySelector('#menu-toggle');const n=document.querySelector('#main-nav');if(!b||!n)return;b.addEventListener('click',()=>{const open=n.classList.toggle('open');b.setAttribute('aria-expanded',String(open));});n.querySelectorAll('a').forEach(a=>a.addEventListener('click',()=>{n.classList.remove('open');b.setAttribute('aria-expanded','false');}));}
-featured();announcement();contact();nav();
+
+function renderFeatured() {
+  const target = document.querySelector("#featured-content");
+  if (!target || !c.featured) return;
+  const f = c.featured;
+  target.innerHTML = `
+    <div class="featured-art">
+      <img src="${f.image}" alt="Official poster for ${f.title}">
+    </div>
+    <div class="featured-copy">
+      <span class="eyebrow red">${f.eyebrow}</span>
+      <h2>${f.title}</h2>
+      <span class="mini-line"></span>
+      <p>${f.description}</p>
+      <div class="button-row">
+        <a class="btn btn-primary" href="${safeHref(f.primaryUrl)}" target="_blank" rel="noopener noreferrer">${f.primaryText} <span aria-hidden="true">↗</span></a>
+        <a class="btn btn-outline" href="${safeHref(f.secondaryUrl)}" target="_blank" rel="noopener noreferrer">${f.secondaryText} <span aria-hidden="true">↗</span></a>
+      </div>
+    </div>`;
+}
+
+function renderAnnouncement() {
+  const target = document.querySelector("#announcement-content");
+  if (!target || !c.announcement) return;
+  const a = c.announcement;
+  target.innerHTML = `
+    <span class="eyebrow">${a.label}</span>
+    <h2>${a.title}</h2>
+    <p>${a.body}</p>
+    <a class="text-link" href="${safeHref(a.buttonUrl)}">${a.buttonText} <span aria-hidden="true">→</span></a>`;
+}
+
+function initNavigation() {
+  const button = document.querySelector("#menu-toggle");
+  const nav = document.querySelector("#main-nav");
+  if (!button || !nav) return;
+
+  const close = () => {
+    nav.classList.remove("open");
+    button.setAttribute("aria-expanded", "false");
+    button.setAttribute("aria-label", "Open navigation");
+    const label = button.querySelector(".menu-label");
+    if (label) label.textContent = "Menu";
+  };
+
+  button.addEventListener("click", () => {
+    const open = nav.classList.toggle("open");
+    button.setAttribute("aria-expanded", String(open));
+    button.setAttribute("aria-label", open ? "Close navigation" : "Open navigation");
+    const label = button.querySelector(".menu-label");
+    if (label) label.textContent = open ? "Close" : "Menu";
+  });
+
+  nav.querySelectorAll("a").forEach(link => link.addEventListener("click", close));
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape") {
+      close();
+      button.focus();
+    }
+  });
+}
+
+renderFeatured();
+renderAnnouncement();
+initNavigation();
