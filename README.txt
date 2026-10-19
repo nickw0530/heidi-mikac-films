@@ -1,26 +1,33 @@
-HEIDI MIKAC FILMS — WEBSITE PREVIEW / V1
+HEIDI MIKAC FILMS — WEBSITE
 
-PREVIEW
-Open index.html in a browser (best results if hosted).
+STACK
+Static HTML, CSS, and JavaScript deployed from GitHub to Netlify.
 
-DEPLOY VIA GITHUB / NETLIFY
-1. Make a NEW GitHub repository (e.g. heidi-mikac-films).
-2. Upload the CONTENTS of this folder to the repository root.
-3. In Netlify: Add new project > Import from Git > GitHub > select repository.
-4. Framework: none. Build command: leave blank. Publish directory: .
-5. Deploy and inspect the *.netlify.app temporary address.
-6. ONLY AFTER APPROVAL, connect heidimikacfilms.com as a custom domain and follow Netlify's DNS instructions.
+SOURCE OF TRUTH
+Always work from the current main branch of this repository. Do not rebuild from an old ZIP or preview.
 
-EDIT FEATURED PROMOTIONS
-Open site-content.js in GitHub > Edit > change featured text, image or links > Commit changes. Netlify redeploys automatically. You do not need to change HTML. The next upgrade can provide a visual editing dashboard (e.g. Decap CMS / Git-based CMS) for nontechnical updates.
+DEPLOYMENT
+Netlify deploys automatically when changes are committed to main.
 
-BEFORE PUBLISHING
-- Confirm film synopsis/genre copy with Heidi. Current text is teaser/placeholder copy.
-- Supply any additional shorts, trailers and films to expand the catalog.
-- Provide the public contact email to enable a studio contact link in site-content.js.
-- Approve which photographs and film stills are public and confirm photo rights.
-- Review crowdfunding URL (currently the prior link supplied for Written in the Dark).
-- Consider a real full-length reel once film footage is available; current hero is a still-image montage.
+EDITABLE HOMEPAGE CONTENT
+site-content.js contains the current-production and upcoming-project copy/links.
 
-NOTES
-Font loads from Google Fonts when online, with Georgia/Arial fallbacks.
+CURRENT FILM ROUTES
+/films/wherein-lies-continue/
+/films/written-in-the-light/
+
+EXTERNAL FILM SITE
+Written in the Dark: https://writteninthedarkfilm.com
+
+CONTENT RULES
+- Only publish confirmed film facts, credits, awards, links, and release information.
+- Use elegant “Details coming soon” states rather than developer placeholder copy.
+- Preserve the dark cinematic visual identity.
+- Keep the footer credit: Site by Mosaic Minds Media.
+
+SEO
+robots.txt and sitemap.xml are included at the site root.
+Canonical production URL: https://heidimikacfilms.com/
+
+CONTACT
+A dedicated studio email has not yet been supplied. The site currently directs visitors to official social channels and clearly notes that professional contact details are forthcoming.
