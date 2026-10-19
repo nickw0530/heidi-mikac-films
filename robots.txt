@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://heidimikacfilms.com/sitemap.xml
