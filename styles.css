@@ -57,7 +57,7 @@ button{font:inherit}
 .hero-montage img{width:100%;height:100%;object-fit:cover;opacity:.62}
 .hero-montage img:first-child{object-position:46% 31%}
 .hero-montage img:nth-child(2){object-position:49% 40%}
-.hero-montage img:nth-child(3){object-position:45% 28%}
+.hero-montage img:nth-child(3){object-position:85% 28%}
 .hero::before{
   content:'';position:absolute;inset:0;z-index:-2;
   background:
