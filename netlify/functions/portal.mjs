@@ -54,7 +54,8 @@ async function signwell(path, body) {
 export default async function handle(req) {
  try {
   const url=new URL(req.url), action=url.searchParams.get('action')||'home';
-  const store=getStore({name:process.env.CONTEXT==='production'?'hmf-members-v1':'hmf-preview-'+(process.env.DEPLOY_ID||'local'),consistency:'strong'});
+  const production=['heidimikacfilms.com','www.heidimikacfilms.com'].includes(url.hostname);
+  const store=getStore({name:production?'hmf-members-v1':'hmf-preview-'+(process.env.DEPLOY_ID||'local'),consistency:'strong'});
   const get=k=>store.get(k,{type:'json'});
   const set=(k,v)=>store.setJSON(k,v);
   const list=async prefix=>Promise.all((await store.list({prefix})).blobs.map(b=>get(b.key)));
@@ -86,7 +87,7 @@ export default async function handle(req) {
   if(action==='home'){
     const members=admin?await list('members/'):[await get('members/'+self)];
     const rows=await Promise.all(members.filter(Boolean).map(async m=>({...m,profile:await get('profiles/'+m.id),hasPhoto:!!await store.getMetadata('photos/'+m.id),agreement:await get('agreements/'+m.id)})));
-    return json({admin,self,film,members:rows,resources:(await list('resources/')).filter(Boolean).sort((a,b)=>b.created-a.created),test:!(process.env.CONTEXT==='production'&&process.env.HMF_SIGNWELL_LIVE==='yes')});
+    return json({admin,self,film,members:rows,resources:(await list('resources/')).filter(Boolean).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
   }
   if(action==='invite'&&post){
     onlyAdmin();const id=randomUUID(),code=token(),m={id,name:string(body.name),email:email(body.email),role:string(body.role)};
@@ -128,7 +129,7 @@ export default async function handle(req) {
     const key='agreements/'+uid;
     const lock=await store.setJSON(key,{status:'Preparing — check SignWell before retrying'},{onlyIfNew:true});
     requireThat(lock.modified,'An agreement already exists or is being prepared.',409);
-    const d=await signwell('documents/',{test_mode:!(process.env.CONTEXT==='production'&&process.env.HMF_SIGNWELL_LIVE==='yes'),name:film+' — '+t.legal,files:[{name:'Actor Agreement.pdf',file_base64:bytes.toString('base64')}],recipients:[{id:'1',name:t.legal,email:m.email},{id:'2',name:'Heidi Mikac',email:heidi}],apply_signing_order:true,embedded_signing:true,text_tags:true});
+    const d=await signwell('documents/',{test_mode:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes'),name:film+' — '+t.legal,files:[{name:'Actor Agreement.pdf',file_base64:bytes.toString('base64')}],recipients:[{id:'1',name:t.legal,email:m.email},{id:'2',name:'Heidi Mikac',email:heidi}],apply_signing_order:true,embedded_signing:true,text_tags:true});
     await set(key,{id:d.id,status:'Waiting on actor'});return json({ok:true});
   }
   if(action==='status'){
