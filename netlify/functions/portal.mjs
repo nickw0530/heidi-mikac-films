@@ -1,3 +1,4 @@
+import catalog from '../lib/film-profiles.mjs';
 import { getStore } from '@netlify/blobs';
 import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
@@ -69,6 +70,16 @@ export default async function handle(req) {
   const post=req.method==='POST';
   requireThat(post||req.method==='GET','Unsupported method.',405);
   if(post) requireThat(req.headers.get('origin')===url.origin,'Origin rejected.',403);
+  const entry=id=>catalog.find(item=>item.id===id);
+  if(!post&&action==='published'){
+    const items=(await list('published/')).filter(Boolean);
+    return json(items,{'Access-Control-Allow-Origin':'*'});
+  }
+  if(!post&&action==='publicPhoto'){
+    const version=url.searchParams.get('id');requireThat(/^[a-f0-9]{64}$/.test(version),'Invalid image.');
+    const photo=await store.getWithMetadata('public-images/'+version,{type:'arrayBuffer'});
+    requireThat(photo,'Image unavailable.',404);return new Response(photo.data,{headers:{...headers,'Content-Type':photo.metadata.mime}});
+  }
   const raw=req.headers.get('cookie')?.match(/(?:^|; )__Host-hmf=([a-f0-9]{64})(?:;|$)/)?.[1];
   const sessionKey=raw&&'sessions/'+hash(raw);
   const session=sessionKey&&await get(sessionKey);
@@ -133,7 +144,13 @@ export default async function handle(req) {
   if(action==='home'){
     const members=admin?await list('members/'):[await get('members/'+self)];
     const rows=await Promise.all(members.filter(Boolean).map(async m=>({...m,profile:await get('profiles/'+m.id),...(await (async()=>{const photo=await store.getMetadata('photos/'+m.id);return {hasPhoto:!!photo,photoName:photo?.metadata?.filename||''};})()),agreement:await get('agreements/'+m.id),tasks:(await list('tasks/'+m.id+'/')).filter(Boolean),activated:!!await get('passwords/'+m.id)})));
-    return json({admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),members:rows.map(({ticket,...row})=>row),resources:(await list('resources/')).filter(Boolean).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
+    for(const row of rows){
+      const base=entry(row.filmProfile);if(!base)continue;
+      const published=await get('published/'+base.id);
+      row.referencePhoto=published?.photo||base.photo;
+      row.profile??={bio:published?.bio??base.bio};
+    }
+    return json({catalog:admin?catalog:[],admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),members:rows.map(({ticket,...row})=>row),resources:(await list('resources/')).filter(Boolean).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
   }
   if((action==='invite'||action==='resend')&&post){
     onlyAdmin();requireThat(production&&mailReady(),'Invitation email is awaiting sender setup. No invitation was sent.',503);
@@ -145,6 +162,7 @@ export default async function handle(req) {
       // A revoked account must receive a fresh identity on re-invitation.
       const index='active-email/'+hex;
       m={id:randomUUID(),email:address,name:string(body.name),role:string(body.role)};
+      if(body.filmProfile){const base=entry(body.filmProfile);requireThat(base,'Unknown film profile.');m.filmProfile=base.id;}
       const reserved=await store.setJSON(index,{id:m.id},{onlyIfNew:true});requireThat(reserved.modified,'An invitation already exists.');
       try{await set('members/'+m.id,m);}catch(e){await store.delete(index);throw e;}
     }else m=await target();
@@ -154,6 +172,20 @@ export default async function handle(req) {
     await set('members/'+m.id,{...m,ticket:hash(ticket)});
     await enqueue(store,m,'invite/'+hash(ticket),film+' — your cast & crew invitation','Hi '+m.name+',\n\nYou’re invited to '+film+' as '+m.role+'. Choose your password and finish your profile here:\n'+portalUrl+'#invite='+ticket+'\n\nThis invitation expires in seven days.',expires);
     return json({ok:true});
+  }
+  if(action==='linkProfile'&&post){
+    onlyAdmin();const m=await target();const base=entry(body.filmProfile);requireThat(base&&!m.filmProfile,'Choose an unlinked member and a valid film profile.');
+    requireThat(!(await list('members/')).some(x=>x?.filmProfile===base.id),'Profile already linked.');
+    await set('members/'+uid,{...m,filmProfile:base.id});return json({ok:true});
+  }
+  if(action==='publishProfile'&&post){
+    onlyAdmin();const m=await target(),base=entry(m.filmProfile);requireThat(base,'Link the film profile first.');
+    const previous=await get('published/'+base.id);
+    const draft=await get('profiles/'+uid), image=await store.getWithMetadata('photos/'+uid,{type:'arrayBuffer'});
+    requireThat(draft||image,'No submitted changes to publish.');
+    let photo=previous?.photo||base.photo;
+    if(image){const version=hash(Buffer.from(image.data));await store.set('public-images/'+version,image.data,{metadata:{mime:image.metadata.mime}});photo='https://heidimikacfilms.com/.netlify/functions/portal?action=publicPhoto&id='+version;}
+    await set('published/'+base.id,{id:base.id,bio:draft?.bio??previous?.bio??base.bio,photo});return json({ok:true});
   }
   if(action==='task'&&post){
     onlyAdmin();const m=await target(),id=randomUUID(),title=string(body.title);
