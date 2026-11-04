@@ -132,7 +132,7 @@ export default async function handle(req) {
   }
   if(action==='home'){
     const members=admin?await list('members/'):[await get('members/'+self)];
-    const rows=await Promise.all(members.filter(Boolean).map(async m=>({...m,profile:await get('profiles/'+m.id),hasPhoto:!!await store.getMetadata('photos/'+m.id),agreement:await get('agreements/'+m.id),tasks:(await list('tasks/'+m.id+'/')).filter(Boolean),activated:!!await get('passwords/'+m.id)})));
+    const rows=await Promise.all(members.filter(Boolean).map(async m=>({...m,profile:await get('profiles/'+m.id),...(await (async()=>{const photo=await store.getMetadata('photos/'+m.id);return {hasPhoto:!!photo,photoName:photo?.metadata?.filename||''};})()),agreement:await get('agreements/'+m.id),tasks:(await list('tasks/'+m.id+'/')).filter(Boolean),activated:!!await get('passwords/'+m.id)})));
     return json({admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),members:rows.map(({ticket,...row})=>row),resources:(await list('resources/')).filter(Boolean).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
   }
   if((action==='invite'||action==='resend')&&post){
@@ -175,7 +175,7 @@ export default async function handle(req) {
     const bytes=Buffer.from(await req.arrayBuffer());
     requireThat(bytes.length>0&&bytes.length<=4*1024*1024,'Choose a file up to 4 MB.');
     const jpeg=bytes.subarray(0,3).toString('hex')==='ffd8ff',png=bytes.subarray(0,8).toString('hex')==='89504e470d0a1a0a';
-    if(action==='photo'){requireThat(jpeg||png,'Choose a JPG or PNG.');await store.set('photos/'+uid,bytes,{metadata:{mime:jpeg?'image/jpeg':'image/png'}});}
+    if(action==='photo'){requireThat(jpeg||png,'Choose a JPG or PNG.');await store.set('photos/'+uid,bytes,{metadata:{filename:(url.searchParams.get('filename')||'').split(/[\\/]/).pop().slice(0,255),mime:jpeg?'image/jpeg':'image/png'}});}
     else if(action==='master'){requireThat(hash(bytes)==='8437469c10b4a2ebd322adb8fd4c4e246abb2a0e26043a7c4129dffee92e6626','Choose the approved WrittenDarkContract-CastTemplate.pdf.');await store.set('contract/master',bytes);}
     else {requireThat(bytes.subarray(0,5).toString()==='%PDF-','Choose a PDF.');const id=randomUUID(),title=string(url.searchParams.get('title'));await store.set('files/'+id,bytes);await set('resources/'+id,{id,title,type:'PDF',created:Date.now()});await Promise.all((await list('members/')).filter(Boolean).map(m=>notify(m,id,'New production file','Production posted a new file for '+film+'.')));}
     return json({ok:true});
