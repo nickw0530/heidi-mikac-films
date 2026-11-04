@@ -12,6 +12,9 @@ async function credential(password){
 }
 const hash = x => createHash('sha256').update(x).digest('hex');
 const token = () => randomBytes(32).toString('hex');
+// Practice accounts must never be linked to or published on a public film website.
+const practiceName=name=>/^test(?:\s+testers[oe]n)?$/i.test(name.trim());
+const allowPublicProfile=m=>requireThat(!practiceName(m.name),'Practice accounts cannot appear on a public website.',403);
 const film = 'Written in the Dark';
 const uuid = /^[a-f0-9-]{36}$/;
 function requireThat(ok, message, status=400) {
@@ -160,7 +163,7 @@ export default async function handle(req) {
       row.referencePhoto=published?.photo||base.photo;
       row.profile??={bio:published?.bio??base.bio};
     }
-    return json({catalog:admin?await Promise.all(catalog.map(async x=>({...x,offline:(await store.getMetadata('offline/'+x.id))?.metadata?.status||null}))):[],admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),members:rows.map(({ticket,...row})=>row),resources:(await list('resources/')).filter(Boolean).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
+    return json({catalog:admin?await Promise.all(catalog.map(async x=>({...x,offline:(await store.getMetadata('offline/'+x.id))?.metadata?.status||null}))):[],admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),members:rows.map(({ticket,...row})=>({...row,practice:practiceName(row.name)})),resources:(await list('resources/')).filter(Boolean).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
   }
   if((action==='invite'||action==='resend')&&post){
     onlyAdmin();requireThat(production&&mailReady(),'Invitation email is awaiting sender setup. No invitation was sent.',503);
@@ -172,7 +175,7 @@ export default async function handle(req) {
       // A revoked account must receive a fresh identity on re-invitation.
       const index='active-email/'+hex;
       m={id:randomUUID(),email:address,name:string(body.name),role:string(body.role)};
-      if(body.filmProfile){const base=entry(body.filmProfile);requireThat(base,'Unknown film profile.');m.filmProfile=base.id;}
+      if(body.filmProfile){allowPublicProfile(m);const base=entry(body.filmProfile);requireThat(base,'Unknown film profile.');m.filmProfile=base.id;}
       const reserved=await store.setJSON(index,{id:m.id},{onlyIfNew:true});requireThat(reserved.modified,'An invitation already exists.');
       try{await set('members/'+m.id,m);}catch(e){await store.delete(index);throw e;}
     }else m=await target();
@@ -184,12 +187,12 @@ export default async function handle(req) {
     return json({ok:true});
   }
   if(action==='linkProfile'&&post){
-    onlyAdmin();const m=await target();const base=entry(body.filmProfile);requireThat(base&&!m.filmProfile,'Choose an unlinked member and a valid film profile.');
+    onlyAdmin();const m=await target();allowPublicProfile(m);const base=entry(body.filmProfile);requireThat(base&&!m.filmProfile,'Choose an unlinked member and a valid film profile.');
     requireThat(!(await list('members/')).some(x=>x?.filmProfile===base.id),'Profile already linked.');
     await set('members/'+uid,{...m,filmProfile:base.id});return json({ok:true});
   }
   if(action==='publishProfile'&&post){
-    onlyAdmin();const m=await target(),base=entry(m.filmProfile);requireThat(base,'Link the film profile first.');
+    onlyAdmin();const m=await target(),base=entry(m.filmProfile);allowPublicProfile(m);requireThat(base,'Link the film profile first.');
     const previous=await get('published/'+base.id);
     const draft=await get('profiles/'+uid), image=await store.getWithMetadata('photos/'+uid,{type:'arrayBuffer'});
     requireThat(draft||image,'No submitted changes to publish.');
