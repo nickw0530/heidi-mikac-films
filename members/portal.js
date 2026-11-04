@@ -121,7 +121,7 @@ app.addEventListener('submit',async e=>{
 app.addEventListener('click',async e=>{
  const b=e.target;if(!b.dataset.status&&!b.dataset.photo)return;
  try{if(b.dataset.photo){const blob=await request('photo',undefined,b.dataset.photo);const img=new Image();img.alt='Submitted headshot';const src=URL.createObjectURL(blob);img.onload=()=>URL.revokeObjectURL(src);img.src=src;b.nextElementSibling.replaceChildren(img);return;}
- const r=await request('status',undefined,b.dataset.status);if(b.previousElementSibling?.tagName==='STRONG')b.previousElementSibling.textContent=r.status;message.textContent=r.status;
+ const r=await request('status',undefined,b.dataset.status);if(b.closest('.member-paperwork')&&r.status==='Waiting on Heidi'){r.status='Complete';b.hidden=true;}if(b.previousElementSibling?.tagName==='STRONG')b.previousElementSibling.textContent=r.status;message.textContent=r.status;
  if(r.url){const u=new URL(r.url);if(u.protocol!=='https:'||!(u.hostname==='signwell.com'||u.hostname.endsWith('.signwell.com')))throw Error('Unexpected signing address.');
  const frame=document.createElement('iframe');frame.title='Private SignWell signing session';frame.src=u.href;document.querySelector('#signing').replaceChildren(frame);frame.scrollIntoView();}
  }catch(e){message.textContent=e.message;}
