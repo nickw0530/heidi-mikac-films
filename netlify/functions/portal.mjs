@@ -67,11 +67,11 @@ export default async function handle(req) {
   const session=sessionKey&&await get(sessionKey);
   const body=post&&req.headers.get('content-type')?.startsWith('application/json')?await req.json():{};
   const uid=url.searchParams.get('id')||body.id;
-  const adminKeys=[['Nick',process.env.HMF_NICK_LOGIN_KEY],['Heidi',process.env.HMF_HEIDI_LOGIN_KEY]];
+  const adminKeys=[['Nick',process.env.HMF_NICK_LOGIN_SHA256],['Heidi',process.env.HMF_HEIDI_LOGIN_SHA256]];
   if(action==='login'&&post){
     const code=string(body.code,200);
     requireThat(code.length>=32,'Invalid access key.',401);
-    const digest=hash(code), admin=adminKeys.find(([,k])=>k?.length>=32&&hash(k)===digest);
+    const digest=hash(code), admin=adminKeys.find(([,k])=>k?.length===64&&k===digest);
     const member=admin?null:await get('keys/'+digest);
     requireThat(admin||(member&&await get('members/'+member.id)),'Access key is invalid or revoked.',401);
     const secret=token();
@@ -80,7 +80,7 @@ export default async function handle(req) {
   }
   requireThat(session?.expires>Date.now(),'Please sign in.',401);
   const admin=session.admin, self=session.id;
-  requireThat(admin?adminKeys.some(([id,k])=>id===self&&k&&hash(k)===session.adminDigest):await get('members/'+self),'Access revoked.',401);
+  requireThat(admin?adminKeys.some(([id,k])=>id===self&&k&&k===session.adminDigest):await get('members/'+self),'Access revoked.',401);
   if(action==='logout'&&post){await store.delete(sessionKey);return json({}, {'Set-Cookie':cookie('',0)});}
   const onlyAdmin=()=>requireThat(admin,'Administrator access required.',403);
   const target=async()=>{requireThat(uuid.test(uid)&& (admin||uid===self),'Access denied.',403);const m=await get('members/'+uid);requireThat(m,'Member unavailable.',404);return m};
