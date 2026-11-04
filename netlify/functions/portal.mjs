@@ -154,16 +154,24 @@ export default async function handle(req) {
     const file=await store.getWithMetadata(key,{type:'arrayBuffer'});requireThat(file,'No agreement on file.',404);
     return new Response(file.data,{headers:{...headers,'Content-Type':'application/pdf','Content-Disposition':'attachment; filename="'+uid+'-offline-agreement.pdf"'}});
   }
+  const canReadResource=r=>r&&(admin||r.audience==null||r.audience.includes(self));
+  async function recipients(mode,ids){
+    const roster=(await list('members/')).filter(Boolean);
+    if(mode==='all'||mode==null)return {audience:null,recipients:roster};
+    requireThat(mode==='selected'&&Array.isArray(ids)&&ids.length&&ids.every(id=>roster.some(m=>m.id===id)),'Select at least one current member.');
+    return {audience:[...new Set(ids)],recipients:roster.filter(m=>ids.includes(m.id))};
+  }
   if(action==='home'){
     const members=admin?await list('members/'):[await get('members/'+self)];
     const rows=await Promise.all(members.filter(Boolean).map(async m=>({...m,profile:await get('profiles/'+m.id),...(await (async()=>{const photo=await store.getMetadata('photos/'+m.id);return {hasPhoto:!!photo,photoName:photo?.metadata?.filename||''};})()),agreement:await get('agreements/'+m.id),tasks:(await list('tasks/'+m.id+'/')).filter(Boolean),activated:!!await get('passwords/'+m.id)})));
     for(const row of rows){
       const base=entry(row.filmProfile);if(!base)continue;
       const published=await get('published/'+base.id);
+      row.offlineStatus=(await store.getMetadata("offline/"+base.id))?.metadata?.status||null;
       row.referencePhoto=published?.photo||base.photo;
       row.profile??={bio:published?.bio??base.bio};
     }
-    return json({catalog:admin?await Promise.all(catalog.map(async x=>({...x,offline:(await store.getMetadata('offline/'+x.id))?.metadata?.status||null}))):[],admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),members:rows.map(({ticket,...row})=>({...row,practice:practiceName(row.name)})),resources:(await list('resources/')).filter(Boolean).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
+    return json({catalog:admin?await Promise.all(catalog.map(async x=>({...x,offline:(await store.getMetadata('offline/'+x.id))?.metadata?.status||null}))):[],admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),members:rows.map(({ticket,...row})=>({...row,practice:practiceName(row.name)})),resources:(await list('resources/')).filter(canReadResource).map(r=>admin?r:({...r,audience:undefined})).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
   }
   if((action==='invite'||action==='resend')&&post){
     onlyAdmin();requireThat(production&&mailReady(),'Invitation email is awaiting sender setup. No invitation was sent.',503);
@@ -222,12 +230,12 @@ export default async function handle(req) {
     const jpeg=bytes.subarray(0,3).toString('hex')==='ffd8ff',png=bytes.subarray(0,8).toString('hex')==='89504e470d0a1a0a';
     if(action==='photo'){requireThat(jpeg||png,'Choose a JPG or PNG.');await store.set('photos/'+uid,bytes,{metadata:{filename:(url.searchParams.get('filename')||'').split(/[\\/]/).pop().slice(0,255),mime:jpeg?'image/jpeg':'image/png'}});}
     else if(action==='master'){requireThat(hash(bytes)==='8437469c10b4a2ebd322adb8fd4c4e246abb2a0e26043a7c4129dffee92e6626','Choose the approved WrittenDarkContract-CastTemplate.pdf.');await store.set('contract/master',bytes);}
-    else {requireThat(bytes.subarray(0,5).toString()==='%PDF-','Choose a PDF.');const id=randomUUID(),title=string(url.searchParams.get('title'));await store.set('files/'+id,bytes);await set('resources/'+id,{id,title,type:'PDF',created:Date.now()});await Promise.all((await list('members/')).filter(Boolean).map(m=>notify(m,id,'New production file','Production posted a new file for '+film+'.')));}
+    else {requireThat(bytes.subarray(0,5).toString()==='%PDF-','Choose a PDF.');const group=await recipients(url.searchParams.get('audience'),url.searchParams.getAll('recipient'));const id=randomUUID(),title=string(url.searchParams.get('title'));await store.set('files/'+id,bytes);await set('resources/'+id,{id,title,audience:group.audience,type:'PDF',created:Date.now()});await Promise.all(group.recipients.map(m=>notify(m,id,'New production file','Production posted a new file for '+film+'.')));}
     return json({ok:true});
   }
-  if(action==='notice'&&post){onlyAdmin();const id=randomUUID();await set('resources/'+id,{id,title:string(body.title),text:string(body.text,5000),type:'Update',created:Date.now()});await Promise.all((await list('members/')).filter(Boolean).map(m=>notify(m,id,'New production message','You have a new message from production.')));return json({ok:true});}
+  if(action==='notice'&&post){onlyAdmin();const group=await recipients(body.audience,body.recipients);const id=randomUUID();await set('resources/'+id,{id,title:string(body.title),text:string(body.text,5000),audience:group.audience,type:'Update',created:Date.now()});await Promise.all(group.recipients.map(m=>notify(m,id,'New production message','You have a new message from production.')));return json({ok:true});}
   if(action==='photo'||action==='resource'){
-    if(action==='photo')await target();else requireThat(uuid.test(uid)&&await get('resources/'+uid),'File unavailable.',404);
+    if(action==='photo')await target();else requireThat(uuid.test(uid)&&canReadResource(await get('resources/'+uid)),'File unavailable.',404);
     const r=await store.getWithMetadata((action==='photo'?'photos/':'files/')+uid,{type:'arrayBuffer'});
     requireThat(r,'File unavailable.',404);return new Response(r.data,{headers:{...headers,'Content-Type':r.metadata?.mime||'application/pdf','Content-Disposition':action==='photo'?'inline':'attachment; filename="production-document.pdf"'}});
   }
