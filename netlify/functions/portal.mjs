@@ -164,7 +164,7 @@ export default async function handle(req) {
   if(action==='welcomeSettings'&&post){
     onlyAdmin();
     const https=v=>{if(!v)return '';let u;try{u=new URL(v)}catch{}requireThat(u?.protocol==='https:'&&!u.username&&!u.password,'Enter a direct HTTPS media URL.');return u.href;};
-    await set('settings/welcome',{video:https(body.video),poster:https(body.poster)});return json({ok:true});
+    await set('settings/welcome',{video:https(body.video),poster:https(body.poster),captions:https(body.captions)});return json({ok:true});
   }
   if(action==='welcomePlayed'&&post){await set('welcome-played/'+self,true);return json({ok:true});}
   if(action==='home'){
