@@ -161,6 +161,12 @@ export default async function handle(req) {
     requireThat(mode==='selected'&&Array.isArray(ids)&&ids.length&&ids.every(id=>roster.some(m=>m.id===id)),'Select at least one current member.');
     return {audience:[...new Set(ids)],recipients:roster.filter(m=>ids.includes(m.id))};
   }
+  if(action==='welcomeSettings'&&post){
+    onlyAdmin();
+    const https=v=>{if(!v)return '';let u;try{u=new URL(v)}catch{}requireThat(u?.protocol==='https:'&&!u.username&&!u.password,'Enter a direct HTTPS media URL.');return u.href;};
+    await set('settings/welcome',{video:https(body.video),poster:https(body.poster)});return json({ok:true});
+  }
+  if(action==='welcomePlayed'&&post){await set('welcome-played/'+self,true);return json({ok:true});}
   if(action==='home'){
     const members=admin?await list('members/'):[await get('members/'+self)];
     const rows=await Promise.all(members.filter(Boolean).map(async m=>({...m,profile:await get('profiles/'+m.id),...(await (async()=>{const photo=await store.getMetadata('photos/'+m.id);return {hasPhoto:!!photo,photoName:photo?.metadata?.filename||''};})()),agreement:await get('agreements/'+m.id),tasks:(await list('tasks/'+m.id+'/')).filter(Boolean),activated:!!await get('passwords/'+m.id)})));
@@ -171,7 +177,7 @@ export default async function handle(req) {
       row.referencePhoto=published?.photo||base.photo;
       row.profile??={bio:published?.bio??base.bio};
     }
-    return json({catalog:admin?await Promise.all(catalog.map(async x=>({...x,offline:(await store.getMetadata('offline/'+x.id))?.metadata?.status||null}))):[],admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),members:rows.map(({ticket,...row})=>({...row,practice:practiceName(row.name)})),resources:(await list('resources/')).filter(canReadResource).map(r=>admin?r:({...r,audience:undefined})).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
+    return json({welcome:await get('settings/welcome'),welcomePlayed:!!await get('welcome-played/'+self),catalog:admin?await Promise.all(catalog.map(async x=>({...x,offline:(await store.getMetadata('offline/'+x.id))?.metadata?.status||null}))):[],admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),members:rows.map(({ticket,...row})=>({...row,practice:practiceName(row.name)})),resources:(await list('resources/')).filter(canReadResource).map(r=>admin?r:({...r,audience:undefined})).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
   }
   if((action==='invite'||action==='resend')&&post){
     onlyAdmin();requireThat(production&&mailReady(),'Invitation email is awaiting sender setup. No invitation was sent.',503);
