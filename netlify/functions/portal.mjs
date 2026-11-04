@@ -44,8 +44,12 @@ async function packet(bytes, terms) {
   const white=rgb(1,1,1), gray=rgb(.97,.98,.98);
   write(pages[0],340.5,143.3,31.4,terms.date,gray);
   write(pages[0],208.8,156.8,103,terms.legal,gray);
-  write(pages[0],400.3,526.6,58,terms.start,white);
-  write(pages[0],478.7,526.6,53.6,terms.end,white);
+  if(terms.end){
+    write(pages[0],400.3,526.6,58,terms.start,white);
+    write(pages[0],478.7,526.6,53.6,terms.end,white);
+  }else{
+    write(pages[0],51,526.6,489,"Actor's services shall be rendered during principal photography scheduled to begin on "+terms.start+".",white);
+  }
   write(pages[1],51,270.8,131,terms.credit,white);
   write(pages[1],310,383.3,150,terms.legal,white);
   for(const [x,top,field] of [[310,414,'s:1:y'],[310,457,'af_n:1:y'],[310,500,'af_d_s:1:y'],[52,414,'s:2:y'],[52,500,'af_d_s:2:y']]) {
@@ -220,10 +224,11 @@ export default async function handle(req) {
   }
   if(action==='agreement'&&post){
     onlyAdmin();const m=await target(),t={};
-    for(const k of ['legal','character','credit','rate','date','start','end'])t[k]=string(body[k],120);
+    for(const k of ['legal','character','credit','rate','date','start'])t[k]=string(body[k],120);
     requireThat(/^\d{1,5}(\.\d{1,2})?$/.test(t.rate),'Enter a daily rate.');
-    for(const k of ['date','start','end'])requireThat(/^\d{4}-\d{2}-\d{2}$/.test(t[k]),'Enter valid dates.');
-    requireThat(t.end>=t.start,'Check the shoot dates.');
+    t.end=body.end==null||body.end===''?'':string(body.end,120);
+    for(const k of (t.end?['date','start','end']:['date','start']))requireThat(/^\d{4}-\d{2}-\d{2}$/.test(t[k]),'Enter valid dates.');
+    requireThat(!t.end||t.end>=t.start,'Check the shoot dates.');
     const heidi=email(process.env.HMF_HEIDI_SIGNING_EMAIL||'');
     requireThat(heidi!==m.email,'Actor and countersigner need separate addresses.');
     const master=await store.get('contract/master',{type:'arrayBuffer'});requireThat(master,'Upload the private agreement master first.');
