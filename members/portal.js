@@ -21,6 +21,16 @@ function agreement(m){
 }
 const ticket=new URLSearchParams(location.hash.slice(1)).get('invite');
 const newPassword='<label>Choose a password (12 or more characters)<input name="password" type="password" required minlength="12" maxlength="128" autocomplete="new-password"></label>';
+function profileStatus(f,text){
+ let note=f.querySelector('output');
+ if(!note){note=document.createElement('output');note.style.display='block';f.append(note);}
+ note.textContent=text;
+}
+app.addEventListener('input',e=>{
+ const f=e.target.form;
+ if(f?.dataset.action==='bio')profileStatus(f,'Unsaved changes');
+ if(f?.dataset.action==='photo'&&e.target.files?.length)profileStatus(f,'Selected · '+e.target.files[0].name+' (not saved yet)');
+});
 function login(){
  app.innerHTML='<section><h2>Welcome back</h2>'+form('passwordLogin','<label>Email or admin name<input name="username" autocomplete="username" required></label><label>Password<input type="password" name="password" autocomplete="current-password" required></label>','Sign in')+'</section>'+panel('Already have an access key?',form('login',input('code','Existing access key','password'),'Continue to password setup'));
 }
@@ -42,6 +52,11 @@ async function load(){
  const account=s.passwordSet?'':'<section><h2>Set your password</h2><p>Your sign-in name is <strong>'+escape(admin?s.self:s.members[0].email)+'</strong>.</p>'+form('choosePassword',newPassword,'Save my password')+'</section>';
  const updates=s.resources.map(r=>'<section><small>'+escape(new Date(r.created).toLocaleDateString())+' · '+escape(r.type)+'</small><h3>'+escape(r.title)+'</h3>'+(r.type==='PDF'?'<a href="'+escape(url('resource',r.id))+'">Download PDF</a>':'<p>'+escape(r.text)+'</p>')+'</section>').join('');
  app.innerHTML='<p>'+escape(s.film)+' · '+(admin?'Production administrator':'Cast &amp; crew')+'</p>'+form('logout','','Sign out')+account+(admin?setup:'')+'<h2>'+(admin?'Paperwork &amp; profiles':'My paperwork &amp; profile')+'</h2>'+(admin&&s.test?'<p>Signing is in test mode.</p>':'')+(rows||'<p>Your roster is empty. Use Invite cast or crew to get started.</p>')+'<div id="signing"></div><h2>Production board</h2>'+(updates||'<p>Scripts, call sheets and updates will appear here.</p>');
+ for(const m of s.members){
+  const photo=app.querySelector('form[data-action="photo"][data-id="'+m.id+'"]'), bio=app.querySelector('form[data-action="bio"][data-id="'+m.id+'"]');
+  if(photo&&m.hasPhoto)profileStatus(photo,m.photoName?'Saved · '+m.photoName:'Headshot saved');
+  if(bio&&m.profile)profileStatus(bio,'Saved');
+ }
 }
 app.addEventListener('submit',async e=>{
  e.preventDefault();const f=e.target,a=f.dataset.action,id=f.dataset.id,data=Object.fromEntries(new FormData(f));const button=e.submitter;
@@ -51,7 +66,7 @@ app.addEventListener('submit',async e=>{
   if(data.file&&data.file.size>4*1024*1024)throw Error('Choose a file up to 4 MB.');
   if(a==='agreement')data.preview=button.value==='preview';
   if(a==='activate')data.ticket=ticket;
-  const result=await request(a,data.file||data,id,data.title&&data.file?'&'+new URLSearchParams({title:data.title}):'');
+  const result=await request(a,data.file||data,id,a==='photo'?'&'+new URLSearchParams({filename:data.file.name}):data.title&&data.file?'&'+new URLSearchParams({title:data.title}):'');
   if(a==='photo'||a==='bio'){
    const section=f.closest('section'), details=f.closest('details');
    if(a==='photo'){
@@ -60,6 +75,8 @@ app.addEventListener('submit',async e=>{
     img.src=url('photo',id)+'&updated='+Date.now();
    }
    if(details){const summary=details.querySelector('summary');summary.textContent=summary.textContent.replace(a==='photo'?'photo needed':'bio needed',a==='photo'?'photo received':data.bio.trim()?'bio received':'bio needed');}
+   if(a==='photo'&&f.elements.file.files[0]===data.file)profileStatus(f,'Saved · '+data.file.name);
+   if(a==='bio')profileStatus(f,f.elements.bio.value===data.bio?'Saved':'Unsaved changes');
    message.textContent=a==='photo'?'Headshot saved.':'Bio saved.';
    return;
   }
