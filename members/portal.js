@@ -47,6 +47,15 @@ async function load(){
  panel('Share a script or call sheet',form('resource',input('title','Title and revision date')+file('Production PDF · up to 4 MB','application/pdf'),'Post file'))+
  panel('Agreement setup',form('master',file('Approved contract master','application/pdf'),'Install agreement master'));
  function tasks(m){return (m.tasks||[]).map(t=>'<div><strong>'+escape(t.title)+'</strong> '+(t.done?'Completed':admin?'Outstanding':form('finishTask','<input type="hidden" name="task" value="'+escape(t.id)+'">','Mark complete',m.id))+'</div>').join('');}
+ function memberView(m){
+  const items=[...(m.tasks||[])].sort((a,b)=>Number(a.done)-Number(b.done));
+  const count=items.filter(t=>!t.done).length;
+  const taskList=items.map(t=>'<div class="task-row '+(t.done?'task-done':'')+'"><span class="task-state">'+(t.done?'✓ Completed':'To do')+'</span><strong>'+escape(t.title)+'</strong>'+(t.done?'':form('finishTask','<input type="hidden" name="task" value="'+escape(t.id)+'">','Mark complete',m.id))+'</div>').join('');
+  const photo=m.hasPhoto?url('photo',m.id):m.referencePhoto;
+  return '<section class="member-panel member-tasks"><h2>My tasks</h2><p>'+(items.length?(count?count+' to complete':'All tasks completed.'):'No tasks assigned yet.')+'</p>'+taskList+'</section>'+
+   '<section class="member-panel member-paperwork"><h2>My documents</h2>'+(m.agreement?.id?'<strong>'+escape(m.agreement.status)+'</strong> <button data-status="'+m.id+'">Review my agreement</button>':'No documents assigned yet.')+'<div id="signing"></div></section>'+
+   '<section class="member-panel member-profile"><h2>My profile</h2><p>'+escape(m.name)+' · '+escape(m.role)+'</p>'+(photo?'<img data-headshot src="'+escape(photo)+'" alt="Your headshot">':'')+form('photo',file(m.hasPhoto?'Replace your headshot':'Upload your headshot · JPG or PNG, up to 4 MB','image/jpeg,image/png'),'Save headshot',m.id)+form('bio','<label>My bio<textarea name="bio" rows="5" maxlength="5000">'+escape(m.profile?.bio)+'</textarea></label>','Save bio',m.id)+'</section>';
+ }
  const rows=s.members.map(m=>'<section><h3>'+escape(admin?m.name:'My dashboard')+'</h3><p>'+escape(m.role)+' · '+escape(m.email)+'</p>'+
  (admin?'<strong>'+escape(m.agreement?.status||'Agreement not sent')+'</strong> ':'')+
  (m.agreement?.id?'<button data-status="'+m.id+'">'+(admin?'Check agreement status':'Review my agreement')+'</button>':'')+
@@ -56,6 +65,7 @@ async function load(){
  const account=s.passwordSet?'':'<section><h2>Set your password</h2><p>Your sign-in name is <strong>'+escape(admin?s.self:s.members[0].email)+'</strong>.</p>'+form('choosePassword',newPassword,'Save my password')+'</section>';
  const updates=s.resources.map(r=>'<section><small>'+escape(new Date(r.created).toLocaleDateString())+' · '+escape(r.type)+'</small><h3>'+escape(r.title)+'</h3>'+(r.type==='PDF'?'<a href="'+escape(url('resource',r.id))+'">Download PDF</a>':'<p>'+escape(r.text)+'</p>')+'</section>').join('');
  app.innerHTML='<p>'+escape(s.film)+' · '+(admin?'Production administrator':'Cast &amp; crew')+'</p>'+form('logout','','Sign out')+account+(admin?setup+directory:'')+'<h2>'+(admin?'Paperwork &amp; profiles':'My paperwork &amp; profile')+'</h2>'+(admin&&s.test?'<p>Signing is in test mode.</p>':'')+(rows||'<p>Your roster is empty. Use Invite cast or crew to get started.</p>')+'<div id="signing"></div><h2>Production board</h2>'+(updates||'<p>Scripts, call sheets and updates will appear here.</p>');
+ if(!admin)app.innerHTML='<p>'+escape(s.film)+' · Cast &amp; crew</p>'+form('logout','','Sign out')+account+s.members.map(memberView).join('')+'<section class="member-panel member-board"><h2>Production board</h2>'+(updates||'<p>No updates posted yet.</p>')+'</section>';
  for(const m of s.members){
   const photo=app.querySelector('form[data-action="photo"][data-id="'+m.id+'"]'), bio=app.querySelector('form[data-action="bio"][data-id="'+m.id+'"]');
   if(photo&&m.hasPhoto)profileStatus(photo,m.photoName?'Saved · '+m.photoName:'Headshot saved');
