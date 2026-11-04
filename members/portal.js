@@ -40,7 +40,21 @@ async function load(){
  let admin=s.admin;
  const library=s.catalog||[];
  const available=library.filter(x=>!s.members.some(m=>m.filmProfile===x.id));
- const directory=admin?'<h2>Film profiles ('+available.length+' available)</h2>'+available.map(x=>panel(escape(x.name)+' · '+escape(x.role),'<img loading="lazy" alt="Approved headshot" src="'+escape(x.photo)+'"><p style="white-space:pre-line">'+escape(x.bio)+'</p>'+(s.mailReady?form('invite',input('email','Invitation email','email')+['name','role','filmProfile'].map((k,i)=>'<input type="hidden" name="'+k+'" value="'+escape([x.name,x.role,x.id][i])+'">').join(''),'Invite '+escape(x.name)):'') )).join(''):'';
+ const offline=x=>x.offline?'<p><b>Signed offline</b> · '+escape(x.offline)+' · <a href="'+escape(url('offline',x.id))+'">Download private agreement</a></p>':panel('File a signed paper agreement',form('offline',file('Returned agreement PDF','application/pdf')+'<label>Paperwork status<select name="status"><option>Waiting on Heidi</option><option>Missing page 1 · waiting on Heidi</option><option>Complete</option></select></label>','File privately',x.id));
+ const people=[...available,...s.members.filter(m=>m.name.trim().toLowerCase()!=='test')];
+ function outstanding(person){
+  const source=library.find(x=>x.id===(person.filmProfile||person.id));
+  const status=source?.offline||person.agreement?.status||'No agreement on file';
+  const gaps=[];
+  if(!(person.profile?.bio??source?.bio)?.trim())gaps.push('Bio');
+  if(!(person.hasPhoto||person.referencePhoto||source?.photo))gaps.push('Headshot');
+  if(person.tasks?.some(t=>!t.done))gaps.push('Open tasks');
+  return {name:person.name,status,gaps};
+ }
+ const audit=people.map(outstanding);
+ const group=(label,items,detail)=>'<details class="audit-group"><summary>'+label+' <b>'+items.length+'</b></summary>'+(items.length?'<ul>'+items.map(x=>'<li><strong>'+escape(x.name)+'</strong><span>'+escape(detail(x))+'</span></li>').join('')+'</ul>':'<p>Nothing outstanding.</p>')+'</details>';
+ const attention='<section class="audit"><small>WRITTEN IN THE DARK · PRODUCTION OFFICE</small><h2>Needs attention</h2><p>Open a category to see who needs follow-up.</p>'+group('No agreement on file',audit.filter(x=>x.status==='No agreement on file'),x=>x.status)+group('Paperwork in progress',audit.filter(x=>!['Complete','No agreement on file'].includes(x.status)),x=>x.status)+group('Missing profile items or open tasks',audit.filter(x=>x.gaps.length),x=>x.gaps.join(' · '))+'</section>';
+ const directory=admin?'<h2>Film profiles ('+available.length+' available)</h2>'+available.map(x=>panel(escape(x.name)+' · '+escape(x.role),'<img loading="lazy" alt="Approved headshot" src="'+escape(x.photo)+'"><p style="white-space:pre-line">'+escape(x.bio)+'</p>'+offline(x)+(s.mailReady?form('invite',input('email','Invitation email','email')+['name','role','filmProfile'].map((k,i)=>'<input type="hidden" name="'+k+'" value="'+escape([x.name,x.role,x.id][i])+'">').join(''),'Invite '+escape(x.name)):'') )).join(''):'';
  const linkControls=m=>m.filmProfile?form('publishProfile','','Approve & publish bio and headshot to film website',m.id):panel('Link an existing film profile',form('linkProfile','<label>Approved profile<select name="filmProfile" required><option value="">Select person</option>'+available.map(x=>'<option value="'+escape(x.id)+'" '+(x.name===m.name?'selected':'')+'>'+escape(x.name)+'</option>').join('')+'</select></label>','Confirm profile match',m.id));
  const setup=panel('Invite cast or crew',s.mailReady?form('invite',input('name','Name')+input('role','Character or crew title')+input('email','Email','email'),'Email invitation'):'<p>Email invitations are waiting for the production sender to be connected.</p>')+
  panel('Post a message',form('notice',input('title','Subject')+'<label>Message<textarea required name="text"></textarea></label>','Post message'))+
@@ -60,11 +74,11 @@ async function load(){
  (admin?'<strong>'+escape(m.agreement?.status||'Agreement not sent')+'</strong> ':'')+
  (m.agreement?.id?'<button data-status="'+m.id+'">'+(admin?'Check agreement status':'Review my agreement')+'</button>':'')+
  (m.referencePhoto&&!m.hasPhoto?'<img data-headshot src="'+escape(m.referencePhoto)+'" alt="Approved film headshot">':'')+(admin?profile(m):(m.hasPhoto?'<img data-headshot alt="Your saved headshot" src="'+escape(url('photo',m.id))+'">':'')+form('photo',file(m.hasPhoto?'Replace your headshot':'Upload your headshot · JPG or PNG, up to 4 MB','image/jpeg,image/png'),'Save headshot',m.id)+form('bio','<label>My bio<textarea name="bio" rows="4" maxlength="5000" placeholder="Tell us a little about yourself.">'+escape(m.profile?.bio)+'</textarea></label>','Save bio',m.id))+
- tasks(m)+(admin?linkControls(m):'')+(admin?panel('Assign a task',form('task',input('title','What needs to be done?'),'Assign task',m.id)):'')+
+ tasks(m)+(admin&&m.filmProfile&&library.find(x=>x.id===m.filmProfile)?offline(library.find(x=>x.id===m.filmProfile)):'')+(admin?linkControls(m):'')+(admin?panel('Assign a task',form('task',input('title','What needs to be done?'),'Assign task',m.id)):'')+
  (admin&&!m.agreement?agreement(m):'')+(admin?panel('Manage access',(!m.activated&&s.mailReady?form('resend','','Resend invitation',m.id):'')+form('revoke','','Revoke access',m.id)):'')+'</section>').join('');
  const account=s.passwordSet?'':'<section><h2>Set your password</h2><p>Your sign-in name is <strong>'+escape(admin?s.self:s.members[0].email)+'</strong>.</p>'+form('choosePassword',newPassword,'Save my password')+'</section>';
  const updates=s.resources.map(r=>'<section><small>'+escape(new Date(r.created).toLocaleDateString())+' · '+escape(r.type)+'</small><h3>'+escape(r.title)+'</h3>'+(r.type==='PDF'?'<a href="'+escape(url('resource',r.id))+'">Download PDF</a>':'<p>'+escape(r.text)+'</p>')+'</section>').join('');
- app.innerHTML='<p>'+escape(s.film)+' · '+(admin?'Production administrator':'Cast &amp; crew')+'</p>'+form('logout','','Sign out')+account+(admin?setup+directory:'')+'<h2>'+(admin?'Paperwork &amp; profiles':'My paperwork &amp; profile')+'</h2>'+(admin&&s.test?'<p>Signing is in test mode.</p>':'')+(rows||'<p>Your roster is empty. Use Invite cast or crew to get started.</p>')+'<div id="signing"></div><h2>Production board</h2>'+(updates||'<p>Scripts, call sheets and updates will appear here.</p>');
+ app.innerHTML='<p>'+escape(s.film)+' · '+(admin?'Production administrator':'Cast &amp; crew')+'</p>'+form('logout','','Sign out')+account+(admin?attention+'<h2>Production tools</h2>'+setup+panel('Browse film profiles',directory):'')+'<h2>'+(admin?'Paperwork &amp; profiles':'My paperwork &amp; profile')+'</h2>'+(admin&&s.test?'<p>Signing is in test mode.</p>':'')+(rows||'<p>Your roster is empty. Use Invite cast or crew to get started.</p>')+'<div id="signing"></div><h2>Production board</h2>'+(updates||'<p>Scripts, call sheets and updates will appear here.</p>');
  if(!admin)app.innerHTML='<p>'+escape(s.film)+' · Cast &amp; crew</p>'+form('logout','','Sign out')+account+s.members.map(memberView).join('')+'<section class="member-panel member-board"><h2>Production board</h2>'+(updates||'<p>No updates posted yet.</p>')+'</section>';
  for(const m of s.members){
   const photo=app.querySelector('form[data-action="photo"][data-id="'+m.id+'"]'), bio=app.querySelector('form[data-action="bio"][data-id="'+m.id+'"]');
@@ -81,7 +95,7 @@ app.addEventListener('submit',async e=>{
   if(data.file&&data.file.size>4*1024*1024)throw Error('Choose a file up to 4 MB.');
   if(a==='agreement')data.preview=button.value==='preview';
   if(a==='activate')data.ticket=ticket;
-  const result=await request(a,data.file||data,id,a==='photo'?'&'+new URLSearchParams({filename:data.file.name}):data.title&&data.file?'&'+new URLSearchParams({title:data.title}):'');
+  const result=await request(a,data.file||data,id,a==='offline'?'&'+new URLSearchParams({status:data.status}):a==='photo'?'&'+new URLSearchParams({filename:data.file.name}):data.title&&data.file?'&'+new URLSearchParams({title:data.title}):'');
   if(a==='photo'||a==='bio'){
    const section=f.closest('section'), details=f.closest('details');
    if(a==='photo'){
