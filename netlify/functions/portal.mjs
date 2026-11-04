@@ -152,7 +152,7 @@ export default async function handle(req) {
     const ticket=token(),expires=Date.now()+7*86400000;
     await set('tickets/'+hash(ticket),{id:m.id,expires});
     await set('members/'+m.id,{...m,ticket:hash(ticket)});
-    await enqueue(store,m,'invite/'+hash(ticket),'Your invitation to Heidi Mikac Films','Hi '+m.name+',\n\nYou’re invited to '+film+' as '+m.role+'. Choose your password and finish your profile here:\n'+portalUrl+'#invite='+ticket+'\n\nThis invitation expires in seven days.',expires);
+    await enqueue(store,m,'invite/'+hash(ticket),film+' — your cast & crew invitation','Hi '+m.name+',\n\nYou’re invited to '+film+' as '+m.role+'. Choose your password and finish your profile here:\n'+portalUrl+'#invite='+ticket+'\n\nThis invitation expires in seven days.',expires);
     return json({ok:true});
   }
   if(action==='task'&&post){
