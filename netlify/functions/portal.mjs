@@ -149,7 +149,15 @@ export default async function handle(req) {
     if(post){const bytes=Buffer.from(await req.arrayBuffer());
       requireThat(bytes.length<=4*1024*1024&&bytes.subarray(0,5).toString()==='%PDF-','Choose a PDF up to 4 MB.');
       const status=url.searchParams.get('status');requireThat(['Waiting on Heidi','Missing page 1 · waiting on Heidi','Complete'].includes(status),'Choose the signature status.');
-      const result=await store.set(key,bytes,{onlyIfNew:true,metadata:{status}});requireThat(result.modified,'An offline agreement is already filed.',409);return json({ok:true});
+      const expected=url.searchParams.get('replaceHash');
+      let options={onlyIfNew:true};
+      if(expected){
+        const previous=await store.getWithMetadata(key,{type:'arrayBuffer'});
+        requireThat(previous&&hash(Buffer.from(previous.data))===expected,'The filed agreement changed. Reload before replacing it.',409);
+        await store.set('offline-history/'+uid+'/'+expected,previous.data,{onlyIfNew:true,metadata:previous.metadata});
+        options={onlyIfMatch:previous.etag};
+      }
+      const result=await store.set(key,bytes,{...options,metadata:{status}});requireThat(result.modified,'An offline agreement is already filed.',409);return json({ok:true});
     }
     const file=await store.getWithMetadata(key,{type:'arrayBuffer'});requireThat(file,'No agreement on file.',404);
     return new Response(file.data,{headers:{...headers,'Content-Type':'application/pdf','Content-Disposition':'attachment; filename="'+uid+'-offline-agreement.pdf"'}});
