@@ -1,7 +1,14 @@
 import { getStore } from '@netlify/blobs';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 
+import {promisify} from 'node:util';
+import {enqueue, mailReady, portalUrl} from '../lib/mail.mjs';
+const derive=promisify(scrypt);
+async function credential(password){
+ requireThat(typeof password==='string'&&password.length>=12&&password.length<=128,'Choose a password between 12 and 128 characters.');
+ const salt=token();return {salt,digest:(await derive(password,salt,64)).toString('hex')};
+}
 const hash = x => createHash('sha256').update(x).digest('hex');
 const token = () => randomBytes(32).toString('hex');
 const film = 'Written in the Dark';
@@ -68,15 +75,49 @@ export default async function handle(req) {
   const body=post&&req.headers.get('content-type')?.startsWith('application/json')?await req.json():{};
   const uid=url.searchParams.get('id')||body.id;
   const adminKeys=[['Nick',process.env.HMF_NICK_LOGIN_SHA256],['Heidi',process.env.HMF_HEIDI_LOGIN_SHA256]];
+  async function signedIn(id,adminDigest=null){
+    const secret=token();
+    await set('sessions/'+hash(secret),{id,admin:!!adminDigest,adminDigest,expires:Date.now()+8*3600000});
+    return json({ok:true},{'Set-Cookie':cookie(secret,28800)});
+  }
+  async function notify(m,event,subject,text){
+    if(production)await enqueue(store,m,event,subject,text+'\n\nOpen your dashboard: '+portalUrl);
+  }
+  if(action==='activate'&&post){
+    requireThat(/^[a-f0-9]{64}$/.test(body.ticket),'Invalid invitation.');
+    const key='tickets/'+hash(body.ticket), rec=await store.getWithMetadata(key,{type:'json'});
+    requireThat(rec?.data?.expires>Date.now(),'Invitation expired. Ask production to resend it.');
+    const m=await get('members/'+rec.data.id);
+    requireThat(m&&m.ticket===hash(body.ticket),'This invitation has been replaced.');
+    const pass=await credential(body.password);
+    const result=await store.setJSON('passwords/'+m.id,pass,{onlyIfNew:true});
+    requireThat(result.modified,'This account already has a password. Sign in instead.');
+    await store.delete(key);return signedIn(m.id);
+  }
+  if(action==='passwordLogin'&&post){
+    const who=string(body.username).toLowerCase();
+    requireThat(typeof body.password==='string'&&body.password.length<=128,'Invalid login.',401);
+    const admin=adminKeys.find(([id])=>id.toLowerCase()===who);
+    const members=admin?[]:await list('members/');
+    const id=admin?.[0]||members.find(m=>m?.email===who)?.id;
+    const pass=id&&await get('passwords/'+id);
+    requireThat(pass&&(!admin||pass.adminDigest===admin[1]),'Invalid login.',401);
+    const bucket='attempts/'+hash(who)+'/'+Math.floor(Date.now()/600000);
+    const previous=await store.getWithMetadata(bucket,{type:'json'});
+    requireThat((previous?.data||0)<20,'Too many attempts. Try again in ten minutes.',429);
+    const increment=await store.setJSON(bucket,(previous?.data||0)+1,previous?{onlyIfMatch:previous.etag}:{onlyIfNew:true});
+    requireThat(increment.modified,'Please try again.',429);
+    const attempt=await derive(body.password,pass.salt,64);
+    requireThat(timingSafeEqual(attempt,Buffer.from(pass.digest,'hex')),'Invalid login.',401);
+    return signedIn(id,admin?.[1]);
+  }
   if(action==='login'&&post){
     const code=string(body.code,200);
     requireThat(code.length>=32,'Invalid access key.',401);
     const digest=hash(code), admin=adminKeys.find(([,k])=>k?.length===64&&k===digest);
     const member=admin?null:await get('keys/'+digest);
     requireThat(admin||(member&&await get('members/'+member.id)),'Access key is invalid or revoked.',401);
-    const secret=token();
-    await set('sessions/'+hash(secret),{id:admin?admin[0]:member.id,admin:!!admin,expires:Date.now()+8*3600000,adminDigest:admin?digest:null});
-    return json({ok:true},{'Set-Cookie':cookie(secret,28800)});
+    return signedIn(admin?admin[0]:member.id,admin?.[1]);
   }
   requireThat(session?.expires>Date.now(),'Please sign in.',401);
   const admin=session.admin, self=session.id;
@@ -84,16 +125,47 @@ export default async function handle(req) {
   if(action==='logout'&&post){await store.delete(sessionKey);return json({}, {'Set-Cookie':cookie('',0)});}
   const onlyAdmin=()=>requireThat(admin,'Administrator access required.',403);
   const target=async()=>{requireThat(uuid.test(uid)&& (admin||uid===self),'Access denied.',403);const m=await get('members/'+uid);requireThat(m,'Member unavailable.',404);return m};
+  if(action==='choosePassword'&&post){
+    const pass=await credential(body.password);
+    const result=await store.setJSON('passwords/'+self,{...pass,adminDigest:session.adminDigest},{onlyIfNew:true});
+    requireThat(result.modified,'A password is already configured.');return json({ok:true});
+  }
   if(action==='home'){
     const members=admin?await list('members/'):[await get('members/'+self)];
-    const rows=await Promise.all(members.filter(Boolean).map(async m=>({...m,profile:await get('profiles/'+m.id),hasPhoto:!!await store.getMetadata('photos/'+m.id),agreement:await get('agreements/'+m.id)})));
-    return json({admin,self,film,members:rows,resources:(await list('resources/')).filter(Boolean).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
+    const rows=await Promise.all(members.filter(Boolean).map(async m=>({...m,profile:await get('profiles/'+m.id),hasPhoto:!!await store.getMetadata('photos/'+m.id),agreement:await get('agreements/'+m.id),tasks:(await list('tasks/'+m.id+'/')).filter(Boolean),activated:!!await get('passwords/'+m.id)})));
+    return json({admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),members:rows.map(({ticket,...row})=>row),resources:(await list('resources/')).filter(Boolean).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
   }
-  if(action==='invite'&&post){
-    onlyAdmin();const id=randomUUID(),code=token(),m={id,name:string(body.name),email:email(body.email),role:string(body.role)};
-    await set('members/'+id,m);await set('keys/'+hash(code),{id});return json({code});
+  if((action==='invite'||action==='resend')&&post){
+    onlyAdmin();requireThat(production&&mailReady(),'Invitation email is awaiting sender setup. No invitation was sent.',503);
+    let m;
+    if(action==='invite'){
+      const address=email(body.email);
+      requireThat(!(await list('members/')).some(m=>m?.email===address),'This person is already on the roster.');
+      const hex=hash(address);
+      // A revoked account must receive a fresh identity on re-invitation.
+      const index='active-email/'+hex;
+      m={id:randomUUID(),email:address,name:string(body.name),role:string(body.role)};
+      const reserved=await store.setJSON(index,{id:m.id},{onlyIfNew:true});requireThat(reserved.modified,'An invitation already exists.');
+      try{await set('members/'+m.id,m);}catch(e){await store.delete(index);throw e;}
+    }else m=await target();
+    requireThat(!await get('passwords/'+m.id),'This person already has a password.');
+    const ticket=token(),expires=Date.now()+7*86400000;
+    await set('tickets/'+hash(ticket),{id:m.id,expires});
+    await set('members/'+m.id,{...m,ticket:hash(ticket)});
+    await enqueue(store,m,'invite/'+hash(ticket),'Your invitation to Heidi Mikac Films','Hi '+m.name+',\n\nYou’re invited to '+film+' as '+m.role+'. Choose your password and finish your profile here:\n'+portalUrl+'#invite='+ticket+'\n\nThis invitation expires in seven days.',expires);
+    return json({ok:true});
   }
-  if(action==='revoke'&&post){onlyAdmin();await target();await store.delete('members/'+uid);return json({ok:true});}
+  if(action==='task'&&post){
+    onlyAdmin();const m=await target(),id=randomUUID(),title=string(body.title);
+    await set('tasks/'+uid+'/'+id,{id,title,done:false});
+    await notify(m,id,'New production task','You have a new task for '+film+'.');return json({ok:true});
+  }
+  if(action==='finishTask'&&post){
+    await target();requireThat(uuid.test(body.task),'Invalid task.');
+    const key='tasks/'+uid+'/'+body.task,item=await get(key);requireThat(item,'Task unavailable.');
+    await set(key,{...item,done:true});return json({ok:true});
+  }
+  if(action==='revoke'&&post){onlyAdmin();const m=await target();await store.delete('members/'+uid);await store.delete('active-email/'+hash(m.email));return json({ok:true});}
   if(action==='bio'&&post){
     await target();requireThat(typeof body.bio==='string'&&body.bio.length<=5000,'Bio limit is 5,000 characters.');
     await set('profiles/'+uid,{bio:body.bio.trim()});return json({ok:true});
@@ -105,10 +177,10 @@ export default async function handle(req) {
     const jpeg=bytes.subarray(0,3).toString('hex')==='ffd8ff',png=bytes.subarray(0,8).toString('hex')==='89504e470d0a1a0a';
     if(action==='photo'){requireThat(jpeg||png,'Choose a JPG or PNG.');await store.set('photos/'+uid,bytes,{metadata:{mime:jpeg?'image/jpeg':'image/png'}});}
     else if(action==='master'){requireThat(hash(bytes)==='8437469c10b4a2ebd322adb8fd4c4e246abb2a0e26043a7c4129dffee92e6626','Choose the approved WrittenDarkContract-CastTemplate.pdf.');await store.set('contract/master',bytes);}
-    else {requireThat(bytes.subarray(0,5).toString()==='%PDF-','Choose a PDF.');const id=randomUUID(),title=string(url.searchParams.get('title'));await store.set('files/'+id,bytes);await set('resources/'+id,{id,title,type:'PDF',created:Date.now()});}
+    else {requireThat(bytes.subarray(0,5).toString()==='%PDF-','Choose a PDF.');const id=randomUUID(),title=string(url.searchParams.get('title'));await store.set('files/'+id,bytes);await set('resources/'+id,{id,title,type:'PDF',created:Date.now()});await Promise.all((await list('members/')).filter(Boolean).map(m=>notify(m,id,'New production file','Production posted a new file for '+film+'.')));}
     return json({ok:true});
   }
-  if(action==='notice'&&post){onlyAdmin();const id=randomUUID();await set('resources/'+id,{id,title:string(body.title),text:string(body.text,5000),type:'Update',created:Date.now()});return json({ok:true});}
+  if(action==='notice'&&post){onlyAdmin();const id=randomUUID();await set('resources/'+id,{id,title:string(body.title),text:string(body.text,5000),type:'Update',created:Date.now()});await Promise.all((await list('members/')).filter(Boolean).map(m=>notify(m,id,'New production message','You have a new message from production.')));return json({ok:true});}
   if(action==='photo'||action==='resource'){
     if(action==='photo')await target();else requireThat(uuid.test(uid)&&await get('resources/'+uid),'File unavailable.',404);
     const r=await store.getWithMetadata((action==='photo'?'photos/':'files/')+uid,{type:'arrayBuffer'});
@@ -130,7 +202,7 @@ export default async function handle(req) {
     const lock=await store.setJSON(key,{status:'Preparing — check SignWell before retrying'},{onlyIfNew:true});
     requireThat(lock.modified,'An agreement already exists or is being prepared.',409);
     const d=await signwell('documents/',{test_mode:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes'),name:film+' — '+t.legal,files:[{name:'Actor Agreement.pdf',file_base64:bytes.toString('base64')}],recipients:[{id:'1',name:t.legal,email:m.email},{id:'2',name:'Heidi Mikac',email:heidi}],apply_signing_order:true,embedded_signing:true,text_tags:true});
-    await set(key,{id:d.id,status:'Waiting on actor'});return json({ok:true});
+    await set(key,{id:d.id,status:'Waiting on actor'});await notify(m,d.id,'Document ready for signature','Your agreement is ready to review and sign.');return json({ok:true});
   }
   if(action==='status'){
     await target();const a=await get('agreements/'+uid);requireThat(a?.id,'No active signing request.');
@@ -144,3 +216,4 @@ export default async function handle(req) {
   return json({error:'Unknown action.'});
  }catch(e){return Response.json({error:e.status?e.message:'The request could not be completed.'},{status:e.status||500,headers});}
 }
+
