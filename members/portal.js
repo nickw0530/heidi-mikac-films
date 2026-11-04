@@ -16,7 +16,7 @@ function profile(m){
  return panel('Headshot &amp; biography · '+(m.hasPhoto?'photo received':'photo needed')+' · '+(m.profile?.bio?'bio received':'bio needed'),form('bio','<label>Biography<textarea name="bio" rows="5" maxlength="5000">'+escape(m.profile?.bio)+'</textarea></label>','Save biography',m.id)+form('photo',file('Headshot · JPG or PNG, up to 4 MB','image/jpeg,image/png'),'Upload headshot',m.id)+'<button data-photo="'+m.id+'">View current headshot</button><div class="portrait"></div>');
 }
 function agreement(m){
- const fields=input('legal','Legal name','text',m.name)+input('character','Character','text',m.role)+input('credit','Screen credit / professional name','text',m.name)+input('rate','Agreed daily rate (USD)')+input('date','Agreement date','date')+input('start','First shoot date','date')+'<label>Last shoot date (optional)<input name="end" type="date"><small>Leave blank if the final date is unknown.</small></label>';
+ const fields=input('legal','Legal name','text',m.name)+input('character','Character','text',m.role)+input('credit','Screen credit / professional name','text',m.name)+input('rate','Agreed daily rate (USD)')+input('date','Agreement date','date')+input('start','First shoot date','date');
  return panel('Prepare actor agreement','<form data-action="agreement" data-id="'+m.id+'">'+fields+'<button value="preview">Preview agreement</button><button value="send">Create signing request</button></form>');
 }
 const ticket=new URLSearchParams(location.hash.slice(1)).get('invite');
