@@ -81,6 +81,7 @@ async function load(){
  const account=s.passwordSet?'':'<section><h2>Set your password</h2><p>Your sign-in name is <strong>'+escape(admin?s.self:s.members[0].email)+'</strong>.</p>'+form('choosePassword',newPassword,'Save my password')+'</section>';
  const updates=s.resources.map(r=>'<section><small>'+escape(new Date(r.created).toLocaleDateString())+' · '+escape(r.type)+'</small><h3>'+escape(r.title)+'</h3>'+(r.type==='PDF'?'<a href="'+escape(url('resource',r.id))+'">Download PDF</a>':'<p>'+escape(r.text)+'</p>')+'</section>').join('');
  app.innerHTML='<p>'+escape(s.film)+' · '+(admin?'Production administrator':'Cast &amp; crew')+'</p>'+form('logout','','Sign out')+account+(admin?attention+'<h2>Production tools</h2>'+setup+panel('Browse film profiles ('+people.length+')',directory):'')+'<h2>'+(admin?'Paperwork &amp; profiles':'My paperwork &amp; profile')+'</h2>'+(admin&&s.test?'<p>Signing is in test mode.</p>':'')+(rows||'<p>Your roster is empty. Use Invite cast or crew to get started.</p>')+'<div id="signing"></div><h2>Production board</h2>'+(updates||'<p>Scripts, call sheets and updates will appear here.</p>');
+ if(admin) mountCalendar();
  if(!admin)app.innerHTML='<p>'+escape(s.film)+' · Cast &amp; crew</p>'+form('logout','','Sign out')+account+s.members.map(memberView).join('')+'<section class="member-panel member-board"><h2>Production board</h2>'+(updates||'<p>No updates posted yet.</p>')+'</section>';
  if(!admin&&s.welcome?.video){
   const section=document.createElement('section');section.className='member-panel';section.innerHTML='<small>CAST &amp; CREW ORIENTATION</small><h2>Welcome to Written in the Dark</h2><div style="background:linear-gradient(125deg,#492430,#15161a);padding:16px"><video controls playsinline preload="metadata" style="width:100%;display:none"></video><button type="button">▶ Play welcome video</button></div><p data-audio hidden>Sound is off. Use the speaker control to hear Heidi and Nick.</p>';
@@ -149,3 +150,37 @@ app.addEventListener('click',async e=>{
 });
 load().catch(e=>{app.textContent='Portal unavailable.';message.textContent=e.message;});
 
+
+async function mountCalendar(){
+ const panel=document.createElement('aside');
+ panel.hidden=true;
+ app.prepend(panel);
+ const refresh=async()=>{
+  try{
+   const result=await request('calendarEvents');
+   if(!panel.isConnected)return;
+   if(!result.connected){
+    if(!new URLSearchParams(location.search).has('connectCalendar'))return;
+    const connect=document.createElement('button');
+    connect.textContent='Connect Outlook calendar';
+    connect.onclick=async()=>{try{location.assign((await request('calendarConnect',{})).url);}catch{message.textContent='Calendar connection unavailable. Check the production calendar secret.';}};
+    panel.replaceChildren(connect);
+   }else{
+    const list=document.createElement('ul');
+    for(const event of result.items){
+     const item=document.createElement('li');
+     const date=new Date(event.start+'Z');
+     const when=event.allDay?event.start.slice(0,10)+' · All day':date.toLocaleString('en-US',{timeZone:'America/Indiana/Indianapolis',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+     item.textContent=when+' — '+event.title;
+     list.append(item);
+    }
+    const heading=document.createElement('h2');heading.textContent='Production calendar';
+    const note=document.createElement('p');note.textContent=result.items.length?'Next 30 days · Eastern time':'No upcoming events in the next 30 days.';
+    panel.replaceChildren(heading,note,list);
+   }
+   panel.className='exchange-calendar';panel.hidden=false;
+  }catch{if(!panel.hidden)panel.textContent='Calendar unavailable. Refresh to try again.';}
+ };
+ await refresh();
+ const timer=setInterval(()=>{if(!panel.isConnected)clearInterval(timer);else if(!document.hidden&&!panel.hidden)refresh();},300000);
+}
