@@ -1,3 +1,4 @@
+import {begin as beginCalendar,events as calendarEvents} from './calendar-callback.mjs';
 import catalog from '../lib/film-profiles.mjs';
 import { getStore } from '@netlify/blobs';
 import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
@@ -137,6 +138,11 @@ export default async function handle(req) {
   requireThat(admin?adminKeys.some(([id,k])=>id===self&&k&&k===session.adminDigest):await get('members/'+self),'Access revoked.',401);
   if(action==='logout'&&post){await store.delete(sessionKey);return json({}, {'Set-Cookie':cookie('',0)});}
   const onlyAdmin=()=>requireThat(admin,'Administrator access required.',403);
+  if(action==='calendarConnect'||action==='calendarEvents'){
+    onlyAdmin(); requireThat(url.origin==='https://heidimikacfilms.com','Production only.',403);
+    if(action==='calendarConnect'){requireThat(post,'Use the connect button.',405);return await beginCalendar(store,sessionKey);}
+    return await calendarEvents(store);
+  }
   const target=async()=>{requireThat(uuid.test(uid)&& (admin||uid===self),'Access denied.',403);const m=await get('members/'+uid);requireThat(m,'Member unavailable.',404);return m};
   if(action==='choosePassword'&&post){
     const pass=await credential(body.password);
