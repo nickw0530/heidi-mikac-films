@@ -44,6 +44,8 @@ button{font:inherit}
   color:#e8e1d9;transition:color .2s
 }
 .nav a:hover,.footer a:hover{color:var(--red-light)}
+.nav a.portal-login{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:12px 16px;border:1px solid var(--red-light);background:var(--red);color:#fff;white-space:nowrap}
+.nav a.portal-login:hover{background:#c23b40;color:#fff}
 .menu-toggle{display:none;background:none;border:1px solid #6d6661;color:white;padding:9px 12px;gap:9px;align-items:center}
 
 .hero{
@@ -225,8 +227,7 @@ button{font:inherit}
   .film-overview{gap:48px}
 }
 
-@media(max-width:680px){
-  html{scroll-padding-top:74px}
+@media(max-width:1050px){
   .site-header{padding:18px 20px}
   .brand-wordmark{font-size:16px}
   .menu-toggle{display:inline-flex}
@@ -236,6 +237,11 @@ button{font:inherit}
   }
   .nav.open{display:flex}
   .nav a{font-size:11px}
+  .nav{max-height:calc(100svh - 64px);overflow-y:auto}
+}
+
+@media(max-width:680px){
+  html{scroll-padding-top:74px}
   .hero{min-height:720px;height:auto;padding:100px 0 55px}
   .hero-montage{grid-template-columns:1fr 1fr}
   .hero-montage img:nth-child(2){display:none}
