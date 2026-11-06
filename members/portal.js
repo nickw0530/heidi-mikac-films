@@ -116,6 +116,13 @@ app.addEventListener('submit',async e=>{
  if((a==='revoke'||(a==='agreement'&&button.value==='send'))&&!confirm(a==='revoke'?'Revoke this member’s access immediately?':'Create a signing request for this actor and Heidi?'))return;
  button.disabled=true;message.textContent='';
  try{
+  if(a==='logout'){
+   try{await request('logout',{});}catch(error){if(error.status!==401)throw error;}
+   login();
+   message.textContent='Signed out.';
+   location.replace(location.pathname);
+   return;
+  }
   if(data.file&&data.file.size>4*1024*1024)throw Error('Choose a file up to 4 MB.');
   if(a==='agreement')data.preview=button.value==='preview';
   if(a==='activate')data.ticket=ticket;
