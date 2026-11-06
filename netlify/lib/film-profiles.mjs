@@ -140,3 +140,111 @@ export default [
     "bio": "Jennifer Hartman made her acting debut in Paul Allen’s film The First Harvest. In addition to her passion for acting, Jennifer has dedicated 26 years to education as an elementary school teacher and currently teaches fifth grade.\n\nShe holds a Master of Science in Elementary Education and a master’s degree in Secondary Education with a concentration in Educational Leadership.\n\nJennifer is thrilled to be part of Written in the Dark and looks forward to bringing her talents and enthusiasm to the role of Tina and to the production."
   }
 ];
+
+export const whereinCatalog = [
+  {
+    "id": "heidi",
+    "name": "Heidi Mikac",
+    "role": "Emma",
+    "photo": "https://whereinliescontinue.net/assets/heidi-mikac-profile.webp",
+    "bio": "Heidi Mikac is a multi-award-winning filmmaker, writer, director, producer, and actress. After spending many years performing in theater, Heidi transitioned to filmmaking in 2023, bringing her passion for storytelling and character-driven narratives to the screen.\n\nSince then, Heidi has written, directed, and produced numerous short films, including Written in the Dark, Finding Light in the Darkness, The Recovery 3, Starving for Affection, and more. Her first feature film, Written in the Light, has earned multiple honors, including Best Feature, Best Drama, and Best Editing.\n\nHeidi is passionate about creating meaningful, emotionally driven films. She is especially excited to expand Written in the Dark from a short film into a feature-length production, giving her the opportunity to explore its story and characters on a deeper level.\n\nAs an independent filmmaker, Heidi is deeply grateful to the talented cast and crew who dedicate their time, creativity, and passion to bringing her vision to life. Through Heidi Mikac Films and Nothing But Love Productions, she continues to pursue her mission of telling powerful stories with one guiding philosophy: Nothing but love. Where love comes FIRST."
+  },
+  {
+    "id": "beth-metcalf",
+    "name": "Beth Metcalf",
+    "role": "Melanie",
+    "photo": "https://whereinliescontinue.net/assets/beth-metcalf-portrait.png",
+    "bio": ""
+  },
+  {
+    "id": "beatrice",
+    "name": "Beatrice Boepple",
+    "role": "Bethany",
+    "photo": "https://whereinliescontinue.net/assets/beatrice-boepple-portrait.jpg",
+    "bio": "Beatrice Boepple is a SAG-AFTRA, ACTRA, and Canadian Equity actor whose career spans film, television, theater, and the horror convention circuit. A graduate of the University of Victoria's BFA Acting program, she began her professional career in Canada, appearing in numerous stage productions, television series, and feature films before relocating to Los Angeles.\n\nBeatrice is best known to horror fans worldwide for her portrayal of Amanda Krueger, Freddy Krueger's mother, in the cult classic A Nightmare on Elm Street 5: The Dream Child. She also starred in the Canadian feature films Quarantine and Midnight Matinee and appeared in popular television series including 21 Jump Street, Danger Bay, Neon Rider, The New Adventures of the Black Stallion, and Beachcombers.\n\nAfter stepping away from the industry to raise her family, Beatrice returned to acting and has enjoyed a prolific resurgence, appearing in numerous independent films and genre projects since 2023. Her recent work in addition to What Lies Within includes The Dead Place, The Forest Hills, Blood and Breakfast, The Final Walk, Cruel Summer III and IV, and several fan-film productions that have reunited her with the horror community that first embraced her decades ago.\n\nIn addition to acting, she is a frequent guest at horror and pop-culture conventions, podcasts, and interviews, where she enjoys connecting with fans and celebrating the enduring legacy of genre filmmaking."
+  },
+  {
+    "id": "kelsey-rhea",
+    "name": "Kelsey Rhea",
+    "role": "Jenna",
+    "photo": "https://whereinliescontinue.net/assets/kelsey-rhea-headshot.jpeg",
+    "bio": ""
+  },
+  {
+    "id": "david-popa",
+    "name": "David Popa",
+    "role": "Tim Jones",
+    "photo": "https://whereinliescontinue.net/assets/david-popa-headshot.jpg",
+    "bio": ""
+  },
+  {
+    "id": "tammy",
+    "name": "Tammy Anderson",
+    "role": "School Nurse",
+    "photo": "https://whereinliescontinue.net/assets/tammy-anderson.webp",
+    "bio": "Tammy Anderson is an award-winning producer, actress, and assistant director based in Indiana. Her film credits include This Train, The Zuri Johnson Story, Asphyxia, and Extraction, USA.\n\nCurrently serving as Assistant Director on Written in the Dark, Tammy brings passion, creativity, and dedication to every project. With a love for storytelling both in front of and behind the camera, she continues to build her own legacy in the film industry."
+  },
+  {
+    "id": "kiley-ernst",
+    "name": "Kiley Ernst",
+    "role": "Hannah Jones",
+    "photo": "https://whereinliescontinue.net/assets/kiley-ernst-headshot.png",
+    "bio": ""
+  },
+  {
+    "id": "jebediah",
+    "name": "Jebediah Blackhawk",
+    "role": "Earl",
+    "photo": "https://whereinliescontinue.net/assets/jebediah-blackhawk.webp",
+    "bio": "Jebediah Blackhawk is an American actor, producer, and professional wrestler with more than 30 years of entertainment experience."
+  },
+  {
+    "id": "shy",
+    "name": "Shy Hunter",
+    "role": "Keshia Clemons",
+    "photo": "https://whereinliescontinue.net/assets/shy-hunter.webp",
+    "bio": "Shy Hunter is an actress, writer, and producer portraying Brittany in Written in the Dark. Her passion for acting began in seventh grade, and she has continued performing in theater productions throughout the years.\n\nShy made her film debut as Keshia Clemons in Heidi Mikac Films’ Wherein Lies Continue. She is excited to return to the screen with Heidi Mikac Films in Written in the Dark and looks forward to continuing her acting journey through future projects."
+  },
+  {
+    "id": "jessie",
+    "name": "Jessie Maudlin",
+    "role": "Karen (Social Worker)",
+    "photo": "https://whereinliescontinue.net/assets/jessie-maudlin-portrait-clean.png",
+    "bio": "Jessie Maudlin is a 29-year-old school social worker with a passion for helping others and making a difference in her community. Outside of her professional life, Jessie enjoys fostering animals, playing soccer and kickball, and spending time outdoors."
+  },
+  {
+    "id": "dale",
+    "name": "Dale Freeman",
+    "role": "Officer Frank Bublitz",
+    "photo": "https://whereinliescontinue.net/assets/dale-freeman-headshot.jpg",
+    "bio": "Dale Freeman portrays Officer Frank Bublitz in Wherein Lies Continue. He is also credited as a producer and as the Restaurant Manager in Heidi Mikac Films’ Written in the Dark."
+  },
+  {
+    "id": "brandon",
+    "name": "Brandon Benz",
+    "role": "Detective Bruce Ponto",
+    "photo": "https://whereinliescontinue.net/assets/brandon-benz-headshot.jpg",
+    "bio": "Brandon started out wanting to become an actor. But, like many others before him, he found it difficult to find roles in his area, especially ones he was interested in. So he decided to pick up a camera and start making things himself.\n\nFrom there, he made skits and shorts for YouTube while developing his first feature, which is also free to watch on YouTube. After that, he put acting aside and stayed behind the camera to continue developing his skills and knowledge as a cinematographer. He has continued to shoot shorts and features, striving to bring quality and polish to each project, regardless of budget."
+  },
+  {
+    "id": "mariah",
+    "name": "Mariah Rae Pearson",
+    "role": "Officer Bentley",
+    "photo": "https://whereinliescontinue.net/assets/mariah-rae-pearson.jpeg",
+    "bio": "Mariah Rae Pearson is an Indianapolis-based actress, soprano, and multidisciplinary performer whose work spans film, theatre, and commercial production. Represented by Talent Fusion in Indianapolis, Mariah brings a dynamic combination of dramatic depth, comedic instinct, musicality, and physical versatility to her performances.\n\nHer theatrical credits include Mary Bailey in It’s a Wonderful Life with Hendricks Civic Theatre (2026); Susanna Walcott in Arthur Miller’s The Crucible with Southbank Theatre; Jim Jones in First Featherton at Indy Fringe; and roles in Gods of Comedy, Harvey, and WTLWO. At the University of Indianapolis, she portrayed Nora Helmer in A Doll’s House and the Countess in Mozart’s The Marriage of Figaro.\n\nHer on-camera credits include Officer Bentley in Wherein Lies Continue, Mckenna in Lonely Road, Sally in Comfort Zone, Grace in The Filmmaker, and Helene Hayward in The Flapper, directed by Christopher Pearson. She also portrays a social worker in Written in the Dark.\n\nTrained as an operatic soprano at the University of Indianapolis, Mariah has performed with the Hendricks Symphony Choir since 2026. She also works with The Prewitt Murder Mystery, blending improvisation, character work, and audience engagement.\n\nCommitted to continual artistic growth, Mariah approaches each role with curiosity, discipline, emotional honesty, and a strong sense of storytelling."
+  },
+  {
+    "id": "bobby",
+    "name": "Bobby Carra",
+    "role": "Composer",
+    "photo": "https://whereinliescontinue.net/assets/bobby-carra.jpg",
+    "bio": "Bobby Carra is a Philadelphia-based composer and filmmaker, as well as a bass player and songwriter in the live music scene. Holding a B.A. in Music Composition, he is experienced in traditional orchestral instrumentation and arranging, as well as various forms of modern and electronic musical approaches. Many of his ideas and approaches are also rooted in jazz, fusion, funk, prog rock, and metal.\n\nHis past, current, and upcoming projects include Hunt Chase Kill, My Special Boy, Swine and Dine, Human Hibachi 3, Goetia, In the Willows, Copycat: A Scream Fan Film, Hostages, Five Stars, Suerte, Deadly End, Backwoods Infestation, The Stutterer, Crimzon Harvest, A Nightmare on Friday the 13th, and One Reckless Weekend.\n\nKnown for a multidisciplinary approach, in addition to composing, he also occasionally lends his talents to independent productions as an actor and as an assistant audio and video editor."
+  },
+  {
+    "id": "nick-williams",
+    "name": "Nick Williams",
+    "role": "Executive Producer · Digital Media & Website Development",
+    "photo": "https://whereinliescontinue.net/assets/nick-williams.webp",
+    "bio": "Nick Williams is an Indianapolis-based producer, media entrepreneur, podcast host, and founder of Mosaic Minds Media, an independent creative company built on a simple belief: everyone has a story worth telling, but not everyone has the platform to tell it.\n\nWith a background in business, leadership, and digital media, Williams has carved out an unconventional path into the entertainment industry, combining an entrepreneurial mindset with a lifelong fascination for storytelling, creativity, and the people behind both.\n\nAs co-creator and co-host of the Mosaic Minds Podcast, alongside Jason Yocum, Williams has engaged in conversations with filmmakers, musicians, athletes, entrepreneurs, and individuals whose lives and perspectives defy easy categorization. His approach favors authenticity over polish, curiosity over convention, and the kind of conversations that don’t always fit neatly into a sound bite.\n\nThrough Mosaic Minds Media, Williams has expanded his work into independent film, digital production, creative branding, and web development. His collaborations with filmmaker Heidi Mikac include providing digital media, promotional, branding, and website development support for the independent productions Written in the Dark and Wherein Lies Continue.\n\nRather than limiting himself to a single corner of the entertainment industry, Williams is developing Mosaic Minds Media as a creative home for podcasting, independent filmmaking, and multimedia services.\n\nFor Williams, the goal isn’t simply to create content. It’s to help tell stories that deserve to be seen, heard, and remembered."
+  }
+];

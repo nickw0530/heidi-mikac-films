@@ -1,5 +1,5 @@
 import {begin as beginCalendar,events as calendarEvents} from './calendar-callback.mjs';
-import catalog from '../lib/film-profiles.mjs';
+import darkCatalog, {whereinCatalog} from '../lib/film-profiles.mjs';
 import { getStore } from '@netlify/blobs';
 import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
@@ -16,7 +16,17 @@ const token = () => randomBytes(32).toString('hex');
 // Practice accounts must never be linked to or published on a public film website.
 const practiceName=name=>/^test(?:\s+testers[oe]n)?$/i.test(name.trim());
 const allowPublicProfile=m=>requireThat(!practiceName(m.name),'Practice accounts cannot appear on a public website.',403);
-const film = 'Written in the Dark';
+const productions=[{id:'written-in-the-dark',name:'Written in the Dark'},{id:'wherein-lies-continue',name:'Wherein Lies Continue'}];
+const catalogs={'written-in-the-dark':darkCatalog,'wherein-lies-continue':whereinCatalog};
+const normalizeName=name=>name.trim().toLowerCase().replace(/[^a-z0-9]/g,'');
+const assignments=m=>m.productions??{'written-in-the-dark':{role:m.role,filmProfile:m.filmProfile||''}};
+const findProfile=(m,productionId)=>{
+ const assigned=assignments(m)[productionId];
+ const rows=catalogs[productionId];
+ return rows.find(x=>x.id===(assigned?.filmProfile||m.profileLinks?.[productionId]||(productionId==='written-in-the-dark'?m.filmProfile:'')))||rows.find(x=>normalizeName(x.name)===normalizeName(m.name));
+};
+const sharedBase=m=>darkCatalog.find(x=>x.id===m.filmProfile)||Object.keys(assignments(m)).map(id=>findProfile(m,id)).find(Boolean);
+
 const uuid = /^[a-f0-9-]{36}$/;
 function requireThat(ok, message, status=400) {
   if (!ok) throw Object.assign(new Error(message), {status});
@@ -66,7 +76,15 @@ export default async function handle(req) {
  try {
   const url=new URL(req.url), action=url.searchParams.get('action')||'home';
   const production=['heidimikacfilms.com','www.heidimikacfilms.com'].includes(url.hostname);
-  const store=getStore({name:production?'hmf-members-v1':'hmf-preview-'+(process.env.DEPLOY_ID||'local'),consistency:'strong'});
+  let productionId=url.searchParams.get('production')||'written-in-the-dark';
+  requireThat(catalogs[productionId],'Unknown production.');
+  const rawStore=getStore({name:production?'hmf-members-v1':'hmf-preview-'+(process.env.DEPLOY_ID||'local'),consistency:'strong'});
+  // Preserve all existing Written in the Dark keys; isolate other productions' paperwork and resources.
+  const scoped=key=>productionId!=='written-in-the-dark'&&/^(tasks|agreements|resources|files|offline|offline-history|contract)\//.test(key)?'productions/'+productionId+'/'+key:key;
+  const store={};
+  for(const method of ['get','getWithMetadata','getMetadata','set','setJSON','delete'])store[method]=(key,...args)=>rawStore[method](scoped(key),...args);
+  store.list=async(options)=>{const result=await rawStore.list({...options,prefix:scoped(options.prefix)});const prefix=productionId==='written-in-the-dark'?'':'productions/'+productionId+'/';return {...result,blobs:result.blobs.map(b=>({...b,key:prefix&&b.key.startsWith(prefix)?b.key.slice(prefix.length):b.key}))};};
+  let catalog=catalogs[productionId], film=productions.find(p=>p.id===productionId).name;
   const get=k=>store.get(k,{type:'json'});
   const set=(k,v)=>store.setJSON(k,v);
   const list=async prefix=>Promise.all((await store.list({prefix})).blobs.map(b=>get(b.key)));
@@ -75,8 +93,26 @@ export default async function handle(req) {
   if(post) requireThat(req.headers.get('origin')===url.origin,'Origin rejected.',403);
   const entry=id=>catalog.find(item=>item.id===id);
   if(!post&&action==='published'){
-    const items=(await list('published/')).filter(Boolean);
+    const items=productionId==='written-in-the-dark'?(await list('published/')).filter(Boolean):[];
+    for(const m of (await list('members/')).filter(Boolean)){
+      if(practiceName(m.name))continue;
+      const membership=assignments(m)[productionId], base=findProfile(m,productionId);
+      const id=base?.id||'member-'+m.id;
+      const index=items.findIndex(x=>x.id===id);if(index>=0)items.splice(index,1);
+      if(!membership){if(m.productions&&base)items.push({id,name:base.name,hidden:true});continue;}
+      const profile=await get('profiles/'+m.id), photo=await store.getMetadata('photos/'+m.id), fallback=sharedBase(m);
+      const bio=profile?.bio??fallback?.bio??'', image=photo?'https://heidimikacfilms.com/.netlify/functions/portal?action=memberPhoto&id='+m.id:fallback?.photo;
+      // New cards appear once both profile items exist; existing cards remain available as fallbacks.
+      if(bio.trim()&&image)items.push({id,name:m.name,role:membership.role||base?.role||'',bio,photo:image});
+    }
     return json(items,{'Access-Control-Allow-Origin':'*'});
+  }
+  if(!post&&action==='memberPhoto'){
+    const id=url.searchParams.get('id');requireThat(uuid.test(id),'Invalid image.');
+    const m=await get('members/'+id);
+    requireThat(m&&!practiceName(m.name)&&Object.keys(assignments(m)).length,'Image unavailable.',404);
+    const file=await store.getWithMetadata('photos/'+id,{type:'arrayBuffer'});requireThat(file,'Image unavailable.',404);
+    return new Response(file.data,{headers:{...headers,'Content-Type':file.metadata.mime,'Access-Control-Allow-Origin':'*'}});
   }
   if(!post&&action==='publicPhoto'){
     const version=url.searchParams.get('id');requireThat(/^[a-f0-9]{64}$/.test(version),'Invalid image.');
@@ -138,12 +174,19 @@ export default async function handle(req) {
   requireThat(admin?adminKeys.some(([id,k])=>id===self&&k&&k===session.adminDigest):await get('members/'+self),'Access revoked.',401);
   if(action==='logout'&&post){await store.delete(sessionKey);return json({}, {'Set-Cookie':cookie('',0)});}
   const onlyAdmin=()=>requireThat(admin,'Administrator access required.',403);
+  const account=admin?null:await get('members/'+self);
+  const memberProductions=account?assignments(account):null;
+  if(!admin&&action==='home'&&!url.searchParams.has('production')&&Object.keys(memberProductions).length){
+    productionId=Object.keys(memberProductions)[0];catalog=catalogs[productionId];film=productions.find(p=>p.id===productionId).name;
+  }
+  if(!admin&&!['home','bio','photo','choosePassword','welcomePlayed'].includes(action))requireThat(memberProductions[productionId],'You are not assigned to this production.',403);
+  if(!admin&&action==='home'&&Object.keys(memberProductions).length)requireThat(memberProductions[productionId],'You are not assigned to this production.',403);
   if(action==='calendarConnect'||action==='calendarEvents'){
     onlyAdmin(); requireThat(url.origin==='https://heidimikacfilms.com','Production only.',403);
     if(action==='calendarConnect'){requireThat(post,'Use the connect button.',405);return await beginCalendar(store,sessionKey);}
     return await calendarEvents(store);
   }
-  const target=async()=>{requireThat(uuid.test(uid)&& (admin||uid===self),'Access denied.',403);const m=await get('members/'+uid);requireThat(m,'Member unavailable.',404);return m};
+  const target=async()=>{requireThat(uuid.test(uid)&& (admin||uid===self),'Access denied.',403);const m=await get('members/'+uid);requireThat(m,'Member unavailable.',404);if(!['bio','photo','revoke','enrollments','resend'].includes(action))requireThat(assignments(m)[productionId],'Member is not assigned to this production.',403);return m};
   if(action==='choosePassword'&&post){
     const pass=await credential(body.password);
     const result=await store.setJSON('passwords/'+self,{...pass,adminDigest:session.adminDigest},{onlyIfNew:true});
@@ -168,9 +211,9 @@ export default async function handle(req) {
     const file=await store.getWithMetadata(key,{type:'arrayBuffer'});requireThat(file,'No agreement on file.',404);
     return new Response(file.data,{headers:{...headers,'Content-Type':'application/pdf','Content-Disposition':'attachment; filename="'+uid+'-offline-agreement.pdf"'}});
   }
-  const canReadResource=r=>r&&(admin||r.audience==null||r.audience.includes(self));
+  const canReadResource=r=>r&&(admin||(memberProductions[productionId]&&(r.audience==null||r.audience.includes(self))));
   async function recipients(mode,ids){
-    const roster=(await list('members/')).filter(Boolean);
+    const roster=(await list('members/')).filter(m=>m&&assignments(m)[productionId]);
     if(mode==='all'||mode==null)return {audience:null,recipients:roster};
     requireThat(mode==='selected'&&Array.isArray(ids)&&ids.length&&ids.every(id=>roster.some(m=>m.id===id)),'Select at least one current member.');
     return {audience:[...new Set(ids)],recipients:roster.filter(m=>ids.includes(m.id))};
@@ -182,28 +225,31 @@ export default async function handle(req) {
   }
   if(action==='welcomePlayed'&&post){await set('welcome-played/'+self,true);return json({ok:true});}
   if(action==='home'){
-    const members=admin?await list('members/'):[await get('members/'+self)];
-    const rows=await Promise.all(members.filter(Boolean).map(async m=>({...m,profile:await get('profiles/'+m.id),...(await (async()=>{const photo=await store.getMetadata('photos/'+m.id);return {hasPhoto:!!photo,photoName:photo?.metadata?.filename||''};})()),agreement:await get('agreements/'+m.id),tasks:(await list('tasks/'+m.id+'/')).filter(Boolean),activated:!!await get('passwords/'+m.id)})));
+    const accounts=(await list('members/')).filter(Boolean);
+    const members=admin?accounts.filter(m=>assignments(m)[productionId]):[account];
+    const rows=await Promise.all(members.filter(Boolean).map(async m=>({...m,role:assignments(m)[productionId]?.role||'',filmProfile:findProfile(m,productionId)?.id||'',productions:assignments(m),profile:await get('profiles/'+m.id),...(await (async()=>{const photo=await store.getMetadata('photos/'+m.id);return {hasPhoto:!!photo,photoName:photo?.metadata?.filename||''};})()),agreement:assignments(m)[productionId]?await get('agreements/'+m.id):null,tasks:assignments(m)[productionId]?(await list('tasks/'+m.id+'/')).filter(Boolean):[],activated:!!await get('passwords/'+m.id)})));
     for(const row of rows){
-      const base=entry(row.filmProfile);if(!base)continue;
+      const original=accounts.find(m=>m.id===row.id);
+      const base=sharedBase(original);if(!base)continue;
       const published=await get('published/'+base.id);
-      row.offlineStatus=(await store.getMetadata("offline/"+base.id))?.metadata?.status||null;
+      row.offlineStatus=assignments(original)[productionId]&&row.filmProfile?(await store.getMetadata("offline/"+row.filmProfile))?.metadata?.status||null:null;
       row.referencePhoto=published?.photo||base.photo;
       row.profile??={bio:published?.bio??base.bio};
     }
-    return json({welcome:await get('settings/welcome'),welcomePlayed:!!await get('welcome-played/'+self),catalog:admin?await Promise.all(catalog.map(async x=>({...x,offline:(await store.getMetadata('offline/'+x.id))?.metadata?.status||null}))):[],admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),members:rows.map(({ticket,...row})=>({...row,practice:practiceName(row.name)})),resources:(await list('resources/')).filter(canReadResource).map(r=>admin?r:({...r,audience:undefined})).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
+    return json({productionId,productions:admin?productions:productions.filter(p=>memberProductions[p.id]),accounts:admin?accounts.map(m=>({id:m.id,name:m.name,productions:assignments(m)})):[],agreementReady:productionId==='written-in-the-dark',welcome:await get('settings/welcome'),welcomePlayed:!!await get('welcome-played/'+self),catalog:admin?await Promise.all(catalog.map(async x=>({...x,offline:(await store.getMetadata('offline/'+x.id))?.metadata?.status||null}))):[],admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),members:rows.map(({ticket,...row})=>({...row,practice:practiceName(row.name)})),resources:(await list('resources/')).filter(canReadResource).map(r=>admin?r:({...r,audience:undefined})).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
   }
   if((action==='invite'||action==='resend')&&post){
     onlyAdmin();requireThat(production&&mailReady(),'Invitation email is awaiting sender setup. No invitation was sent.',503);
     let m;
     if(action==='invite'){
       const address=email(body.email);
-      requireThat(!(await list('members/')).some(m=>m?.email===address),'This person is already on the roster.');
+      requireThat(!(await list('members/')).some(m=>m?.email===address),'This person already has an account. Use Manage production assignments to add another production.');
       const hex=hash(address);
       // A revoked account must receive a fresh identity on re-invitation.
       const index='active-email/'+hex;
       m={id:randomUUID(),email:address,name:string(body.name),role:string(body.role)};
-      if(body.filmProfile){allowPublicProfile(m);const base=entry(body.filmProfile);requireThat(base,'Unknown film profile.');m.filmProfile=base.id;}
+      m.productions={[productionId]:{role:m.role,filmProfile:''}};
+      if(body.filmProfile){allowPublicProfile(m);const base=entry(body.filmProfile);requireThat(base,'Unknown film profile.');m.productions[productionId].filmProfile=base.id;if(productionId==='written-in-the-dark')m.filmProfile=base.id;}
       const reserved=await store.setJSON(index,{id:m.id},{onlyIfNew:true});requireThat(reserved.modified,'An invitation already exists.');
       try{await set('members/'+m.id,m);}catch(e){await store.delete(index);throw e;}
     }else m=await target();
@@ -214,13 +260,26 @@ export default async function handle(req) {
     await enqueue(store,m,'invite/'+hash(ticket),film+' — your cast & crew invitation','Hi '+m.name+',\n\nYou’re invited to '+film+' as '+m.role+'. Choose your password and finish your profile here:\n'+portalUrl+'#invite='+ticket+'\n\nThis invitation expires in seven days.',expires);
     return json({ok:true});
   }
+  if(action==='enrollments'&&post){
+    onlyAdmin();const m=await target();
+    requireThat(Array.isArray(body.productions)&&body.productions.every(id=>catalogs[id]),'Choose valid productions.');
+    const next={};
+    for(const id of new Set(body.productions)){
+      const role=string(body.roles?.[id]);
+      const base=findProfile(m,id);
+      if(base)requireThat(!(await list('members/')).some(other=>other&&other.id!==m.id&&assignments(other)[id]&&findProfile(other,id)?.id===base.id),'This film profile is already assigned to another account.',409);
+      next[id]={role,filmProfile:base?.id||''};
+    }
+    await set('members/'+m.id,{...m,productions:next,profileLinks:{...m.profileLinks,...Object.fromEntries(Object.entries(assignments(m)).filter(([,value])=>value.filmProfile).map(([id,value])=>[id,value.filmProfile])),...Object.fromEntries(Object.entries(next).filter(([,value])=>value.filmProfile).map(([id,value])=>[id,value.filmProfile]))}});return json({ok:true});
+  }
   if(action==='linkProfile'&&post){
-    onlyAdmin();const m=await target();allowPublicProfile(m);const base=entry(body.filmProfile);requireThat(base&&!m.filmProfile,'Choose an unlinked member and a valid film profile.');
-    requireThat(!(await list('members/')).some(x=>x?.filmProfile===base.id),'Profile already linked.');
-    await set('members/'+uid,{...m,filmProfile:base.id});return json({ok:true});
+    onlyAdmin();const m=await target();allowPublicProfile(m);const base=entry(body.filmProfile);requireThat(base&&!assignments(m)[productionId]?.filmProfile,'Choose an unlinked member and a valid film profile.');
+    requireThat(!(await list('members/')).some(x=>x&&assignments(x)[productionId]?.filmProfile===base.id),'Profile already linked.');
+    await set('members/'+uid,{...m,...(productionId==='written-in-the-dark'?{filmProfile:base.id}:{}),productions:{...assignments(m),[productionId]:{...assignments(m)[productionId],filmProfile:base.id}}});return json({ok:true});
   }
   if(action==='publishProfile'&&post){
-    onlyAdmin();const m=await target(),base=entry(m.filmProfile);allowPublicProfile(m);requireThat(base,'Link the film profile first.');
+    requireThat(productionId==='written-in-the-dark','Profiles now synchronize automatically.');
+    onlyAdmin();const m=await target(),base=findProfile(m,productionId);allowPublicProfile(m);requireThat(base,'Link the film profile first.');
     const previous=await get('published/'+base.id);
     const draft=await get('profiles/'+uid), image=await store.getWithMetadata('photos/'+uid,{type:'arrayBuffer'});
     requireThat(draft||image,'No submitted changes to publish.');
@@ -231,7 +290,7 @@ export default async function handle(req) {
   if(action==='task'&&post){
     onlyAdmin();const m=await target(),id=randomUUID(),title=string(body.title);
     await set('tasks/'+uid+'/'+id,{id,title,done:false});
-    await notify(m,id,'New production task','You have a new task for '+film+'.');return json({ok:true});
+    await notify(m,productionId+'/'+id,'New production task','You have a new task for '+film+'.');return json({ok:true});
   }
   if(action==='finishTask'&&post){
     await target();requireThat(uuid.test(body.task),'Invalid task.');
@@ -245,6 +304,7 @@ export default async function handle(req) {
   }
   if(['photo','resource','master'].includes(action)&&post){
     if(action==='photo')await target();else onlyAdmin();
+    if(action==='master')requireThat(productionId==='written-in-the-dark','A Wherein Lies Continue agreement template must be configured separately.');
     const bytes=Buffer.from(await req.arrayBuffer());
     requireThat(bytes.length>0&&bytes.length<=4*1024*1024,'Choose a file up to 4 MB.');
     const jpeg=bytes.subarray(0,3).toString('hex')==='ffd8ff',png=bytes.subarray(0,8).toString('hex')==='89504e470d0a1a0a';
@@ -260,6 +320,7 @@ export default async function handle(req) {
     requireThat(r,'File unavailable.',404);return new Response(r.data,{headers:{...headers,'Content-Type':r.metadata?.mime||'application/pdf','Content-Disposition':action==='photo'?'inline':'attachment; filename="production-document.pdf"'}});
   }
   if(action==='agreement'&&post){
+    requireThat(productionId==='written-in-the-dark','A Wherein Lies Continue agreement template must be configured separately.');
     onlyAdmin();const m=await target(),t={};
     for(const k of ['legal','character','credit','rate','date','start'])t[k]=string(body[k],120);
     requireThat(/^\d{1,5}(\.\d{1,2})?$/.test(t.rate),'Enter a daily rate.');
@@ -288,4 +349,5 @@ export default async function handle(req) {
   return json({error:'Unknown action.'});
  }catch(e){return Response.json({error:e.status?e.message:'The request could not be completed.'},{status:e.status||500,headers});}
 }
+
 
