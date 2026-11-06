@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import {emailHtml,deliver,enqueue} from '../netlify/lib/mail.mjs';
+import {refreshAgreement} from '../netlify/lib/signing.mjs';
+const records=new Map(),store={async get(k){return records.get(k)||null},async getWithMetadata(k){return records.has(k)?{data:records.get(k),etag:'1'}:null},async list({prefix}){return {blobs:[...records.keys()].filter(k=>k.startsWith(prefix)).map(key=>({key}))}},async setJSON(k,v,o){if(o?.onlyIfNew&&records.has(k))return {modified:false};records.set(k,v);return {modified:true}},async delete(k){records.delete(k)}};
+const link='https://heidimikacfilms.com/members/?production=wherein-lies-continue';
+assert(emailHtml({text:link,subject:'<unsafe>'}).includes('href="'+link+'"'));assert(emailHtml({text:link,subject:'<unsafe>'}).includes('&lt;unsafe&gt;'));
+assert(emailHtml({text:'https://heidimikacfilms.com/members/#reset='+'a'.repeat(64),subject:'Reset'}).includes('Reset your password'));
+process.env.RESEND_API_KEY='mock';process.env.HMF_MAIL_FROM='test@example.com';process.env.SIGNWELL_API_KEY='mock';
+records.set('members/a',{id:'a'});records.set('members/b',{id:'b'});
+await enqueue(store,{id:'a',email:'bad@example.com'},'event','Bad','Message');await enqueue(store,{id:'b',email:'good@example.com'},'event','Good','Message');
+let sends=0;globalThis.fetch=async(u,o)=>{if(o?.method==='POST'){sends++;return new Response(JSON.parse(o.body).to[0]==='bad@example.com'?'{}':'{"id":"sent-1"}',{status:JSON.parse(o.body).to[0]==='bad@example.com'?422:200});}return Response.json({last_event:'delivered'});};
+await deliver(store);assert.equal(sends,2,'A permanent error does not starve the next recipient');assert.equal([...records.keys()].filter(k=>k.startsWith('failed-mail/')).length,1);assert([...records.values()].some(v=>v.status==='delivered'));assert.equal([...records.keys()].filter(k=>k.startsWith('outbox/')).length,0);
+records.set('agreements/a',{id:'doc',status:'Waiting on actor'});globalThis.fetch=async()=>Response.json({status:'sent',recipients:[{id:'1',status:'signed'}]});assert.equal((await refreshAgreement(store,'agreements/a')).status,'Waiting on Heidi');
+globalThis.fetch=async()=>{throw Error('Network down')};assert.equal((await refreshAgreement(store,'agreements/a',true)).status,'Waiting on Heidi');assert((await store.get('agreements/a')).syncError);
+console.log('PASS: contextual email buttons, escaping, reset links, queue isolation, delivery logs and signing refresh failures. No external requests.');

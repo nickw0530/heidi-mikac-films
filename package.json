@@ -1,1 +1,11 @@
-{"private":true,"dependencies":{"@netlify/blobs":"^10.0.0","pdf-lib":"1.17.1"}}
+{
+  "private": true,
+  "dependencies": {
+    "@netlify/blobs": "^10.0.0",
+    "pdf-lib": "1.17.1",
+    "sharp": "^0.35.5"
+  },
+  "scripts": {
+    "test": "node tests/recovery.test.mjs && node tests/services.test.mjs"
+  }
+}

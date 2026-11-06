@@ -1,6 +1,9 @@
 const app=document.querySelector('#app'), message=document.querySelector('#message');
 const endpoint='/.netlify/functions/portal';
 const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let activeView='overview',peopleSearch='',peopleFilter='all',lastState;
+const dirty=()=>[...app.querySelectorAll('form[data-dirty]')];
+window.addEventListener('beforeunload',e=>{if(dirty().length){e.preventDefault();e.returnValue='';}});
 let selectedProduction=new URLSearchParams(location.search).get('production')||'';
 const url=(action,id='')=>endpoint+'?'+new URLSearchParams({action,id,...(selectedProduction?{production:selectedProduction}:{})});
 async function request(action,body,id='',suffix=''){
@@ -14,13 +17,14 @@ const file=(label,accept)=>'<label>'+label+'<input required type="file" name="fi
 const form=(action,fields,button,id='')=>'<form data-action="'+action+'" data-id="'+id+'">'+fields+'<button>'+button+'</button></form>';
 const panel=(name,body)=>'<details><summary>'+name+'</summary>'+body+'</details>';
 function profile(m){
- return panel('Headshot &amp; biography · '+(m.hasPhoto?'photo received':'photo needed')+' · '+(m.profile?.bio?'bio received':'bio needed'),form('bio','<label>Biography<textarea name="bio" rows="5" maxlength="5000">'+escape(m.profile?.bio)+'</textarea></label>','Save biography',m.id)+form('photo',file('Headshot · JPG or PNG, up to 4 MB','image/jpeg,image/png'),'Upload headshot',m.id)+'<button data-photo="'+m.id+'">View current headshot</button><div class="portrait"></div>');
+ return panel('Headshot &amp; biography · '+((m.hasPhoto||m.referencePhoto)?'photo received':'photo needed')+' · '+(m.profile?.bio?'bio received':'bio needed'),form('bio','<label>Biography<textarea name="bio" rows="5" maxlength="5000">'+escape(m.profile?.bio)+'</textarea></label>','Save biography',m.id)+form('photo',file('Headshot · JPG or PNG, up to 4 MB','image/jpeg,image/png'),'Upload headshot',m.id)+(m.hasPhoto?'<button data-photo="'+m.id+'">View current headshot</button><div class="portrait"></div>':''));
 }
 function agreement(m){
  const fields=input('legal','Legal name','text',m.name)+input('character','Character','text',m.role)+input('credit','Screen credit / professional name','text',m.name)+input('rate','Agreed daily rate (USD)')+input('date','Agreement date','date')+input('start','First shoot date','date');
  return panel('Prepare actor agreement','<form data-action="agreement" data-id="'+m.id+'">'+fields+'<button value="preview">Preview agreement</button><button value="send">Create signing request</button></form>');
 }
 const ticket=new URLSearchParams(location.hash.slice(1)).get('invite');
+const resetTicket=new URLSearchParams(location.hash.slice(1)).get('reset');
 const newPassword='<label>Choose a password (12 or more characters)<input name="password" type="password" required minlength="12" maxlength="128" autocomplete="new-password"></label>';
 function profileStatus(f,text){
  let note=f.querySelector('output');
@@ -28,17 +32,20 @@ function profileStatus(f,text){
  note.textContent=text;
 }
 app.addEventListener('input',e=>{
- const f=e.target.form;
+ const f=e.target.form;if(f)f.dataset.dirty='true';
  if(f?.dataset.action==='bio')profileStatus(f,'Unsaved changes');
  if(f?.dataset.action==='photo'&&e.target.files?.length)profileStatus(f,'Selected · '+e.target.files[0].name+' (not saved yet)');
 });
 function login(){
- app.innerHTML='<section><h2>Welcome back</h2>'+form('passwordLogin','<label>Email or admin name<input name="username" autocomplete="username" required></label><label>Password<input type="password" name="password" autocomplete="current-password" required></label>','Sign in')+'</section>'+panel('Already have an access key?',form('login',input('code','Existing access key','password'),'Continue to password setup'));
+ app.innerHTML='<section><h2>Welcome back</h2>'+form('passwordLogin','<label>Email or admin name<input name="username" autocomplete="username" required></label><label>Password<input type="password" name="password" autocomplete="current-password" required></label>','Sign in')+'</section>'+panel('Forgot your password?',form('requestReset','<label>Email or admin name<input name="username" autocomplete="username" required></label>','Email reset link'))+(new URLSearchParams(location.search).has('setup')?panel('First-time admin setup',form('login',input('code','Existing access key','password'),'Continue to password setup')):'');
 }
 async function load(){
+ const savedForms=dirty().map(f=>({action:f.dataset.action,id:f.dataset.id,node:f}));
+ const openDetails=[...app.querySelectorAll('details[open]')].map(d=>d.dataset.person||d.querySelector(':scope > summary')?.textContent);
+ if(resetTicket&&location.hash){app.innerHTML='<section><h2>Reset your password</h2>'+form('resetPassword',newPassword,'Save new password')+'</section>';return;}
  if(ticket&&location.hash){app.innerHTML='<section><h2>Welcome to the cast &amp; crew</h2><p>Choose your password to open your dashboard. Next time, sign in with the email where you received this invitation.</p>'+form('activate',newPassword,'Create my account')+'</section>';return;}
  let s;try{s=await request('home');}catch(e){if(e.status===401)return login();throw e;}
- let admin=s.admin;
+ lastState=s;let admin=s.admin;
  selectedProduction=s.productionId;
  const productionPicker=s.productions.length?'<label class="production-picker">Production<select data-production>'+s.productions.map(p=>'<option value="'+escape(p.id)+'" '+(p.id===s.productionId?'selected':'')+'>'+escape(p.name)+'</option>').join('')+'</select></label>':'<p>No productions assigned yet. Production will add them to your account.</p>';
  const assignmentsPanel=admin?panel('Manage production assignments ('+s.accounts.length+')','<p>One account, one shared biography and headshot. Check each production this person belongs to. Saved profiles appear automatically on the selected film websites. Named Test accounts stay private.</p>'+s.accounts.map(m=>panel(escape(m.name),'<form data-action="enrollments" data-id="'+m.id+'">'+s.productions.map(p=>{
@@ -52,7 +59,7 @@ async function load(){
  const people=[...available,...s.members];
  function outstanding(person){
   const source=library.find(x=>x.id===(person.filmProfile||person.id));
-  const status=source?.offline||person.agreement?.status||'No agreement on file';
+  const status=person.paperworkStatus||source?.offline||person.agreement?.status||'No agreement on file';
   const gaps=[];
   if(!(person.profile?.bio??source?.bio)?.trim())gaps.push('Bio');
   if(!(person.hasPhoto||person.referencePhoto||source?.photo))gaps.push('Headshot');
@@ -62,14 +69,14 @@ async function load(){
  }
  const audit=people.map(outstanding);
  const group=(label,items,detail)=>'<details class="audit-group"><summary>'+label+' <b>'+items.length+'</b></summary>'+(items.length?'<ul>'+items.map(x=>'<li><strong>'+escape(x.name)+'</strong><span>'+escape(detail(x))+'</span></li>').join('')+'</ul>':'<p>Nothing outstanding.</p>')+'</details>';
- const attention='<section class="audit"><small>'+escape(s.film)+' · PRODUCTION OFFICE</small><h2>Needs attention</h2><p>Open a category to see who needs follow-up.</p>'+group('No agreement on file',audit.filter(x=>!x.exempt&&x.status==='No agreement on file'),x=>x.status)+group('Paperwork in progress',audit.filter(x=>(!x.exempt||/waiting on Heidi/i.test(x.status))&&!['Complete','No agreement on file'].includes(x.status)),x=>x.status)+group('Missing profile items or open tasks',audit.filter(x=>x.gaps.length),x=>x.gaps.join(' · '))+'</section>';
+ const attention='<section class="audit"><small>'+escape(s.film)+' · PRODUCTION OFFICE</small><h2>Needs attention</h2><p>Open a category to see who needs follow-up.</p>'+group('No agreement on file',audit.filter(x=>!x.exempt&&x.status==='No agreement on file'),x=>x.status)+group('Paperwork in progress',audit.filter(x=>(!x.exempt||/waiting on Heidi/i.test(x.status))&&!['Complete','Not required','No agreement on file'].includes(x.status)),x=>x.status)+group('Missing profile items or open tasks',audit.filter(x=>x.gaps.length),x=>x.gaps.join(' · '))+'</section>';
  const directory=admin?'<p>Profiles available to invite</p>'+available.map(x=>panel(escape(x.name)+' · '+escape(x.role),'<img loading="lazy" alt="Approved headshot" src="'+escape(x.photo)+'"><p style="white-space:pre-line">'+escape(x.bio)+'</p>'+offline(x)+(s.mailReady?form('invite',input('email','Invitation email','email')+['name','role','filmProfile'].map((k,i)=>'<input type="hidden" name="'+k+'" value="'+escape([x.name,x.role,x.id][i])+'">').join(''),'Invite '+escape(x.name)):'') )).join(''):'';
  const linkControls=m=>m.practice?'':m.filmProfile?'<p>Biography and headshot sync automatically to assigned film websites.</p>':panel('Link an existing film profile',form('linkProfile','<label>Approved profile<select name="filmProfile" required><option value="">Select person</option>'+available.map(x=>'<option value="'+escape(x.id)+'" '+(x.name===m.name?'selected':'')+'>'+escape(x.name)+'</option>').join('')+'</select></label>','Confirm profile match',m.id));
  const audience='<fieldset><legend>Who should receive this?</legend><select name="audience" aria-label="Audience"><option value="all">Include all cast and crew</option><option value="selected">Select individuals</option></select><div data-recipients hidden>'+s.members.map(m=>'<label><input type="checkbox" style="width:auto;display:inline" name="recipient" value="'+escape(m.id)+'"> '+escape(m.name)+' · '+escape(m.role)+'</label>').join('')+'<small>Choose from the portal roster.</small></div></fieldset>';
  const setup=panel('Welcome video',form('welcomeSettings','<label>Direct video URL (MP4)<input type="url" name="video" value="'+escape(s.welcome?.video)+'"></label><label>Thumbnail URL (optional)<input type="url" name="poster" value="'+escape(s.welcome?.poster)+'"></label><label>English captions URL (.vtt)<input type="url" name="captions" value="'+escape(s.welcome?.captions)+'"></label>','Save welcome video'))+panel('Invite cast or crew',s.mailReady?form('invite',input('name','Name')+input('role','Character or crew title')+input('email','Email','email'),'Email invitation'):'<p>Email invitations are waiting for the production sender to be connected.</p>')+
  panel('Post a message',form('notice',audience+input('title','Subject')+'<label>Message<textarea required name="text"></textarea></label>','Post message'))+
  panel('Share a script or call sheet',form('resource',audience+input('title','Title and revision date')+file('Production PDF · up to 4 MB','application/pdf'),'Post file'))+
- (s.agreementReady?panel('Agreement setup',form('master',file('Approved contract master','application/pdf'),'Install agreement master')):'<p>Actor agreement sending for this production needs its own approved template.</p>');
+ (s.agreementSupported?panel('Agreement setup',form('master','<p>'+(s.agreementReady?'Approved master installed.':'Install the approved master before previewing or sending.')+'</p>'+file('Approved '+s.film+' contract master','application/pdf'),'Install agreement master')):'<p>Actor agreement sending for this production needs its own approved template.</p>');
  function tasks(m){return (m.tasks||[]).map(t=>'<div><strong>'+escape(t.title)+'</strong> '+(t.done?'Completed':admin?'Outstanding':form('finishTask','<input type="hidden" name="task" value="'+escape(t.id)+'">','Mark complete',m.id))+'</div>').join('');}
  function memberView(m){
   const items=[...(m.tasks||[])].sort((a,b)=>Number(a.done)-Number(b.done));
@@ -77,19 +84,35 @@ async function load(){
   const taskList=items.map(t=>'<div class="task-row '+(t.done?'task-done':'')+'"><span class="task-state">'+(t.done?'✓ Completed':'To do')+'</span><strong>'+escape(t.title)+'</strong>'+(t.done?'':form('finishTask','<input type="hidden" name="task" value="'+escape(t.id)+'">','Mark complete',m.id))+'</div>').join('');
   const photo=m.hasPhoto?url('photo',m.id):m.referencePhoto;
   return '<section class="member-panel member-tasks"><h2>My tasks</h2><p>'+(items.length?(count?count+' to complete':'All tasks completed.'):'No tasks assigned yet.')+'</p>'+taskList+'</section>'+
-   '<section class="member-panel member-paperwork"><h2>My documents</h2>'+(['Complete','Waiting on Heidi'].includes(m.offlineStatus||m.agreement?.status)?'<strong>Complete</strong><p>Your part is complete.</p>':m.offlineStatus?'<strong>'+escape(m.offlineStatus)+'</strong>':m.agreement?.id?'<strong>'+escape(m.agreement.status)+'</strong> <button data-status="'+m.id+'">Review my agreement</button>':'No documents assigned yet.')+'<div id="signing"></div></section>'+
+   '<section class="member-panel member-paperwork"><h2>My documents</h2>'+(m.memberPaperworkStatus==='Complete'?'<strong>Complete</strong><p>Your part is complete.</p>':m.offlineStatus?'<strong>'+escape(m.offlineStatus)+'</strong>':m.agreement?.id?'<strong>'+escape(m.agreement.status)+'</strong> <button data-status="'+m.id+'">Review my agreement</button>':'No documents assigned yet.')+'<div id="signing"></div></section>'+
    '<section class="member-panel member-profile"><h2>My profile</h2><p>Your biography and headshot are shared across your productions and appear on their film websites once both are saved.</p><p>'+escape(m.name)+' · '+escape(m.role)+'</p>'+(photo?'<img data-headshot src="'+escape(photo)+'" alt="Your headshot">':'')+form('photo',file(m.hasPhoto?'Replace your headshot':'Upload your headshot · JPG or PNG, up to 4 MB','image/jpeg,image/png'),'Save headshot',m.id)+form('bio','<label>My bio<textarea name="bio" rows="5" maxlength="5000">'+escape(m.profile?.bio)+'</textarea></label>','Save bio',m.id)+'</section>';
  }
- const rows=s.members.map(m=>'<section><h3>'+escape(admin?m.name:'My dashboard')+'</h3><p>'+escape(m.role)+' · '+escape(m.email)+'</p>'+
- (admin?'<strong>'+escape(m.agreement?.status||'Agreement not sent')+'</strong> ':'')+
+ const publication=m=>'<div class="publication-status"><h4>Website publishing</h4>'+Object.entries(m.publication||{}).map(([pid,p])=>'<p>'+escape(s.productions.find(x=>x.id===pid)?.name||pid)+' · <strong>'+escape(p.state)+'</strong></p>').join('')+(m.practice?'':form('publication','<label><input type="checkbox" name="visible" '+(m.publication?.[s.productionId]?.visible?'checked':'')+'> Show on this production’s website</label>','Save website visibility',m.id))+'</div>';
+ const recover=m=>m.agreement&&!m.agreement.id&&!m.agreement.cleared?panel('Recover interrupted signing request','<p>Check SignWell first. Link the existing document below, or confirm that no document was created. This action never sends a contract.</p>'+form('recoverAgreement','<label>Existing SignWell document ID (if found)<input name="documentId"></label><label><input type="checkbox" name="confirmAbsent"> I checked SignWell; no document exists</label>','Recover request',m.id)):'';
+ const rows=s.members.map(m=>'<details class="person-card" data-person="'+m.id+'" data-search="'+escape((m.name+' '+m.role+' '+m.email).toLowerCase())+'" data-gaps="'+escape(outstanding(m).gaps.join(' ').toLowerCase())+'" data-paperwork="'+escape(m.paperworkStatus)+'"><summary><img loading="lazy" alt="" src="'+escape(m.hasPhoto?url('photo',m.id):m.referencePhoto||'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 80%22%3E%3Crect width=%2264%22 height=%2280%22 fill=%22%2353434a%22/%3E%3Ccircle cx=%2232%22 cy=%2226%22 r=%2213%22 fill=%22%23cbb9be%22/%3E%3Cellipse cx=%2232%22 cy=%2269%22 rx=%2226%22 ry=%2223%22 fill=%22%23cbb9be%22/%3E%3C/svg%3E')+'"><span><b>'+escape(m.name)+'</b><span>'+escape(m.role)+'</span></span><span class="status-pill">'+escape(m.paperworkStatus)+'</span><span class="open-profile">Open profile</span></summary><section><h3>'+escape(admin?m.name:'My dashboard')+'</h3><p>'+escape(m.role)+' · '+escape(m.email)+'</p>'+
+ (admin?'<strong>'+escape(m.paperworkStatus)+'</strong> ':'')+
  (m.agreement?.id?'<button data-status="'+m.id+'">'+(admin?'Check agreement status':'Review my agreement')+'</button>':'')+
- (m.referencePhoto&&!m.hasPhoto?'<img data-headshot src="'+escape(m.referencePhoto)+'" alt="Approved film headshot">':'')+(admin?profile(m):(m.hasPhoto?'<img data-headshot alt="Your saved headshot" src="'+escape(url('photo',m.id))+'">':'')+form('photo',file(m.hasPhoto?'Replace your headshot':'Upload your headshot · JPG or PNG, up to 4 MB','image/jpeg,image/png'),'Save headshot',m.id)+form('bio','<label>My bio<textarea name="bio" rows="4" maxlength="5000" placeholder="Tell us a little about yourself.">'+escape(m.profile?.bio)+'</textarea></label>','Save bio',m.id))+
+ ((m.referencePhoto||m.hasPhoto)?'<img data-headshot src="'+escape(m.hasPhoto?url('photo',m.id):m.referencePhoto)+'" alt="Saved headshot">':'')+(admin?profile(m):(m.hasPhoto?'<img data-headshot alt="Your saved headshot" src="'+escape(url('photo',m.id))+'">':'')+form('photo',file(m.hasPhoto?'Replace your headshot':'Upload your headshot · JPG or PNG, up to 4 MB','image/jpeg,image/png'),'Save headshot',m.id)+form('bio','<label>My bio<textarea name="bio" rows="4" maxlength="5000" placeholder="Tell us a little about yourself.">'+escape(m.profile?.bio)+'</textarea></label>','Save bio',m.id))+
  tasks(m)+(admin&&m.filmProfile&&library.find(x=>x.id===m.filmProfile)?offline(library.find(x=>x.id===m.filmProfile)):'')+(admin?linkControls(m):'')+(admin?panel('Assign a task',form('task',input('title','What needs to be done?'),'Assign task',m.id)):'')+
- (admin&&s.agreementReady&&!m.agreement?agreement(m):'')+(admin?panel('Manage access',(!m.activated&&s.mailReady?form('resend','','Resend invitation',m.id):'')+form('revoke','','Revoke access',m.id)):'')+'</section>').join('');
+ (admin&&s.agreementReady&&(!m.agreement||m.agreement.cleared)?agreement(m):'')+(admin?publication(m)+recover(m)+(m.agreement?.syncError?'<p>'+escape(m.agreement.syncError)+'</p>':''):'')+(admin?panel('Manage access',(!m.activated&&s.mailReady?form('resend','','Resend invitation',m.id):'')+form('revoke','<label><input type="checkbox" name="keepPublic" checked> Keep public film credits and profile visible</label><p>Uncheck to also remove this account’s public profiles. Access is revoked immediately.</p>','Revoke portal access',m.id)):'')+'</section></details>').join('');
  const account=s.passwordSet?'':'<section><h2>Set your password</h2><p>Your sign-in name is <strong>'+escape(admin?s.self:s.members[0].email)+'</strong>.</p>'+form('choosePassword',newPassword,'Save my password')+'</section>';
  const updates=s.resources.map(r=>'<section><small>'+escape(new Date(r.created).toLocaleDateString())+' · '+escape(r.type)+'</small><h3>'+escape(r.title)+'</h3>'+(r.type==='PDF'?'<a href="'+escape(url('resource',r.id))+'">Download PDF</a>':'<p>'+escape(r.text)+'</p>')+'</section>').join('');
- app.innerHTML=productionPicker+'<p>'+escape(s.film)+' · '+(admin?'Production administrator':'Cast &amp; crew')+'</p>'+form('logout','','Sign out')+account+(admin?attention+'<h2>Production tools</h2>'+assignmentsPanel+setup+panel('Browse film profiles ('+people.length+')',directory):'')+'<h2>'+(admin?'Paperwork &amp; profiles':'My paperwork &amp; profile')+'</h2>'+(admin&&s.test?'<p>Signing is in test mode.</p>':'')+(rows||'<p>Your roster is empty. Use Invite cast or crew to get started.</p>')+'<div id="signing"></div><h2>Production board</h2>'+(updates||'<p>Scripts, call sheets and updates will appear here.</p>');
- if(admin) mountCalendar();
+ const counts='<div class="metrics"><div><b>'+people.length+'</b><span>Production roster</span></div><div><b>'+s.members.length+'</b><span>Portal accounts</span></div><div><b>'+s.members.filter(m=>m.activated).length+'</b><span>Activated accounts</span></div><div><b>'+s.members.filter(m=>!outstanding(m).gaps.some(x=>['Bio','Headshot'].includes(x))).length+'</b><span>Complete account profiles</span></div></div>';
+ const mailRows=[...(s.mailQueue||[]).map(x=>({...x,status:x.lastError?'Retry scheduled':'Queued'})),...(s.mailLog||[])];
+ const mailPanel='<section><h2>Email delivery</h2><p>Provider acceptance is not proof of inbox delivery. Delivery updates appear when available.</p>'+(mailRows.length?'<div class="table-scroll"><table><thead><tr><th>Recipient</th><th>Subject</th><th>Status</th></tr></thead><tbody>'+mailRows.map(x=>'<tr><td>'+escape(x.to)+'</td><td>'+escape(x.subject)+'</td><td>'+escape(x.status)+(x.lastError||x.error?'<br>'+escape(x.lastError||x.error):'')+'</td></tr>').join('')+'</tbody></table></div>':'<p>No email activity recorded yet.</p>')+'</section>';
+ const tabs=[['overview','Overview'],['people','People'],['documents','Documents'],['messages','Messages & files'],['calendar','Calendar'],['settings','Settings']];
+ if(admin){
+  app.innerHTML='<div class="office-header">'+productionPicker+form('logout','','Sign out')+'</div>'+account+'<nav class="office-nav" aria-label="Production office">'+tabs.map(([id,label])=>'<button type="button" data-view-button="'+id+'">'+label+'</button>').join('')+'<div class="office-layout"><div class="office-main">'+
+   '<div data-view="overview">'+counts+attention+'<p>Roster includes existing film profiles and portal accounts, counted once per linked person.</p></div>'+
+   '<div data-view="people"><h2>People & profiles <span class="count">'+people.length+'</span></h2><div class="people-toolbar"><label>Search name, role or email<input data-people-search type="search" value="'+escape(peopleSearch)+'"></label><label>Show<select data-people-filter><option value="all">All portal accounts</option><option value="missing">No agreement</option><option value="progress">Paperwork in progress</option><option value="bio">Missing bio</option><option value="headshot">Missing headshot</option><option value="tasks">Open tasks</option></select></label></div><p data-results></p>'+rows+'<h2>Browse film profiles <span class="count">'+people.length+'</span></h2>'+panel('Profiles without a portal account ('+available.length+')',directory)+'</div>'+
+   '<div data-view="documents"><h2>Paperwork</h2><p>'+(s.test?'Signing is in test mode.':'Live signing is enabled.')+'</p>'+attention+'<div class="document-list">'+s.members.map(m=>'<p><b>'+escape(m.name)+'</b> · '+escape(m.paperworkStatus)+' <button data-open-person="'+m.id+'">Open paperwork</button></p>').join('')+'</div><div data-tool-zone="documents"></div><div id="signing"></div></div>'+
+   '<div data-view="messages"><h2>Messages & files</h2><div data-tool-zone="messages"></div>'+mailPanel+'<h2>Production board</h2>'+updates+'</div>'+
+   '<div data-view="calendar"><h2>Production calendar</h2><p>Your connected Exchange calendar appears alongside this workspace. It shows the next 30 days in Eastern time.</p></div>'+
+   '<div data-view="settings"><h2>Production settings</h2>'+assignmentsPanel+panel('Revoked portal accounts',s.revokedAccounts?.length?s.revokedAccounts.filter(m=>m.productions[s.productionId]).map(m=>'<section><h3>'+escape(m.name)+'</h3><p>Portal access revoked. Public profile '+(m.keepPublic?'retained':'removed')+'.</p>'+form('publication','<label><input type="checkbox" name="visible" '+(m.keepPublic&&m.publication[s.productionId]!==false?'checked':'')+'> Show on this production website</label>','Save website visibility',m.id)+'</section>').join(''):'<p>No revoked accounts.</p>')+'<div data-tool-zone="settings"></div></div></div><div id="calendar-slot"></div></div>';
+  const staging=document.createElement('div');staging.innerHTML=setup;
+  for(const tool of [...staging.children]){const action=tool.querySelector('form')?.dataset.action;const zone=['notice','resource'].includes(action)?'messages':action==='master'?'documents':'settings';app.querySelector('[data-tool-zone="'+zone+'"]').append(tool);}
+  applyView();mountCalendar();
+ }
  if(!admin)app.innerHTML=productionPicker+'<p>Cast &amp; crew · One shared profile for all your productions</p>'+form('logout','','Sign out')+account+s.members.map(memberView).join('')+'<section class="member-panel member-board"><h2>Production board</h2>'+(updates||'<p>No updates posted yet.</p>')+'</section>';
  if(!admin&&s.welcome?.video){
   const section=document.createElement('section');section.className='member-panel';section.innerHTML='<small>CAST &amp; CREW ORIENTATION</small><h2>Welcome to Heidi Mikac Films</h2><div style="background:linear-gradient(125deg,#492430,#15161a);padding:16px"><video controls playsinline preload="metadata" style="width:100%;display:none"></video><button type="button">▶ Play welcome video</button></div><p data-audio hidden>Sound is off. Use the speaker control to hear Heidi and Nick.</p>';
@@ -116,11 +139,16 @@ async function load(){
   if(photo&&m.hasPhoto)profileStatus(photo,m.photoName?'Saved · '+m.photoName:'Headshot saved');
   if(bio&&m.profile)profileStatus(bio,'Saved');
  }
+ for(const saved of savedForms){const replacement=[...app.querySelectorAll('form')].find(f=>f.dataset.action===saved.action&&f.dataset.id===saved.id);if(replacement)replacement.replaceWith(saved.node);}
+ for(const d of app.querySelectorAll('details'))if(openDetails.includes(d.dataset.person||d.querySelector(':scope > summary')?.textContent))d.open=true;
+ applyPeopleFilter();
+
 }
 app.addEventListener('change',e=>{
  if(e.target.name==='audience')e.target.form.querySelector('[data-recipients]').hidden=e.target.value!=='selected';
  if(e.target.name==='production')e.target.form.elements['role_'+e.target.value].disabled=!e.target.checked;
  if(e.target.matches('[data-production]')){
+  if(dirty().length&&!confirm('You have unsaved changes. Switch productions and discard them?')){e.target.value=selectedProduction;return;}
   selectedProduction=e.target.value;
   history.replaceState(null,'',location.pathname+'?'+new URLSearchParams({production:selectedProduction}));
   app.textContent='Loading production…';
@@ -143,10 +171,17 @@ app.addEventListener('submit',async e=>{
   if(data.file&&data.file.size>4*1024*1024)throw Error('Choose a file up to 4 MB.');
   if(a==='agreement')data.preview=button.value==='preview';
   if(a==='activate')data.ticket=ticket;
+  if(a==='resetPassword')data.ticket=resetTicket;
+  if(a==='revoke')data.keepPublic=f.elements.keepPublic.checked;
+  if(a==='publication')data.visible=f.elements.visible.checked;
+  if(a==='recoverAgreement')data.confirmAbsent=f.elements.confirmAbsent.checked;
   if(a==='enrollments'){data.productions=new FormData(f).getAll('production');data.roles=Object.fromEntries(data.productions.map(id=>[id,data['role_'+id]]));}
   const targetParams=new URLSearchParams({title:data.title||''});
   if(data.audience){data.recipients=new FormData(f).getAll('recipient');if(data.audience==='selected'&&!data.recipients.length)throw Error('Select at least one recipient.');targetParams.set('audience',data.audience);for(const who of data.recipients)targetParams.append('recipient',who);}
   const result=await request(a,data.file||data,id,a==='offline'?'&'+new URLSearchParams({status:data.status}):a==='photo'?'&'+new URLSearchParams({filename:data.file.name}):data.title&&data.file?'&'+targetParams:'');
+  delete f.dataset.dirty;
+  if(a==='requestReset'){message.textContent=result.message;return;}
+  if(a==='resetPassword'){history.replaceState(null,'',location.pathname);login();message.textContent='Password updated. Sign in with your new password.';return;}
   if(a==='photo'||a==='bio'){
    const section=f.closest('section'), details=f.closest('details');
    if(a==='photo'){
@@ -158,6 +193,9 @@ app.addEventListener('submit',async e=>{
    if(a==='photo'&&f.elements.file.files[0]===data.file)profileStatus(f,'Saved · '+data.file.name);
    if(a==='bio')profileStatus(f,f.elements.bio.value===data.bio?'Saved':'Unsaved changes');
    message.textContent=(a==='photo'?'Headshot saved.':'Bio saved.')+' Your shared profile updates automatically on your assigned film websites once both a bio and headshot are available.';
+   const publicationInfo=await request('home');lastState=publicationInfo;
+   const member=publicationInfo.members.find(m=>m.id===id);
+   if(member)message.textContent+=' '+Object.entries(member.publication||{}).map(([pid,p])=>(publicationInfo.productions.find(x=>x.id===pid)?.name||pid)+': '+p.state).join(' · ');
    return;
   }
   if(a==='activate')history.replaceState(null,'',location.pathname);
@@ -178,18 +216,18 @@ load().catch(e=>{app.textContent='Portal unavailable.';message.textContent=e.mes
 
 async function mountCalendar(){
  const panel=document.createElement('aside');
- panel.hidden=true;
- app.prepend(panel);
+ panel.className='exchange-calendar';panel.innerHTML='<h2>Production calendar</h2><p>Loading calendar…</p>';
+ app.querySelector('#calendar-slot')?.append(panel);
  const refresh=async()=>{
   try{
    const result=await request('calendarEvents');
    if(!panel.isConnected)return;
    if(!result.connected){
-    if(!new URLSearchParams(location.search).has('connectCalendar'))return;
+
     const connect=document.createElement('button');
     connect.textContent='Connect Outlook calendar';
     connect.onclick=async()=>{try{location.assign((await request('calendarConnect',{})).url);}catch{message.textContent='Calendar connection unavailable. Check the production calendar secret.';}};
-    panel.replaceChildren(connect);
+    const heading=document.createElement('h2');heading.textContent='Production calendar';const note=document.createElement('p');note.textContent='Connect the hello@ Exchange calendar.';panel.replaceChildren(heading,note,connect);
    }else{
     const list=document.createElement('ul');
     for(const event of result.items){
@@ -204,9 +242,33 @@ async function mountCalendar(){
     panel.replaceChildren(heading,note,list);
    }
    panel.className='exchange-calendar';panel.hidden=false;
-  }catch{if(!panel.hidden)panel.textContent='Calendar unavailable. Refresh to try again.';}
+  }catch{panel.innerHTML='<h2>Production calendar</h2><p>Calendar unavailable. Your connection may need attention.</p>';const retry=document.createElement('button');retry.textContent='Try again';retry.onclick=refresh;const reconnect=document.createElement('button');reconnect.textContent='Reconnect Outlook';reconnect.onclick=async()=>{try{location.assign((await request('calendarConnect',{})).url);}catch(e){message.textContent=e.message;}};panel.append(retry,reconnect);}
+
  };
  await refresh();
  const timer=setInterval(()=>{if(!panel.isConnected)clearInterval(timer);else if(!document.hidden&&!panel.hidden)refresh();},300000);
 }
 
+
+
+function applyView(){
+ app.querySelectorAll('[data-view]').forEach(el=>el.hidden=el.dataset.view!==activeView);
+ app.querySelectorAll('[data-view-button]').forEach(b=>b.setAttribute('aria-current',b.dataset.viewButton===activeView?'page':'false'));
+}
+function applyPeopleFilter(){
+ const search=app.querySelector('[data-people-search]'),filter=app.querySelector('[data-people-filter]');if(!search)return;
+ search.value=peopleSearch;filter.value=peopleFilter;let shown=0;
+ for(const card of app.querySelectorAll('[data-person]')){
+  const status=card.dataset.paperwork,gaps=card.dataset.gaps;
+  const match=peopleFilter==='all'||peopleFilter==='missing'&&status==='No agreement on file'||peopleFilter==='progress'&&!['Complete','Not required','No agreement on file'].includes(status)||peopleFilter==='bio'&&gaps.includes('bio')||peopleFilter==='headshot'&&gaps.includes('headshot')||peopleFilter==='tasks'&&gaps.includes('tasks');
+  card.hidden=!match||!card.dataset.search.includes(peopleSearch.toLowerCase());if(!card.hidden)shown++;
+ }
+ app.querySelector('[data-results]').textContent=shown+' portal account'+(shown===1?'':'s')+' shown';
+}
+app.addEventListener('click',e=>{
+ const tab=e.target.closest('[data-view-button]');if(tab){activeView=tab.dataset.viewButton;applyView();}
+ const open=e.target.closest('[data-open-person]');if(open){activeView='people';peopleFilter='all';peopleSearch='';applyView();applyPeopleFilter();const card=app.querySelector('[data-person="'+open.dataset.openPerson+'"]');card.open=true;card.scrollIntoView({block:'start'});}
+});
+app.addEventListener('input',e=>{if(e.target.matches('[data-people-search]')){peopleSearch=e.target.value;applyPeopleFilter();}});
+app.addEventListener('change',e=>{if(e.target.form)e.target.form.dataset.dirty='true';if(e.target.matches('[data-people-filter]')){peopleFilter=e.target.value;applyPeopleFilter();}});
+setInterval(()=>{if(lastState&&!document.hidden&&!dirty().length&&!document.querySelector('#signing iframe'))load().catch(()=>{});},300000);

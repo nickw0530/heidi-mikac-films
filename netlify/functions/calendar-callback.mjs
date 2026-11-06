@@ -23,27 +23,33 @@ export async function begin(store,sessionKey){
 }
 
 async function exchange(fields){
- const response=await fetch(authority+'/token',{method:'POST',body:new URLSearchParams({client_id:client,client_secret:process.env.HMF_CALENDAR_CLIENT_SECRET,...fields})});
+ const response=await fetch(authority+'/token',{method:'POST',signal:AbortSignal.timeout(15000),body:new URLSearchParams({client_id:client,client_secret:process.env.HMF_CALENDAR_CLIENT_SECRET,...fields})});
  if(!response.ok)throw new Error('Microsoft authorization failed');
  return response.json();
 }
 async function graph(path,token){
- const response=await fetch('https://graph.microsoft.com/v1.0/'+path,{headers:{Authorization:'Bearer '+token}});
+ const response=await fetch('https://graph.microsoft.com/v1.0/'+path,{signal:AbortSignal.timeout(15000),headers:{Authorization:'Bearer '+token}});
  if(!response.ok)throw new Error('Calendar unavailable');
  return response.json();
 }
 async function upcoming(token){
  const now=Date.now();
  const params=new URLSearchParams({startDateTime:new Date(now).toISOString(),endDateTime:new Date(now+30*86400000).toISOString(),'$select':'subject,start,end,isAllDay,isCancelled','$orderby':'start/dateTime','$top':'100'});
- const data=await graph('me/calendarView?'+params,token);
- return data.value.filter(e=>!e.isCancelled).map(e=>({title:e.subject,start:e.start.dateTime,allDay:e.isAllDay}));
+ let path='me/calendarView?'+params;const events=[];
+ while(path){
+  const data=await graph(path,token);events.push(...data.value);
+  const next=data['@odata.nextLink'];
+  if(next){const u=new URL(next);if(u.origin!=='https://graph.microsoft.com'||!u.pathname.startsWith('/v1.0/'))throw Error('Unexpected calendar page');path=u.pathname.slice('/v1.0/'.length)+u.search;}else path=null;
+ }
+ return events.filter(e=>!e.isCancelled).map(e=>({title:e.subject,start:e.start.dateTime,end:e.end.dateTime,allDay:e.isAllDay}));
 }
 export async function events(store){
  const record=await store.getWithMetadata(binding,{type:'json'});
  if(!record)return Response.json({connected:false},{headers});
+ if(record.data.items&&record.data.cachedUntil>Date.now())return Response.json({connected:true,items:record.data.items},{headers});
  const token=await exchange({grant_type:'refresh_token',refresh_token:record.data.refresh});
  const items=await upcoming(token.access_token);
- if(token.refresh_token)await store.setJSON(binding,{refresh:token.refresh_token},{onlyIfMatch:record.etag});
+ await store.setJSON(binding,{refresh:token.refresh_token||record.data.refresh,items,cachedUntil:Date.now()+120000},{onlyIfMatch:record.etag});
  return Response.json({connected:true,items},{headers});
 }
 export default async function callback(req){
@@ -57,6 +63,7 @@ export default async function callback(req){
   if(!browser||!pending||pending.expires<Date.now()||pending.browser!==digest(browser))throw Error();
   const session=await store.get(pending.sessionKey,{type:'json'});
   if(!session?.admin||session.expires<Date.now()||!['Nick','Heidi'].includes(session.id)||session.adminDigest!==process.env['HMF_'+session.id.toUpperCase()+'_LOGIN_SHA256'])throw Error();
+  if((session.passwordVersion||0)!==((await store.get('passwords/'+session.id,{type:'json'}))?.version||0))throw Error();
   if(!(await store.setJSON(key,{expires:0},{onlyIfMatch:record.etag})).modified)throw Error();
   const token=await exchange({grant_type:'authorization_code',code:url.searchParams.get('code'),redirect_uri:redirect,code_verifier:pending.verifier});
   const user=await graph('me?$select=userPrincipalName',token.access_token);
@@ -66,3 +73,4 @@ export default async function callback(req){
   return new Response(null,{status:303,headers:{...headers,'Set-Cookie':cookie('',0),Location:'/members/'}});
  }catch{return new Response('Calendar connection did not finish. Return to the admin portal and connect again using hello@heidimikacfilms.com.',{status:400,headers});}
 }
+

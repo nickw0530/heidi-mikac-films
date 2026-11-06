@@ -100,7 +100,7 @@ export default [
   {
     "id": "nick",
     "name": "Nick Williams",
-    "role": "Recreational Therapist · Executive Producer · Digital Media & Website Development",
+    "role": "Recreational Therapist · Director of Operations & Digital Media · Executive Producer",
     "photo": "https://writteninthedarkfilm.com/assets/images/nick-williams.webp",
     "bio": "Nick Williams is an Indianapolis-based producer, media entrepreneur, podcast host, and founder of Mosaic Minds Media, an independent creative company built on a simple belief: everyone has a story worth telling, but not everyone has the platform to tell it.\n\nWith a background in business, leadership, and digital media, Williams has carved out an unconventional path into the entertainment industry, combining an entrepreneurial mindset with a lifelong fascination for storytelling, creativity, and the people behind both.\n\nAs co-creator and co-host of the Mosaic Minds Podcast, alongside Jason Yocum, Williams has engaged in conversations with filmmakers, musicians, athletes, entrepreneurs, and individuals whose lives and perspectives defy easy categorization. His approach favors authenticity over polish, curiosity over convention, and the kind of conversations that don't always fit neatly into a sound bite.\n\nThrough Mosaic Minds Media, Williams has expanded his work into independent film, digital production, creative branding, and web development. His collaborations with filmmaker Heidi Mikac include digital media, promotional, branding, and website development support for the independent productions Written in the Dark and Wherein Lies Continue.\n\nRather than limiting himself to a single corner of the entertainment industry, Williams is developing Mosaic Minds Media as a creative home for podcasting, independent filmmaking, and multimedia services.\n\nFor Williams, the goal isn't simply to create content. It's to help tell stories that deserve to be seen, heard, and remembered."
   },
@@ -243,8 +243,9 @@ export const whereinCatalog = [
   {
     "id": "nick-williams",
     "name": "Nick Williams",
-    "role": "Executive Producer · Digital Media & Website Development",
+    "role": "Director of Operations & Digital Media · Executive Producer",
     "photo": "https://whereinliescontinue.net/assets/nick-williams.webp",
     "bio": "Nick Williams is an Indianapolis-based producer, media entrepreneur, podcast host, and founder of Mosaic Minds Media, an independent creative company built on a simple belief: everyone has a story worth telling, but not everyone has the platform to tell it.\n\nWith a background in business, leadership, and digital media, Williams has carved out an unconventional path into the entertainment industry, combining an entrepreneurial mindset with a lifelong fascination for storytelling, creativity, and the people behind both.\n\nAs co-creator and co-host of the Mosaic Minds Podcast, alongside Jason Yocum, Williams has engaged in conversations with filmmakers, musicians, athletes, entrepreneurs, and individuals whose lives and perspectives defy easy categorization. His approach favors authenticity over polish, curiosity over convention, and the kind of conversations that don’t always fit neatly into a sound bite.\n\nThrough Mosaic Minds Media, Williams has expanded his work into independent film, digital production, creative branding, and web development. His collaborations with filmmaker Heidi Mikac include providing digital media, promotional, branding, and website development support for the independent productions Written in the Dark and Wherein Lies Continue.\n\nRather than limiting himself to a single corner of the entertainment industry, Williams is developing Mosaic Minds Media as a creative home for podcasting, independent filmmaking, and multimedia services.\n\nFor Williams, the goal isn’t simply to create content. It’s to help tell stories that deserve to be seen, heard, and remembered."
   }
 ];
+
