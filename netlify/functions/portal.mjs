@@ -2,7 +2,7 @@ import {COUNTERSIGN_EMAIL} from '../lib/signing.mjs';
 import {adminActions} from '../lib/admin-actions.mjs';
 import {begin as beginCalendar,events as calendarEvents} from './calendar-callback.mjs';
 import sharp from 'sharp';
-import {signwell,documentStatus,refreshAgreement} from '../lib/signing.mjs';
+import {signwell,documentStatus,refreshAgreement,completedAgreementPdf} from '../lib/signing.mjs';
 import {offlineSigningKey,prepareOfflineCountersign,refreshOfflineCountersign} from '../lib/offline-signing.mjs';
 import darkCatalog, {whereinCatalog} from '../lib/film-profiles.mjs';
 import { getStore } from '@netlify/blobs';
@@ -245,6 +245,44 @@ export default async function handle(req) {
     const result=await store.setJSON('passwords/'+self,{...pass,adminDigest:session.adminDigest},{onlyIfNew:true});
     requireThat(result.modified,'A password is already configured.');return json({ok:true});
   }
+  // A public roster name match alone does not establish ownership of private paperwork.
+  function documentProfile(member){
+    const assignment=assignments(member)[productionId];
+    if(!assignment)return null;
+    const id=assignment.filmProfile||member.profileLinks?.[productionId]||(productionId==='written-in-the-dark'?member.filmProfile:null);
+    return id&&entry(id)?id:null;
+  }
+  async function ownedProfile(member,accounts){
+    const id=documentProfile(member);
+    if(!id)return null;
+    const others=accounts||await list('members/');
+    return others.some(m=>active(m)&&m.id!==member.id&&documentProfile(m)===id)?null:id;
+  }
+  if(action==='memberDocument'){
+    requireThat(req.method==='GET','Use GET to download a document.',405);
+    const member=await target(),kind=url.searchParams.get('kind');
+    let bytes,label;
+    if(kind==='signed'){
+      const agreement=await refreshAgreement(store,'agreements/'+member.id);
+      requireThat(agreement?.id&&agreement.status==='Complete','No completed agreement available.',404);
+      bytes=await completedAgreementPdf(agreement.id);label='signed-agreement';
+    }else{
+      const profile=await ownedProfile(member);
+      requireThat(profile,'No linked paperwork available.',404);
+      if(kind==='countersigned'){
+        const agreement=await refreshOfflineCountersign({store:rawStore,profileId:profile,productionId});
+        requireThat(agreement?.id&&!agreement.sourceChanged&&agreement.status==='Complete','No countersigned agreement available.',404);
+        bytes=await completedAgreementPdf(agreement.id);label='countersigned-agreement';
+      }else{
+        requireThat(kind==='uploaded'||kind==='previous','Unknown document.',404);
+        const version=url.searchParams.get('version');
+        if(kind==='previous')requireThat(/^[a-f0-9]{64}$/.test(version||''),'Unknown document version.',404);
+        bytes=await store.get(kind==='uploaded'?'offline/'+profile:'offline-history/'+profile+'/'+version,{type:'arrayBuffer'});
+        requireThat(bytes,'Document unavailable.',404);label=kind==='uploaded'?'filed-agreement':'previous-agreement-'+version.slice(0,8);
+      }
+    }
+    return new Response(bytes,{headers:{...headers,'Content-Type':'application/pdf','Content-Disposition':'attachment; filename="'+productionId+'-'+label+'.pdf"'}});
+  }
   if(action==='offline'){
     onlyAdmin();requireThat(entry(uid),'Unknown film profile.');
     const key='offline/'+uid;
@@ -317,6 +355,21 @@ export default async function handle(req) {
       const published=base?await get('published/'+base.id):null;
       row.offlineStatus=assignments(original)[productionId]&&row.filmProfile?(await store.getMetadata("offline/"+row.filmProfile))?.metadata?.status||null:null;
       if(admin&&row.filmProfile)row.offlineSigning=offlineSigningSummary(await offlineFor(row.filmProfile));
+      if(!admin){
+        const profile=await ownedProfile(original,accounts);
+        row.documents=[];
+        if(row.agreement?.id&&row.agreement.status==='Complete')row.documents.push({kind:'signed',title:'Signed agreement and audit record'});
+        if(profile){
+          if(row.offlineStatus)row.documents.push({kind:'uploaded',title:'Filed agreement'});
+          const signed=await offlineFor(profile);
+          if(signed?.id&&!signed.sourceChanged&&signed.status==='Complete')row.documents.push({kind:'countersigned',title:'Countersigned agreement and audit record'});
+          const history=await store.list({prefix:'offline-history/'+profile+'/'});
+          for(const file of history.blobs){
+            const version=file.key.split('/').pop();
+            if(/^[a-f0-9]{64}$/.test(version))row.documents.push({kind:'previous',version,title:'Previous filed agreement · '+version.slice(0,8)});
+          }
+        }
+      }
       row.referencePhoto=published?.photo||base?.photo;
       row.profile??={bio:published?.bio??base?.bio??''};
       const memberPaperwork=row.offlineStatus||row.agreement?.status||(row.paperworkExempt?'Not required':'No agreement on file');

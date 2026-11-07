@@ -157,12 +157,25 @@ async function load(){
  (s.agreementSupported?panel('Agreement setup',form('master','<p>'+(s.agreementReady?'Approved master installed.':'Install the approved master before previewing or sending.')+'</p>'+file('Approved '+s.film+' contract master','application/pdf'),'Install agreement master')):'<p>Actor agreement sending for this production needs its own approved template.</p>');
  function tasks(m){return (m.tasks||[]).map(t=>'<div><strong>'+escape(t.title)+'</strong> '+(t.done?'Completed':admin?'Outstanding':form('finishTask','<input type="hidden" name="task" value="'+escape(t.id)+'">','Mark complete',m.id))+'</div>').join('');}
  function memberView(m){
+  const download=(href,title)=>'<li><a href="'+escape(href)+'">'+escape(title)+'</a></li>';
+  const documents=(m.documents||[]).map(d=>{
+   const params=new URLSearchParams({kind:d.kind});
+   if(d.version)params.set('version',d.version);
+   return download(url('memberDocument',m.id)+'&'+params,d.title);
+  });
+  for(const file of s.resources.filter(r=>r.type==='PDF'))documents.push(download(url('resource',file.id),file.title));
+  let agreementControls='';
+  if(m.agreement?.id){
+   const status=m.agreement.status;
+   agreementControls='<p>'+escape(status==='Waiting on Heidi'?'Your signature is saved. Waiting on Heidi.':status)+'</p>';
+   if(status==='Waiting on actor')agreementControls+='<button data-status="'+escape(m.id)+'">Review my agreement</button>';
+  }
   const items=[...(m.tasks||[])].sort((a,b)=>Number(a.done)-Number(b.done));
   const count=items.filter(t=>!t.done).length;
   const taskList=items.map(t=>'<div class="task-row '+(t.done?'task-done':'')+'"><span class="task-state">'+(t.done?'✓ Completed':'To do')+'</span><strong>'+escape(t.title)+'</strong>'+(t.done?'':form('finishTask','<input type="hidden" name="task" value="'+escape(t.id)+'">','Mark complete',m.id))+'</div>').join('');
   const photo=m.hasPhoto?url('photo',m.id):m.referencePhoto;
   return '<section class="member-panel member-tasks"><h2>My tasks</h2><p>'+(items.length?(count?count+' to complete':'All tasks completed.'):'No tasks assigned yet.')+'</p>'+taskList+'</section>'+
-   '<section class="member-panel member-paperwork"><h2>My documents</h2>'+(m.memberPaperworkStatus==='Complete'?'<strong>Complete</strong><p>Your part is complete.</p>':m.offlineStatus?'<strong>'+escape(m.offlineStatus)+'</strong>':m.agreement?.id?'<strong>'+escape(m.agreement.status)+'</strong> <button data-status="'+m.id+'">Review my agreement</button>':'No documents assigned yet.')+'<div id="signing"></div></section>'+
+   '<section class="member-panel member-paperwork"><h2>My documents</h2>'+agreementControls+(documents.length?'<ul>'+documents.join('')+'</ul>':(agreementControls?'':'<p>No documents assigned yet.</p>'))+'<div id="signing"></div></section>'+
    '<section class="member-panel member-profile"><h2>My profile</h2><p>Your biography and headshot are shared across your productions and appear on their film websites once both are saved.</p><p>'+escape(m.name)+' · '+escape(m.role)+'</p>'+(photo?'<img data-headshot src="'+escape(photo)+'" alt="Your headshot">':'')+form('photo',file(m.hasPhoto?'Replace your headshot':'Upload your headshot · JPG or PNG, up to 4 MB','image/jpeg,image/png'),'Save headshot',m.id)+form('bio','<label>My bio<textarea name="bio" rows="5" maxlength="5000">'+escape(m.profile?.bio)+'</textarea></label>','Save bio',m.id)+'</section>';
  }
  const publication=m=>'<div class="publication-status"><h4>Website publishing</h4>'+Object.entries(m.publication||{}).map(([pid,p])=>'<p>'+escape(s.productions.find(x=>x.id===pid)?.name||pid)+' · <strong>'+escape(p.state)+'</strong></p>').join('')+(m.practice?'':form('publication','<label><input type="checkbox" name="visible" '+(m.publication?.[s.productionId]?.visible?'checked':'')+'> Show on this production’s website</label>','Save website visibility',m.id))+'</div>';

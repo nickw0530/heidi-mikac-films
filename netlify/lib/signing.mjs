@@ -28,3 +28,14 @@ export async function refreshAgreement(store,key,force=false){
   await store.setJSON(key,next,{onlyIfMatch:record.etag});return next;
  }catch{const next={...a,checkedAt:Date.now(),syncError:'Status could not be refreshed. Last known status shown.'};await store.setJSON(key,next,{onlyIfMatch:record.etag});return next;}
 }
+
+export async function completedAgreementPdf(id){
+ if(!process.env.SIGNWELL_API_KEY)throw Object.assign(Error('Signing service unavailable.'),{status:503});
+ const response=await fetch('https://www.signwell.com/api/v1/documents/'+encodeURIComponent(id)+'/completed_pdf?audit_page=true&url_only=false',{
+  headers:{'X-Api-Key':process.env.SIGNWELL_API_KEY,Accept:'application/pdf'},signal:AbortSignal.timeout(20000)
+ });
+ if(!response.ok)throw Object.assign(Error('The signed PDF is unavailable from SignWell. Please try again shortly.'),{status:503});
+ const bytes=new Uint8Array(await response.arrayBuffer());
+ if(String.fromCharCode(...bytes.subarray(0,5))!=='%PDF-')throw Object.assign(Error('The signed PDF is still being prepared. Please try again shortly.'),{status:503});
+ return bytes;
+}
