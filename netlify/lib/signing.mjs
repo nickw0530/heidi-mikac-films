@@ -6,7 +6,7 @@ export async function signwell(path, body) {
 }
 export function documentStatus(d){
  const actor=d.recipients?.find(r=>String(r.id)==='1');
- return d.status==='completed'?'Complete':['declined','cancelled','expired'].includes(d.status)?d.status:actor?.status==='signed'?'Waiting on Heidi':'Waiting on actor';
+ return d.status==='completed'?'Complete':['declined','canceled','cancelled','expired','bounced','error'].includes(d.status)?d.status:(actor?.signed_at||['signed','completed'].includes(actor?.status))?'Waiting on Heidi':'Waiting on actor';
 }
 export async function refreshAgreement(store,key,force=false){
  const record=await store.getWithMetadata(key,{type:'json'}),a=record?.data;

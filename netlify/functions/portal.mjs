@@ -1,3 +1,4 @@
+import {adminActions} from '../lib/admin-actions.mjs';
 import {begin as beginCalendar,events as calendarEvents} from './calendar-callback.mjs';
 import sharp from 'sharp';
 import {signwell,documentStatus,refreshAgreement} from '../lib/signing.mjs';
@@ -335,7 +336,8 @@ export default async function handle(req) {
       const offlineSigning=offlineSigningSummary(await offlineFor(x.id));
       return {...x,offline,offlineSigning,paperworkStatus:offlineSigning?.status||offline||rows.find(row=>row.filmProfile===x.id)?.paperworkStatus||'No agreement on file'};
     })):[];
-    return json({productionId,productions:admin?productions:productions.filter(p=>memberProductions[p.id]),revokedAccounts:admin?allAccounts.filter(m=>m.revoked).map(m=>({id:m.id,name:m.name,keepPublic:m.keepPublic,productions:assignments(m),publication:m.publication||{}})):[],accounts:admin?accounts.map(m=>({id:m.id,name:m.name,productions:assignments(m)})):[],agreementReady:!!await store.getMetadata('contract/master'),agreementSupported:true,welcome:await get('settings/welcome'),welcomePlayed:!!await get('welcome-played/'+self),catalog:adminCatalog,admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),mailLog:admin?(await list('mail-log/')).filter(Boolean).sort((a,b)=>b.updated-a.updated).slice(0,30):[],mailQueue:admin?(await list('outbox/')).filter(Boolean).map(({to,subject,attempts,nextAttempt,lastError})=>({to,subject,attempts,nextAttempt,lastError})):[],members:rows.map(({ticket,...row})=>({...row,practice:practiceName(row.name)})),resources:(await list('resources/')).filter(canReadResource).map(r=>admin?r:({...r,audience:undefined})).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
+    const waiting=admin?(await adminActions(rawStore,productionId)).filter(a=>a.owner==='any'||a.owner===self):[];
+    return json({waiting,productionId,productions:admin?productions:productions.filter(p=>memberProductions[p.id]),revokedAccounts:admin?allAccounts.filter(m=>m.revoked).map(m=>({id:m.id,name:m.name,keepPublic:m.keepPublic,productions:assignments(m),publication:m.publication||{}})):[],accounts:admin?accounts.map(m=>({id:m.id,name:m.name,productions:assignments(m)})):[],agreementReady:!!await store.getMetadata('contract/master'),agreementSupported:true,welcome:await get('settings/welcome'),welcomePlayed:!!await get('welcome-played/'+self),catalog:adminCatalog,admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),mailLog:admin?(await list('mail-log/')).filter(Boolean).sort((a,b)=>b.updated-a.updated).slice(0,30):[],mailQueue:admin?(await list('outbox/')).filter(Boolean).map(({to,subject,attempts,nextAttempt,lastError})=>({to,subject,attempts,nextAttempt,lastError})):[],members:rows.map(({ticket,...row})=>({...row,practice:practiceName(row.name)})),resources:(await list('resources/')).filter(canReadResource).map(r=>admin?r:({...r,audience:undefined})).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
   }
   if((action==='invite'||action==='resend')&&post){
     onlyAdmin();requireThat(production&&mailReady(),'Invitation email is awaiting sender setup. No invitation was sent.',503);
@@ -390,6 +392,15 @@ export default async function handle(req) {
     onlyAdmin();const m=await target(),id=randomUUID(),title=string(body.title);
     await set('tasks/'+uid+'/'+id,{id,title,done:false});
     await notify(m,productionId+'/'+id,'New production task','You have a new task for '+film+'.');return json({ok:true});
+  }
+  if(action==='adminTask'&&post){
+    onlyAdmin();const owner=body.owner;requireThat(['Nick','Heidi','any'].includes(owner),'Select an administrator.');
+    const id=randomUUID();await set('tasks/'+owner+'/'+id,{id,title:string(body.title,160),done:false});return json({ok:true});
+  }
+  if(action==='finishAdminTask'&&post){
+    onlyAdmin();requireThat((body.owner===self||body.owner==='any')&&uuid.test(body.task),'Invalid task.');
+    const key='tasks/'+body.owner+'/'+body.task,t=await get(key);requireThat(t,'Task unavailable.');
+    await set(key,{...t,done:true});return json({ok:true});
   }
   if(action==='finishTask'&&post){
     await target();requireThat(uuid.test(body.task),'Invalid task.');
