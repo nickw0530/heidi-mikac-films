@@ -12,6 +12,64 @@ async function request(action,body,id='',suffix=''){
  if(!r.ok){let failure=await r.json().catch(()=>({}));throw Object.assign(new Error(failure.error||'Request failed.'),{status:r.status});}
  return r.headers.get('content-type')?.includes('application/json')?r.json():r.blob();
 }
+let signingLibrary,signingSession,signingRequest=0;
+function clearSigning(){
+ signingRequest++;
+ const session=signingSession;signingSession=null;
+ if(!session)return;
+ clearTimeout(session.timeout);
+ try{if(typeof session.embed?.close==='function')session.embed.close();}catch{}
+ session.container.replaceChildren();
+}
+function loadSigningLibrary(){
+ if(typeof window.SignWellEmbed==='function')return Promise.resolve(window.SignWellEmbed);
+ if(!signingLibrary)signingLibrary=new Promise((resolve,reject)=>{
+  const script=document.createElement('script');
+  const fail=()=>{clearTimeout(timer);script.remove();reject(Error('Signing window unavailable.'));};
+  const timer=setTimeout(fail,15000);
+  script.src='https://static.signwell.com/assets/embedded.js';script.async=true;
+  script.onload=()=>{clearTimeout(timer);if(typeof window.SignWellEmbed==='function')resolve(window.SignWellEmbed);else fail();};
+  script.onerror=fail;document.head.append(script);
+ }).catch(error=>{signingLibrary=null;throw error;});
+ return signingLibrary;
+}
+async function showSigning(rawUrl,id,container,attempt){
+ const u=new URL(rawUrl);
+ if(u.protocol!=='https:'||u.username||u.password||!(u.hostname==='signwell.com'||u.hostname.endsWith('.signwell.com')))throw Error('Unexpected signing address.');
+ const session={container};signingSession=session;
+ const options=document.createElement('p'),link=document.createElement('a'),refresh=document.createElement('button');
+ link.href=u.href;link.target='_blank';link.rel='noopener noreferrer';link.textContent='Open agreement in a new tab';
+ refresh.type='button';refresh.dataset.status=id;refresh.textContent='Refresh agreement status';
+ options.append(link,document.createTextNode(' '),refresh);
+ const note=document.createElement('p');note.setAttribute('role','status');note.textContent='Loading your agreement… You can open it in a new tab at any time.';
+ const mount=document.createElement('div');mount.id='signwell-agreement-'+attempt;
+ container.replaceChildren(options,note,mount);container.scrollIntoView({block:'start'});
+ const current=()=>signingSession===session&&attempt===signingRequest&&container.isConnected;
+ const fallback=()=>{
+  if(!current()||session.completed||session.failed)return;
+  session.failed=true;clearTimeout(session.timeout);
+  note.textContent='The agreement could not open inside the portal. Use “Open agreement in a new tab” above, then return here to refresh its status.';
+  try{if(typeof session.embed?.close==='function')session.embed.close();}catch{}
+  mount.replaceChildren();mount.hidden=true;
+ };
+ session.timeout=setTimeout(fallback,20000);
+ try{
+  const Embed=await loadSigningLibrary();if(!current()||session.failed)return;
+  session.embed=new Embed({url:u.href,containerId:mount.id,allowRedirect:false,events:{
+   documentLoaded:()=>{if(current()&&!session.failed&&!session.completed){clearTimeout(session.timeout);note.textContent='Review and sign your agreement below, or use the new-tab link above.';}},
+   error:fallback,
+   closed:()=>{if(current()&&!session.failed&&!session.completed){session.failed=true;clearTimeout(session.timeout);mount.replaceChildren();note.textContent='Signing window closed. Open the agreement in a new tab or refresh its status above.';}},
+   completed:async()=>{
+    if(!current()||session.failed||session.completed)return;
+    const production=selectedProduction;
+    session.completed=true;clearTimeout(session.timeout);note.textContent='Signature submitted. Refreshing your agreement status…';
+    try{await request('status',undefined,id);if(!current())return;await load();message.textContent='Agreement status refreshed.';}
+    catch{const text='Your signature was submitted. Refresh the page to check the latest agreement status.';if(current())note.textContent=text;if(selectedProduction===production&&container.isConnected)message.textContent=text;}
+   }
+  }});
+  session.embed.open();
+ }catch{fallback();}
+}
 const input=(name,label,type='text',value='')=>'<label>'+label+'<input required name="'+name+'" type="'+type+'" value="'+escape(value)+'"></label>';
 const file=(label,accept)=>'<label>'+label+'<input required type="file" name="file" accept="'+accept+'"></label>';
 const form=(action,fields,button,id='')=>'<form data-action="'+action+'" data-id="'+id+'">'+fields+'<button>'+button+'</button></form>';
@@ -37,9 +95,11 @@ app.addEventListener('input',e=>{
  if(f?.dataset.action==='photo'&&e.target.files?.length)profileStatus(f,'Selected · '+e.target.files[0].name+' (not saved yet)');
 });
 function login(){
+ clearSigning();
  app.innerHTML='<section><h2>Welcome back</h2>'+form('passwordLogin','<label>Email or admin name<input name="username" autocomplete="username" required></label><label>Password<input type="password" name="password" autocomplete="current-password" required></label>','Sign in')+'</section>'+panel('Forgot your password?',form('requestReset','<label>Email or admin name<input name="username" autocomplete="username" required></label>','Email reset link'))+(new URLSearchParams(location.search).has('setup')?panel('First-time admin setup',form('login',input('code','Existing access key','password'),'Continue to password setup')):'');
 }
 async function load(){
+ clearSigning();
  const savedForms=dirty().map(f=>({action:f.dataset.action,id:f.dataset.id,node:f}));
  const openDetails=[...app.querySelectorAll('details[open]')].map(d=>d.dataset.person||d.querySelector(':scope > summary')?.textContent);
  if(resetTicket&&location.hash){app.innerHTML='<section><h2>Reset your password</h2>'+form('resetPassword',newPassword,'Save new password')+'</section>';return;}
@@ -101,6 +161,7 @@ async function load(){
  const mailRows=[...(s.mailQueue||[]).map(x=>({...x,status:x.lastError?'Retry scheduled':'Queued'})),...(s.mailLog||[])];
  const mailPanel='<section><h2>Email delivery</h2><p>Provider acceptance is not proof of inbox delivery. Delivery updates appear when available.</p>'+(mailRows.length?'<div class="table-scroll"><table><thead><tr><th>Recipient</th><th>Subject</th><th>Status</th></tr></thead><tbody>'+mailRows.map(x=>'<tr><td>'+escape(x.to)+'</td><td>'+escape(x.subject)+'</td><td>'+escape(x.status)+(x.lastError||x.error?'<br>'+escape(x.lastError||x.error):'')+'</td></tr>').join('')+'</tbody></table></div>':'<p>No email activity recorded yet.</p>')+'</section>';
  const tabs=[['overview','Overview'],['people','People'],['documents','Documents'],['messages','Messages & files'],['calendar','Calendar'],['settings','Settings']];
+ clearSigning();
  if(admin){
   app.innerHTML='<div class="office-header">'+productionPicker+form('logout','','Sign out')+'</div>'+account+'<nav class="office-nav" aria-label="Production office">'+tabs.map(([id,label])=>'<button type="button" data-view-button="'+id+'">'+label+'</button>').join('')+'<div class="office-layout"><div class="office-main">'+
    '<div data-view="overview">'+counts+attention+'<p>Roster includes existing film profiles and portal accounts, counted once per linked person.</p></div>'+
@@ -205,11 +266,21 @@ app.addEventListener('submit',async e=>{
 });
 app.addEventListener('click',async e=>{
  const b=e.target;if(!b.dataset.status&&!b.dataset.photo)return;
+ let attempt;
  try{if(b.dataset.photo){const blob=await request('photo',undefined,b.dataset.photo);const img=new Image();img.alt='Submitted headshot';const src=URL.createObjectURL(blob);img.onload=()=>URL.revokeObjectURL(src);img.src=src;b.nextElementSibling.replaceChildren(img);return;}
- const r=await request('status',undefined,b.dataset.status);if(b.closest('.member-paperwork')&&r.status==='Waiting on Heidi'){r.status='Complete';b.hidden=true;}if(b.previousElementSibling?.tagName==='STRONG')b.previousElementSibling.textContent=r.status;message.textContent=r.status;
- if(r.url){const u=new URL(r.url);if(u.protocol!=='https:'||!(u.hostname==='signwell.com'||u.hostname.endsWith('.signwell.com')))throw Error('Unexpected signing address.');
- const frame=document.createElement('iframe');frame.title='Private SignWell signing session';frame.src=u.href;document.querySelector('#signing').replaceChildren(frame);frame.scrollIntoView();}
- }catch(e){message.textContent=e.message;}
+ const paperwork=b.closest('.member-paperwork');
+ const status=paperwork?.querySelector('strong')||(b.previousElementSibling?.tagName==='STRONG'?b.previousElementSibling:null);
+ const container=paperwork?.querySelector('#signing')||document.querySelector('#signing');
+ const review=paperwork?.querySelector('button[data-status]');
+ clearSigning();attempt=signingRequest;b.disabled=true;message.textContent='Checking agreement status…';
+ const r=await request('status',undefined,b.dataset.status);if(attempt!==signingRequest||!container?.isConnected)return;
+ if(paperwork&&r.status==='Waiting on Heidi'){r.status='Complete';if(review)review.hidden=true;}
+ if(status)status.textContent=r.status;message.textContent=r.status;
+ if(!container)return;
+ const view=container.closest('[data-view]');if(view&&r.url){activeView=view.dataset.view;applyView();}
+ if(r.url)await showSigning(r.url,b.dataset.status,container,attempt);
+ else{const note=document.createElement('p');note.textContent=r.status==='Complete'?'Your part is complete.':'No signing link is available for this account right now. Check the agreement status again or contact production.';container.replaceChildren(note);}
+ }catch(e){if(attempt===undefined||attempt===signingRequest)message.textContent=e.message;}finally{b.disabled=false;}
 });
 load().catch(e=>{app.textContent='Portal unavailable.';message.textContent=e.message;});
 
@@ -271,4 +342,4 @@ app.addEventListener('click',e=>{
 });
 app.addEventListener('input',e=>{if(e.target.matches('[data-people-search]')){peopleSearch=e.target.value;applyPeopleFilter();}});
 app.addEventListener('change',e=>{if(e.target.form)e.target.form.dataset.dirty='true';if(e.target.matches('[data-people-filter]')){peopleFilter=e.target.value;applyPeopleFilter();}});
-setInterval(()=>{if(lastState&&!document.hidden&&!dirty().length&&!document.querySelector('#signing iframe'))load().catch(()=>{});},300000);
+setInterval(()=>{if(lastState&&!document.hidden&&!dirty().length&&!signingSession)load().catch(()=>{});},300000);
