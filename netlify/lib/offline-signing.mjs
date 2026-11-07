@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
-import {signwell as providerSignwell} from './signing.mjs';
+import {COUNTERSIGN_EMAIL, signwell as providerSignwell} from './signing.mjs';
 
-export const HEIDI_COUNTERSIGN_EMAIL = 'heidi@heidimikacfilms.com';
+export const HEIDI_COUNTERSIGN_EMAIL = COUNTERSIGN_EMAIL;
 const mode = 'offline-countersign';
 const productions = new Set(['written-in-the-dark', 'wherein-lies-continue']);
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -126,7 +126,7 @@ export async function refreshOfflineCountersign({store, profileId, productionId,
   try {
     const document = await signwell('documents/' + encodeURIComponent(agreement.id) + '/');
     const recipient = document.recipients?.[0];
-    if (document.id !== agreement.id || document.recipients?.length !== 1 || String(recipient?.id) !== '2' || recipient?.email?.toLowerCase() !== HEIDI_COUNTERSIGN_EMAIL)
+    if (document.id !== agreement.id || document.recipients?.length !== 1 || String(recipient?.id) !== '2' || recipient?.email?.toLowerCase() !== (agreement.recipientEmail || 'heidi@heidimikacfilms.com').toLowerCase())
       throw fail('The provider document does not match the Heidi-only request.');
     // Authorized callers may extract transient provider URLs; those URLs are never persisted here.
     if (onDocument) await onDocument(document);

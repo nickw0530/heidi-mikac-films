@@ -1,5 +1,5 @@
 import {enqueue,portalUrl} from './mail.mjs';
-import {refreshAgreement} from './signing.mjs';
+import {COUNTERSIGN_EMAIL,refreshAgreement} from './signing.mjs';
 
 const productions=[
  {id:'written-in-the-dark',name:'Written in the Dark',prefix:'agreements/'},
@@ -9,7 +9,7 @@ const productions=[
 // A separate durable receipt prevents repeat notices after the mail worker
 // removes a successfully sent message from its outbox.
 export async function countersignatureNotice(store,agreement,member,production){
- const email=process.env.HMF_HEIDI_SIGNING_EMAIL;
+ const email=COUNTERSIGN_EMAIL;
  if(!email||!agreement?.id||agreement.status!=='Waiting on Heidi'||agreement.syncError)return false;
  const key='signing-notices/'+agreement.id+'/heidi';
  const receipt=await store.getWithMetadata(key,{type:'json'});
@@ -23,7 +23,7 @@ export async function countersignatureNotice(store,agreement,member,production){
 }
 
 export async function checkSigningNotices(store){
- if(!process.env.SIGNWELL_API_KEY||!process.env.HMF_HEIDI_SIGNING_EMAIL)return;
+ if(!process.env.SIGNWELL_API_KEY)return;
  const deadline=Date.now()+22000,rows=[];
  for(const production of productions){
   for await(const page of store.list({prefix:production.prefix,paginate:true})){

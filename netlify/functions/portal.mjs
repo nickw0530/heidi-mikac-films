@@ -1,3 +1,4 @@
+import {COUNTERSIGN_EMAIL} from '../lib/signing.mjs';
 import {adminActions} from '../lib/admin-actions.mjs';
 import {begin as beginCalendar,events as calendarEvents} from './calendar-callback.mjs';
 import sharp from 'sharp';
@@ -282,7 +283,7 @@ export default async function handle(req) {
     const ready=document&&!agreement.syncError&&!agreement.sourceChanged;
     const providerStatus=String(document?.status||'').trim().toLowerCase();
     const editUrl=ready&&providerStatus==='draft'?signingUrl(document.embedded_edit_url):null;
-    const url=ready&&self==='Heidi'&&agreement.status==='Waiting on Heidi'&&['sent','pending','viewed','in_progress'].includes(providerStatus)?signingUrl(document.recipients[0].embedded_signing_url):null;
+    const url=ready&&agreement.status==='Waiting on Heidi'&&['sent','pending','viewed','in_progress'].includes(providerStatus)?signingUrl(document.recipients[0].embedded_signing_url):null;
     return json({status:agreement.status,offlineSigning:offlineSigningSummary(agreement),editUrl,url});
   }
   const canReadResource=r=>r&&(admin||(memberProductions[productionId]&&(r.audience==null||r.audience.includes(self))));
@@ -437,7 +438,7 @@ export default async function handle(req) {
     for(const k of ['legal','character','credit','rate','date','start'])t[k]=string(body[k],120);
     requireThat(/^\d{1,5}(\.\d{1,2})?$/.test(t.rate),'Enter a daily rate.');
     for(const k of ['date','start'])requireThat(/^\d{4}-\d{2}-\d{2}$/.test(t[k])&&!Number.isNaN(Date.parse(t[k]))&&new Date(t[k]).toISOString().slice(0,10)===t[k],'Enter valid dates.');
-    const heidi=email(process.env.HMF_HEIDI_SIGNING_EMAIL||'');
+    const heidi=COUNTERSIGN_EMAIL;
     requireThat(heidi!==m.email,'Actor and countersigner need separate addresses.');
     const master=await store.get('contract/master',{type:'arrayBuffer'});requireThat(master,'Upload the private agreement master first.');
     const bytes=await packet(master,t);
@@ -445,13 +446,13 @@ export default async function handle(req) {
     requireThat(process.env.SIGNWELL_API_KEY,'Signing setup required.',503);
     const key='agreements/'+uid;
     const existing=await store.getWithMetadata(key,{type:'json'});
-    const lock=await store.setJSON(key,{status:'Preparing — check SignWell before retrying',created:Date.now(),name:film+' — '+t.legal},existing?.data?.cleared?{onlyIfMatch:existing.etag}:{onlyIfNew:true});
+    const lock=await store.setJSON(key,{status:'Preparing — check SignWell before retrying',created:Date.now(),recipientEmail:heidi,name:film+' — '+t.legal},existing?.data?.cleared?{onlyIfMatch:existing.etag}:{onlyIfNew:true});
     requireThat(lock.modified,'An agreement already exists or is being prepared.',409);
     let d;try{
       // Reciprocal checks after each route's reservation prevent simultaneous regular and offline requests.
       if(profile)requireThat(!await hasOfflineSigning(profile.id),'A countersignature request was prepared for the uploaded agreement. Use its existing request.',409);
-      d=await signwell('documents/',{test_mode:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes'),name:film+' — '+t.legal,files:[{name:'Actor Agreement.pdf',file_base64:bytes.toString('base64')}],recipients:[{id:'1',name:t.legal,email:m.email},{id:'2',name:'Heidi Mikac',email:heidi}],apply_signing_order:true,embedded_signing:true,text_tags:true});
-    }catch(e){await set(key,{status:'Needs recovery — check SignWell',created:Date.now(),name:film+' — '+t.legal});throw e;}
+      d=await signwell('documents/',{test_mode:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes'),name:film+' — '+t.legal,files:[{name:'Actor Agreement.pdf',file_base64:bytes.toString('base64')}],recipients:[{id:'1',name:t.legal,email:m.email},{id:'2',name:'Heidi Mikac',email:heidi,send_email:true}],apply_signing_order:true,embedded_signing:true,text_tags:true});
+    }catch(e){await set(key,{status:'Needs recovery — check SignWell',created:Date.now(),recipientEmail:heidi,name:film+' — '+t.legal});throw e;}
     await set(key,{id:d.id,status:'Waiting on actor',checkedAt:Date.now()});await notify(m,d.id,'Document ready for signature','Your agreement is ready to review and sign.');return json({ok:true});
   }
   if(action==='recoverAgreement'&&post){
@@ -460,7 +461,7 @@ export default async function handle(req) {
     if(body.documentId){
       const id=string(body.documentId);requireThat(uuid.test(id),'Enter the SignWell document ID.');
       const d=await signwell('documents/'+id+'/');
-      requireThat(d.name?.startsWith(film+' — ')&&d.recipients?.some(r=>String(r.id)==='1'&&r.email?.toLowerCase()===m.email)&&d.recipients?.some(r=>String(r.id)==='2'&&r.email?.toLowerCase()===process.env.HMF_HEIDI_SIGNING_EMAIL?.toLowerCase()),'Document does not match this person and production.');
+      requireThat(d.name?.startsWith(film+' — ')&&d.recipients?.some(r=>String(r.id)==='1'&&r.email?.toLowerCase()===m.email)&&d.recipients?.some(r=>String(r.id)==='2'&&r.email?.toLowerCase()===(rec.data.recipientEmail||process.env.HMF_HEIDI_SIGNING_EMAIL||'heidi@heidimikacfilms.com').toLowerCase()),'Document does not match this person and production.');
       requireThat((await store.setJSON(key,{id,status:documentStatus(d),checkedAt:Date.now()},{onlyIfMatch:rec.etag})).modified,'Record changed; reload.');
     }else{
       requireThat(body.confirmAbsent===true,'Check SignWell and confirm no document exists first.');
@@ -476,7 +477,7 @@ export default async function handle(req) {
     const [actor,producer]=['1','2'].map(id=>d.recipients?.find(r=>String(r.id)===id));
     const status=documentStatus(d);
     await set('agreements/'+uid,{id:a.id,status,checkedAt:Date.now()});
-    const signer=admin?(self==='Heidi'&&status==='Waiting on Heidi'?producer:null):(status==='Waiting on actor'?actor:null);
+    const signer=admin?(status==='Waiting on Heidi'?producer:null):(status==='Waiting on actor'?actor:null);
     return json({status,url:signer?.embedded_signing_url||null});
   }
   return json({error:'Unknown action.'});

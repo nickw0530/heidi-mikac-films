@@ -1,3 +1,5 @@
+export const COUNTERSIGN_EMAIL = 'hello@heidimikacfilms.com';
+
 export async function signwell(path, body) {
  if(!process.env.SIGNWELL_API_KEY)throw Object.assign(Error('Signing setup required.'),{status:503});
  const response=await fetch('https://www.signwell.com/api/v1/'+path,{method:body?'POST':'GET',signal:AbortSignal.timeout(15000),headers:{'X-Api-Key':process.env.SIGNWELL_API_KEY,'Content-Type':'application/json'},body:body&&JSON.stringify(body)});
