@@ -79,7 +79,7 @@ function profile(m){
 }
 function agreement(m){
  const fields=input('legal','Legal name','text',m.name)+input('character','Character','text',m.role)+input('credit','Screen credit / professional name','text',m.name)+input('rate','Agreed daily rate (USD)')+input('date','Agreement date','date')+input('start','First shoot date','date');
- return panel('Prepare actor agreement','<form data-action="agreement" data-id="'+m.id+'">'+fields+'<button value="preview">Preview agreement</button><button value="send">Create signing request</button></form>');
+ return panel('Prepare agreement for '+escape(lastState.film),'<form data-action="agreement" data-id="'+m.id+'">'+fields+'<button value="preview">Preview agreement</button><button value="send">Create signing request</button></form>');
 }
 const ticket=new URLSearchParams(location.hash.slice(1)).get('invite');
 const resetTicket=new URLSearchParams(location.hash.slice(1)).get('reset');
@@ -108,6 +108,7 @@ async function load(){
  lastState=s;let admin=s.admin;
  selectedProduction=s.productionId;
  const productionPicker=s.productions.length?'<label class="production-picker">Production<select data-production>'+s.productions.map(p=>'<option value="'+escape(p.id)+'" '+(p.id===s.productionId?'selected':'')+'>'+escape(p.name)+'</option>').join('')+'</select></label>':'<p>No productions assigned yet. Production will add them to your account.</p>';
+ const reviews=(s.productionReviews||[]).map(r=>panel(escape(r.name),'<p>'+escape(r.bio||'Biography needed')+'</p>'+(r.photo?'<img alt="Headshot submitted for approval" style="width:8rem;max-width:100%" src="'+escape(r.photo==='uploaded'?url('photo',r.id)+'&v='+r.revision:r.photo)+'">':'<p>Headshot needed</p>')+'<form data-action="reviewProduction" data-id="'+escape(r.id)+'"><input type="hidden" name="requestId" value="'+escape(r.requestId)+'"><input type="hidden" name="revision" value="'+escape(r.revision)+'"><label>Character or crew title<input required name="role" value="'+escape(r.role)+'"></label><button value="approve" '+(r.bio.trim()&&r.photo?'':'disabled')+'>Approve for '+escape(s.film)+'</button> <button formnovalidate value="decline">Decline</button></form>')).join('');
  const assignmentsPanel=admin?panel('Manage production assignments ('+s.accounts.length+')','<p>One account, one shared biography and headshot. Check each production this person belongs to. Saved profiles appear automatically on the selected film websites. Named Test accounts stay private.</p>'+s.accounts.map(m=>panel(escape(m.name),'<form data-action="enrollments" data-id="'+m.id+'">'+s.productions.map(p=>{
   const assigned=m.productions[p.id];
   const role=assigned?.role||'';
@@ -144,7 +145,7 @@ async function load(){
   return {name:person.name,status,gaps,exempt};
  }
  const waiting=s.waiting||[];
- const personal='<section class="audit" style="border:2px solid #a35c68;padding:1.25rem;margin-bottom:1.5rem" aria-labelledby="waiting-heading"><h2 id="waiting-heading">Waiting on you <span class="count">'+waiting.length+'</span></h2><p>'+escape(s.self)+' · '+escape(s.film)+'</p>'+(waiting.length?'<ul>'+waiting.map(a=>'<li><strong>'+escape(a.label)+'</strong> · '+(a.owner==='any'?'Any admin':'Assigned to you')+' '+(a.taskId?form('finishAdminTask','<input type="hidden" name="owner" value="'+escape(a.owner)+'"><input type="hidden" name="task" value="'+escape(a.taskId)+'">','Mark done'):a.member?'<button data-open-person="'+escape(a.member)+'">Open paperwork</button>':'<button data-view-button="'+escape(a.view)+'">Open documents</button>')+'</li>').join('')+'</ul>':'<p>You’re caught up for this production.</p>')+panel('Assign an admin task',form('adminTask',input('title','Task','text')+'<label>Assigned to<select name="owner"><option value="any">Any admin</option><option>Nick</option><option>Heidi</option></select></label>','Assign task'))+'</section>';
+ const personal='<section class="audit" style="border:2px solid #a35c68;padding:1.25rem;margin-bottom:1.5rem" aria-labelledby="waiting-heading"><h2 id="waiting-heading">Waiting on you <span class="count">'+waiting.length+'</span></h2><p>'+escape(s.self)+' · '+escape(s.film)+'</p>'+(waiting.length?'<ul>'+waiting.map(a=>'<li><strong>'+escape(a.label)+'</strong> · '+(a.owner==='any'?'Any admin':'Assigned to you')+' '+(a.taskId?form('finishAdminTask','<input type="hidden" name="owner" value="'+escape(a.owner)+'"><input type="hidden" name="task" value="'+escape(a.taskId)+'">','Mark done'):a.member?'<button data-open-person="'+escape(a.member)+'">Open paperwork</button>':'<button data-view-button="'+escape(a.view)+'">'+(a.view==='settings'?'Review request':'Open documents')+'</button>')+'</li>').join('')+'</ul>':'<p>You’re caught up for this production.</p>')+panel('Assign an admin task',form('adminTask',input('title','Task','text')+'<label>Assigned to<select name="owner"><option value="any">Any admin</option><option>Nick</option><option>Heidi</option></select></label>','Assign task'))+'</section>';
  const audit=people.map(outstanding);
  const group=(label,items,detail)=>'<details class="audit-group"><summary>'+label+' <b>'+items.length+'</b></summary>'+(items.length?'<ul>'+items.map(x=>'<li><strong>'+escape(x.name)+'</strong><span>'+escape(detail(x))+'</span></li>').join('')+'</ul>':'<p>Nothing outstanding.</p>')+'</details>';
  const attention='<section class="audit"><small>'+escape(s.film)+' · PRODUCTION OFFICE</small><h2>Needs attention</h2><p>Open a category to see who needs follow-up.</p>'+group('No agreement on file',audit.filter(x=>!x.exempt&&x.status==='No agreement on file'),x=>x.status)+group('Paperwork in progress',audit.filter(x=>(!x.exempt||/waiting on Heidi/i.test(x.status))&&!['Complete','Not required','No agreement on file'].includes(x.status)),x=>x.status)+group('Missing profile items or open tasks',audit.filter(x=>x.gaps.length),x=>x.gaps.join(' · '))+'</section>';
@@ -157,6 +158,12 @@ async function load(){
  (s.agreementSupported?panel('Agreement setup',form('master','<p>'+(s.agreementReady?'Approved master installed.':'Install the approved master before previewing or sending.')+'</p>'+file('Approved '+s.film+' contract master','application/pdf'),'Install agreement master')):'<p>Actor agreement sending for this production needs its own approved template.</p>');
  function tasks(m){return (m.tasks||[]).map(t=>'<div><strong>'+escape(t.title)+'</strong> '+(t.done?'Completed':admin?'Outstanding':form('finishTask','<input type="hidden" name="task" value="'+escape(t.id)+'">','Mark complete',m.id))+'</div>').join('');}
  function memberView(m){
+  const choices=m.practice?'':form('requestProductions','<fieldset><legend>Productions for my bio and headshot</legend>'+s.productionChoices.map(p=>{
+   const approved=!!m.productions[p.id]&&m.publication?.[p.id]?.visible!==false;
+   const pending=!!m.productionRequests?.[p.id];
+   return '<label><input style="width:auto;display:inline" type="checkbox" name="selection" value="'+escape(p.id)+'" '+(approved||pending?'checked ':'')+(approved?'disabled':'')+'> '+escape(p.name)+(approved?' · Approved':pending?' · Awaiting approval':'')+'</label>';
+  }).join('')+'</fieldset>','Save production requests');
+
   const download=(href,title)=>'<li><a href="'+escape(href)+'">'+escape(title)+'</a></li>';
   const documents=(m.documents||[]).map(d=>{
    const params=new URLSearchParams({kind:d.kind});
@@ -176,7 +183,7 @@ async function load(){
   const photo=m.hasPhoto?url('photo',m.id):m.referencePhoto;
   return '<section class="member-panel member-tasks"><h2>My tasks</h2><p>'+(items.length?(count?count+' to complete':'All tasks completed.'):'No tasks assigned yet.')+'</p>'+taskList+'</section>'+
    '<section class="member-panel member-paperwork"><h2>My documents</h2>'+agreementControls+(documents.length?'<ul>'+documents.join('')+'</ul>':(agreementControls?'':'<p>No documents assigned yet.</p>'))+'<div id="signing"></div></section>'+
-   '<section class="member-panel member-profile"><h2>My profile</h2><p>Your biography and headshot are shared across your productions and appear on their film websites once both are saved.</p><p>'+escape(m.name)+' · '+escape(m.role)+'</p>'+(photo?'<img data-headshot src="'+escape(photo)+'" alt="Your headshot">':'')+form('photo',file(m.hasPhoto?'Replace your headshot':'Upload your headshot · JPG or PNG, up to 4 MB','image/jpeg,image/png'),'Save headshot',m.id)+form('bio','<label>My bio<textarea name="bio" rows="5" maxlength="5000">'+escape(m.profile?.bio)+'</textarea></label>','Save bio',m.id)+'</section>';
+   '<section class="member-panel member-profile"><h2>My profile</h2><p>Your biography and headshot are shared across your approved productions.</p>'+choices+'<p>'+escape(m.name)+' · '+escape(m.role)+'</p>'+(photo?'<img data-headshot src="'+escape(photo)+'" alt="Your headshot">':'')+form('photo',file(m.hasPhoto?'Replace your headshot':'Upload your headshot · JPG or PNG, up to 4 MB','image/jpeg,image/png'),'Save headshot',m.id)+form('bio','<label>My bio<textarea name="bio" rows="5" maxlength="5000">'+escape(m.profile?.bio)+'</textarea></label>','Save bio',m.id)+'</section>';
  }
  const publication=m=>'<div class="publication-status"><h4>Website publishing</h4>'+Object.entries(m.publication||{}).map(([pid,p])=>'<p>'+escape(s.productions.find(x=>x.id===pid)?.name||pid)+' · <strong>'+escape(p.state)+'</strong></p>').join('')+(m.practice?'':form('publication','<label><input type="checkbox" name="visible" '+(m.publication?.[s.productionId]?.visible?'checked':'')+'> Show on this production’s website</label>','Save website visibility',m.id))+'</div>';
  const recover=m=>m.agreement&&!m.agreement.id&&!m.agreement.cleared?panel('Recover interrupted signing request','<p>Check SignWell first. Link the existing document below, or confirm that no document was created. This action never sends a contract.</p>'+form('recoverAgreement','<label>Existing SignWell document ID (if found)<input name="documentId"></label><label><input type="checkbox" name="confirmAbsent"> I checked SignWell; no document exists</label>','Recover request',m.id)):'';
@@ -200,7 +207,7 @@ async function load(){
    '<div data-view="documents"><h2>Paperwork</h2><p>'+(s.test?'Signing is in test mode.':'Live signing is enabled.')+'</p>'+attention+uploadedDocuments+'<div class="document-list">'+s.members.map(m=>'<p><b>'+escape(m.name)+'</b> · '+escape(m.paperworkStatus)+' <button data-open-person="'+m.id+'">Open paperwork</button></p>').join('')+'</div><div data-tool-zone="documents"></div><div id="signing"></div></div>'+
    '<div data-view="messages"><h2>Messages & files</h2><div data-tool-zone="messages"></div>'+mailPanel+'<h2>Production board</h2>'+updates+'</div>'+
    '<div data-view="calendar"><h2>Production calendar</h2><p>Your connected Exchange calendar appears alongside this workspace. It shows the next 30 days in Eastern time.</p></div>'+
-   '<div data-view="settings"><h2>Production settings</h2>'+assignmentsPanel+panel('Revoked portal accounts',s.revokedAccounts?.length?s.revokedAccounts.filter(m=>m.productions[s.productionId]).map(m=>'<section><h3>'+escape(m.name)+'</h3><p>Portal access revoked. Public profile '+(m.keepPublic?'retained':'removed')+'.</p>'+form('publication','<label><input type="checkbox" name="visible" '+(m.keepPublic&&m.publication[s.productionId]!==false?'checked':'')+'> Show on this production website</label>','Save website visibility',m.id)+'</section>').join(''):'<p>No revoked accounts.</p>')+'<div data-tool-zone="settings"></div></div></div><div id="calendar-slot"></div></div>';
+   '<div data-view="settings"><h2>Production settings</h2>'+(reviews?'<section><h3>Production requests</h3>'+reviews+'</section>':'')+assignmentsPanel+panel('Revoked portal accounts',s.revokedAccounts?.length?s.revokedAccounts.filter(m=>m.productions[s.productionId]).map(m=>'<section><h3>'+escape(m.name)+'</h3><p>Portal access revoked. Public profile '+(m.keepPublic?'retained':'removed')+'.</p>'+form('publication','<label><input type="checkbox" name="visible" '+(m.keepPublic&&m.publication[s.productionId]!==false?'checked':'')+'> Show on this production website</label>','Save website visibility',m.id)+'</section>').join(''):'<p>No revoked accounts.</p>')+'<div data-tool-zone="settings"></div></div></div><div id="calendar-slot"></div></div>';
   const staging=document.createElement('div');staging.innerHTML=setup;
   for(const tool of [...staging.children]){const action=tool.querySelector('form')?.dataset.action;const zone=['notice','resource'].includes(action)?'messages':action==='master'?'documents':'settings';app.querySelector('[data-tool-zone="'+zone+'"]').append(tool);}
   applyView();mountCalendar();
@@ -267,6 +274,8 @@ app.addEventListener('submit',async e=>{
   if(a==='revoke')data.keepPublic=f.elements.keepPublic.checked;
   if(a==='publication')data.visible=f.elements.visible.checked;
   if(a==='recoverAgreement')data.confirmAbsent=f.elements.confirmAbsent.checked;
+  if(a==='requestProductions')data.selections=new FormData(f).getAll('selection');
+  if(a==='reviewProduction')data.decision=button.value;
   if(a==='enrollments'){data.productions=new FormData(f).getAll('production');data.roles=Object.fromEntries(data.productions.map(id=>[id,data['role_'+id]]));}
   const targetParams=new URLSearchParams({title:data.title||''});
   if(data.audience){data.recipients=new FormData(f).getAll('recipient');if(data.audience==='selected'&&!data.recipients.length)throw Error('Select at least one recipient.');targetParams.set('audience',data.audience);for(const who of data.recipients)targetParams.append('recipient',who);}
@@ -284,7 +293,7 @@ app.addEventListener('submit',async e=>{
    if(details){const summary=details.querySelector('summary');summary.textContent=summary.textContent.replace(a==='photo'?'photo needed':'bio needed',a==='photo'?'photo received':data.bio.trim()?'bio received':'bio needed');}
    if(a==='photo'&&f.elements.file.files[0]===data.file)profileStatus(f,'Saved · '+data.file.name);
    if(a==='bio')profileStatus(f,f.elements.bio.value===data.bio?'Saved':'Unsaved changes');
-   message.textContent=(a==='photo'?'Headshot saved.':'Bio saved.')+' Your shared profile updates automatically on your assigned film websites once both a bio and headshot are available.';
+   message.textContent=(a==='photo'?'Headshot saved.':'Bio saved.')+' Your shared profile appears on approved film websites once both items are saved.';
    const publicationInfo=await request('home');lastState=publicationInfo;
    const member=publicationInfo.members.find(m=>m.id===id);
    if(member)message.textContent+=' '+Object.entries(member.publication||{}).map(([pid,p])=>(publicationInfo.productions.find(x=>x.id===pid)?.name||pid)+': '+p.state).join(' · ');

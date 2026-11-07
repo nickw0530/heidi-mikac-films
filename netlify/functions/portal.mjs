@@ -226,7 +226,7 @@ export default async function handle(req) {
   if(!admin&&action==='home'&&!url.searchParams.has('production')&&Object.keys(memberProductions).length){
     productionId=Object.keys(memberProductions)[0];catalog=catalogs[productionId];film=productions.find(p=>p.id===productionId).name;
   }
-  if(!admin&&!['home','bio','photo','choosePassword','welcomePlayed'].includes(action))requireThat(memberProductions[productionId],'You are not assigned to this production.',403);
+  if(!admin&&!['home','bio','photo','choosePassword','welcomePlayed','requestProductions'].includes(action))requireThat(memberProductions[productionId],'You are not assigned to this production.',403);
   if(!admin&&action==='home'&&Object.keys(memberProductions).length)requireThat(memberProductions[productionId],'You are not assigned to this production.',403);
   if(action==='calendarConnect'||action==='calendarEvents'){
     onlyAdmin(); requireThat(url.origin==='https://heidimikacfilms.com','Production only.',403);
@@ -391,7 +391,8 @@ export default async function handle(req) {
       return {...x,offline,offlineSigning,paperworkStatus:offlineSigning?.status||offline||rows.find(row=>row.filmProfile===x.id)?.paperworkStatus||'No agreement on file'};
     })):[];
     const waiting=admin?(await adminActions(rawStore,productionId)).filter(a=>a.owner==='any'||a.owner===self):[];
-    return json({waiting,productionId,productions:admin?productions:productions.filter(p=>memberProductions[p.id]),revokedAccounts:admin?allAccounts.filter(m=>m.revoked).map(m=>({id:m.id,name:m.name,keepPublic:m.keepPublic,productions:assignments(m),publication:m.publication||{}})):[],accounts:admin?accounts.map(m=>({id:m.id,name:m.name,productions:assignments(m)})):[],agreementReady:!!await store.getMetadata('contract/master'),agreementSupported:true,welcome:await get('settings/welcome'),welcomePlayed:!!await get('welcome-played/'+self),catalog:adminCatalog,admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),mailLog:admin?(await list('mail-log/')).filter(Boolean).sort((a,b)=>b.updated-a.updated).slice(0,30):[],mailQueue:admin?(await list('outbox/')).filter(Boolean).map(({to,subject,attempts,nextAttempt,lastError})=>({to,subject,attempts,nextAttempt,lastError})):[],members:rows.map(({ticket,...row})=>({...row,practice:practiceName(row.name)})),resources:(await list('resources/')).filter(canReadResource).map(r=>admin?r:({...r,audience:undefined})).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
+    const productionReviews=admin?await Promise.all(accounts.filter(m=>m.productionRequests?.[productionId]).map(async m=>({id:m.id,name:m.name,role:assignments(m)[productionId]?.role||findProfile(m,productionId)?.role||'',requestId:m.productionRequests[productionId],...await reviewProfile(m)}))):[];
+    return json({productionReviews,productionChoices:productions,waiting,productionId,productions:admin?productions:productions.filter(p=>memberProductions[p.id]),revokedAccounts:admin?allAccounts.filter(m=>m.revoked).map(m=>({id:m.id,name:m.name,keepPublic:m.keepPublic,productions:assignments(m),publication:m.publication||{}})):[],accounts:admin?accounts.map(m=>({id:m.id,name:m.name,productions:assignments(m)})):[],agreementReady:!!await store.getMetadata('contract/master'),agreementSupported:true,welcome:await get('settings/welcome'),welcomePlayed:!!await get('welcome-played/'+self),catalog:adminCatalog,admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),mailLog:admin?(await list('mail-log/')).filter(Boolean).sort((a,b)=>b.updated-a.updated).slice(0,30):[],mailQueue:admin?(await list('outbox/')).filter(Boolean).map(({to,subject,attempts,nextAttempt,lastError})=>({to,subject,attempts,nextAttempt,lastError})):[],members:rows.map(({ticket,...row})=>({...row,practice:practiceName(row.name)})),resources:(await list('resources/')).filter(canReadResource).map(r=>admin?r:({...r,audience:undefined})).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
   }
   if((action==='invite'||action==='resend')&&post){
     onlyAdmin();requireThat(production&&mailReady(),'Invitation email is awaiting sender setup. No invitation was sent.',503);
@@ -403,6 +404,7 @@ export default async function handle(req) {
       // A revoked account must receive a fresh identity on re-invitation.
       const index='active-email/'+hex;
       m={id:randomUUID(),email:address,name:string(body.name),role:string(body.role)};
+      m.publication={[productionId]:false};
       m.productions={[productionId]:{role:m.role,filmProfile:''}};
       if(body.filmProfile){allowPublicProfile(m);const base=entry(body.filmProfile);requireThat(base,'Unknown film profile.');m.productions[productionId].filmProfile=base.id;if(productionId==='written-in-the-dark')m.filmProfile=base.id;}
       const reserved=await store.setJSON(index,{id:m.id},{onlyIfNew:true});requireThat(reserved.modified,'An invitation already exists.');
@@ -414,6 +416,42 @@ export default async function handle(req) {
     await set('members/'+m.id,{...m,ticket:hash(ticket)});await invalidate();
     await enqueue(store,m,'invite/'+hash(ticket),film+' — your cast & crew invitation','Hi '+m.name+',\n\nYou’re invited to '+film+' as '+m.role+'. Choose your password and finish your profile here:\n'+portalUrl+'#invite='+ticket+'\n\nThis invitation expires in seven days.',expires);
     return json({ok:true});
+  }
+  async function reviewProfile(m){
+    const [draft,image]=await Promise.all([get('profiles/'+m.id),store.getMetadata('photos/'+m.id)]);
+    const fallback=sharedBase(m),bio=draft?.bio??fallback?.bio??'',photo=image?'uploaded':fallback?.photo||'';
+    return {bio,photo,revision:hash(JSON.stringify([bio,image?.etag||image?.metadata?.version||photo]))};
+  }
+  if(action==='requestProductions'&&post){
+    requireThat(!admin,'Use a cast or crew account.',403);
+    const record=await store.getWithMetadata('members/'+self,{type:'json'}),m=record?.data;
+    requireThat(active(m),'Account unavailable.',403);allowPublicProfile(m);
+    requireThat(Array.isArray(body.selections)&&body.selections.every(id=>productions.some(p=>p.id===id)),'Choose valid productions.');
+    const pending={};
+    for(const id of new Set(body.selections)){
+      if(!assignments(m)[id]||m.publication?.[id]===false)pending[id]=m.productionRequests?.[id]||randomUUID();
+    }
+    requireThat((await store.setJSON('members/'+self,{...m,productionRequests:pending},{onlyIfMatch:record.etag})).modified,'Your assignments changed. Reload and try again.',409);
+    return json({ok:true});
+  }
+  if(action==='reviewProduction'&&post){
+    onlyAdmin();requireThat(uuid.test(uid),'Invalid member.');
+    const record=await store.getWithMetadata('members/'+uid,{type:'json'}),m=record?.data;
+    requireThat(active(m)&&m.productionRequests?.[productionId]&&m.productionRequests[productionId]===body.requestId,'This request changed. Reload the portal.',409);
+    const pending={...m.productionRequests};delete pending[productionId];
+    let next={...m,productionRequests:pending};
+    if(body.decision==='approve'){
+      allowPublicProfile(m);
+      const profile=await reviewProfile(m);
+      requireThat(profile.bio.trim()&&profile.photo&&profile.revision===body.revision,'Review the latest saved biography and headshot before approval.',409);
+      const role=string(body.role),base=findProfile(m,productionId);
+      if(base)requireThat(!(await list('members/')).some(other=>active(other)&&other.id!==uid&&assignments(other)[productionId]&&findProfile(other,productionId)?.id===base.id),'This production profile is already assigned to someone else.',409);
+      const previous=assignments(m)[productionId];
+      next.productions={...assignments(m),[productionId]:{...previous,role,filmProfile:previous?.filmProfile||''}};
+      next.publication={...m.publication,[productionId]:true};
+    }else requireThat(body.decision==='decline','Choose an approval decision.');
+    requireThat((await store.setJSON('members/'+uid,next,{onlyIfMatch:record.etag})).modified,'The request changed. Reload and try again.',409);
+    await invalidate();return json({ok:true});
   }
   if(action==='enrollments'&&post){
     onlyAdmin();const m=await target();

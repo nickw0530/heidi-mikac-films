@@ -30,6 +30,7 @@ export async function adminActions(store,production,refresh=false){
   const m=await store.get(key,{type:'json'});
   if(!m||m.revoked||/^test(?:\s|$)/i.test(m.name))continue;
   const assignment=(m.productions??{'written-in-the-dark':{filmProfile:m.filmProfile}})[production];
+  if(m.productionRequests?.[production])add('any','Review production request from '+m.name,'production-request/'+production+'/'+m.productionRequests[production],'settings');
   if(!assignment)continue;
   const k=prefix+'agreements/'+m.id;
   const a=refresh?await refreshAgreement(store,k):await store.get(k,{type:'json'});
