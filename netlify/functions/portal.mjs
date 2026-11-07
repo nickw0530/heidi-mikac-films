@@ -1,6 +1,7 @@
 import {begin as beginCalendar,events as calendarEvents} from './calendar-callback.mjs';
 import sharp from 'sharp';
 import {signwell,documentStatus,refreshAgreement} from '../lib/signing.mjs';
+import {offlineSigningKey,prepareOfflineCountersign,refreshOfflineCountersign} from '../lib/offline-signing.mjs';
 import darkCatalog, {whereinCatalog} from '../lib/film-profiles.mjs';
 import { getStore } from '@netlify/blobs';
 import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
@@ -45,6 +46,11 @@ function email(value) {
 const headers={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'};
 const cookie=(key,age)=>'__Host-hmf='+key+'; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age='+age;
 const json=(value,extra={})=>Response.json(value,{headers:{...headers,...extra}});
+const offlineSigningSummary=agreement=>agreement?Object.fromEntries(['id','status','providerStatus','sourceChanged','syncError','testMode','createdAt','checkedAt'].map(key=>[key,agreement[key]])):null;
+function signingUrl(value){
+  if(typeof value!=='string')return null;
+  try{const u=new URL(value);return u.protocol==='https:'&&!u.username&&!u.password&&(u.hostname==='signwell.com'||u.hostname.endsWith('.signwell.com'))?u.href:null;}catch{return null;}
+}
 async function packet(bytes, terms) {
   const doc=await PDFDocument.load(bytes), pages=doc.getPages(), form=doc.getForm();
   const font=await doc.embedFont(StandardFonts.Helvetica);
@@ -226,6 +232,12 @@ export default async function handle(req) {
     return await calendarEvents(store);
   }
   const target=async()=>{requireThat(uuid.test(uid)&& (admin||uid===self),'Access denied.',403);const m=await get('members/'+uid);requireThat(m,'Member unavailable.',404);if(!['bio','photo','revoke','enrollments','resend'].includes(action))requireThat(assignments(m)[productionId],'Member is not assigned to this production.',403);return m};
+  const hasOfflineSigning=profileId=>rawStore.getMetadata(offlineSigningKey(profileId,productionId));
+  async function hasOnlineAgreement(profileId){
+    const linked=(await list('members/')).filter(m=>m&&findProfile(m,productionId)?.id===profileId);
+    const agreements=await Promise.all(linked.map(m=>get('agreements/'+m.id)));
+    return agreements.some(agreement=>agreement&&!agreement.cleared);
+  }
   if(action==='choosePassword'&&post){
     const pass=await credential(body.password);
     const result=await store.setJSON('passwords/'+self,{...pass,adminDigest:session.adminDigest},{onlyIfNew:true});
@@ -234,7 +246,9 @@ export default async function handle(req) {
   if(action==='offline'){
     onlyAdmin();requireThat(entry(uid),'Unknown film profile.');
     const key='offline/'+uid;
-    if(post){const bytes=Buffer.from(await req.arrayBuffer());
+    if(post){
+      requireThat(!await hasOfflineSigning(uid),'This uploaded agreement has a countersignature request. Review that request before replacing its source.',409);
+      const bytes=Buffer.from(await req.arrayBuffer());
       requireThat(bytes.length<=4*1024*1024&&bytes.subarray(0,5).toString()==='%PDF-','Choose a PDF up to 4 MB.');
       const status=url.searchParams.get('status');requireThat(['Waiting on Heidi','Missing page 1 · waiting on Heidi','Complete'].includes(status),'Choose the signature status.');
       const expected=url.searchParams.get('replaceHash');
@@ -245,10 +259,30 @@ export default async function handle(req) {
         await store.set('offline-history/'+uid+'/'+expected,previous.data,{onlyIfNew:true,metadata:previous.metadata});
         options={onlyIfMatch:previous.etag};
       }
+      requireThat(!await hasOfflineSigning(uid),'A countersignature request was prepared while this file was being uploaded. Reload before continuing.',409);
       const result=await store.set(key,bytes,{...options,metadata:{status}});requireThat(result.modified,'An offline agreement is already filed.',409);return json({ok:true});
     }
     const file=await store.getWithMetadata(key,{type:'arrayBuffer'});requireThat(file,'No agreement on file.',404);
     return new Response(file.data,{headers:{...headers,'Content-Type':'application/pdf','Content-Disposition':'attachment; filename="'+uid+'-offline-agreement.pdf"'}});
+  }
+  if(action==='prepareOfflineCountersign'){
+    onlyAdmin();requireThat(post,'Use POST to prepare a countersignature draft.',405);
+    const profile=entry(uid);requireThat(profile,'Unknown film profile.',404);
+    requireThat(process.env.SIGNWELL_API_KEY,'Signing setup required.',503);
+    const noOnlineAgreement=async()=>requireThat(!await hasOnlineAgreement(profile.id),'An online agreement already exists for this profile. Reconcile it before preparing another request.',409);
+    const {agreement,created}=await prepareOfflineCountersign({store:rawStore,profile,productionId,film,live:production&&process.env.HMF_SIGNWELL_LIVE==='yes',existingOnlineAgreement:await hasOnlineAgreement(profile.id),beforeCreate:noOnlineAgreement});
+    return json({ok:true,created,status:agreement.status,offlineSigning:offlineSigningSummary(agreement)});
+  }
+  if(action==='offlineCountersignStatus'){
+    onlyAdmin();requireThat(!post,'Use GET to check a countersignature request.',405);requireThat(entry(uid),'Unknown film profile.',404);
+    let document;
+    const agreement=await refreshOfflineCountersign({store:rawStore,profileId:uid,productionId,force:true,onDocument:value=>{document=value;}});
+    requireThat(agreement,'No countersignature request exists for this uploaded agreement.',404);
+    const ready=document&&!agreement.syncError&&!agreement.sourceChanged;
+    const providerStatus=String(document?.status||'').trim().toLowerCase();
+    const editUrl=ready&&providerStatus==='draft'?signingUrl(document.embedded_edit_url):null;
+    const url=ready&&self==='Heidi'&&agreement.status==='Waiting on Heidi'&&['sent','pending','viewed','in_progress'].includes(providerStatus)?signingUrl(document.recipients[0].embedded_signing_url):null;
+    return json({status:agreement.status,offlineSigning:offlineSigningSummary(agreement),editUrl,url});
   }
   const canReadResource=r=>r&&(admin||(memberProductions[productionId]&&(r.audience==null||r.audience.includes(self))));
   async function recipients(mode,ids){
@@ -268,6 +302,11 @@ export default async function handle(req) {
     const accounts=allAccounts.filter(active);
     const rosterCatalog=catalog.filter(x=>{const matches=allAccounts.filter(m=>findProfile(m,productionId)?.id===x.id);return !matches.length||matches.some(m=>assignments(m)[productionId]&&(!m.revoked||m.keepPublic));});
     const members=admin?accounts.filter(m=>assignments(m)[productionId]):[account];
+    const offlineRequests=new Map();
+    const offlineFor=profileId=>{
+      if(!offlineRequests.has(profileId))offlineRequests.set(profileId,refreshOfflineCountersign({store:rawStore,profileId,productionId}));
+      return offlineRequests.get(profileId);
+    };
     const rows=await Promise.all(members.filter(Boolean).map(async m=>({...m,role:assignments(m)[productionId]?.role||'',filmProfile:findProfile(m,productionId)?.id||'',productions:assignments(m),profile:await get('profiles/'+m.id),...(await (async()=>{const photo=await store.getMetadata('photos/'+m.id);return {hasPhoto:!!photo,photoName:photo?.metadata?.filename||''};})()),agreement:assignments(m)[productionId]?await refreshAgreement(store,'agreements/'+m.id):null,tasks:assignments(m)[productionId]?(await list('tasks/'+m.id+'/')).filter(Boolean):[],activated:!!await get('passwords/'+m.id)})));
     for(const row of rows){
       const original=accounts.find(m=>m.id===row.id);
@@ -275,10 +314,12 @@ export default async function handle(req) {
       row.paperworkExempt=/^(nick williams|nicholas williams|heidi mikac)$/i.test(row.name.trim());
       const published=base?await get('published/'+base.id):null;
       row.offlineStatus=assignments(original)[productionId]&&row.filmProfile?(await store.getMetadata("offline/"+row.filmProfile))?.metadata?.status||null:null;
+      if(admin&&row.filmProfile)row.offlineSigning=offlineSigningSummary(await offlineFor(row.filmProfile));
       row.referencePhoto=published?.photo||base?.photo;
       row.profile??={bio:published?.bio??base?.bio??''};
-      row.paperworkStatus=row.offlineStatus||row.agreement?.status||(row.paperworkExempt?'Not required':'No agreement on file');
-      row.memberPaperworkStatus=['Complete','Waiting on Heidi','Not required'].includes(row.paperworkStatus)?'Complete':row.paperworkStatus;
+      const memberPaperwork=row.offlineStatus||row.agreement?.status||(row.paperworkExempt?'Not required':'No agreement on file');
+      row.paperworkStatus=row.offlineSigning?.status||memberPaperwork;
+      row.memberPaperworkStatus=['Complete','Waiting on Heidi','Not required'].includes(memberPaperwork)?'Complete':memberPaperwork;
       row.publication=Object.fromEntries(await Promise.all(Object.keys(assignments(original)).map(async pid=>{
         const id=findProfile(original,pid)?.id||'member-'+row.id;
         const ready=!!row.profile.bio?.trim()&&!!(row.hasPhoto||row.referencePhoto);
@@ -289,7 +330,12 @@ export default async function handle(req) {
       })));
 
     }
-    return json({productionId,productions:admin?productions:productions.filter(p=>memberProductions[p.id]),revokedAccounts:admin?allAccounts.filter(m=>m.revoked).map(m=>({id:m.id,name:m.name,keepPublic:m.keepPublic,productions:assignments(m),publication:m.publication||{}})):[],accounts:admin?accounts.map(m=>({id:m.id,name:m.name,productions:assignments(m)})):[],agreementReady:!!await store.getMetadata('contract/master'),agreementSupported:true,welcome:await get('settings/welcome'),welcomePlayed:!!await get('welcome-played/'+self),catalog:admin?await Promise.all(rosterCatalog.map(async x=>({...x,offline:(await store.getMetadata('offline/'+x.id))?.metadata?.status||null}))):[],admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),mailLog:admin?(await list('mail-log/')).filter(Boolean).sort((a,b)=>b.updated-a.updated).slice(0,30):[],mailQueue:admin?(await list('outbox/')).filter(Boolean).map(({to,subject,attempts,nextAttempt,lastError})=>({to,subject,attempts,nextAttempt,lastError})):[],members:rows.map(({ticket,...row})=>({...row,practice:practiceName(row.name)})),resources:(await list('resources/')).filter(canReadResource).map(r=>admin?r:({...r,audience:undefined})).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
+    const adminCatalog=admin?await Promise.all(rosterCatalog.map(async x=>{
+      const offline=(await store.getMetadata('offline/'+x.id))?.metadata?.status||null;
+      const offlineSigning=offlineSigningSummary(await offlineFor(x.id));
+      return {...x,offline,offlineSigning,paperworkStatus:offlineSigning?.status||offline||rows.find(row=>row.filmProfile===x.id)?.paperworkStatus||'No agreement on file'};
+    })):[];
+    return json({productionId,productions:admin?productions:productions.filter(p=>memberProductions[p.id]),revokedAccounts:admin?allAccounts.filter(m=>m.revoked).map(m=>({id:m.id,name:m.name,keepPublic:m.keepPublic,productions:assignments(m),publication:m.publication||{}})):[],accounts:admin?accounts.map(m=>({id:m.id,name:m.name,productions:assignments(m)})):[],agreementReady:!!await store.getMetadata('contract/master'),agreementSupported:true,welcome:await get('settings/welcome'),welcomePlayed:!!await get('welcome-played/'+self),catalog:adminCatalog,admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),mailLog:admin?(await list('mail-log/')).filter(Boolean).sort((a,b)=>b.updated-a.updated).slice(0,30):[],mailQueue:admin?(await list('outbox/')).filter(Boolean).map(({to,subject,attempts,nextAttempt,lastError})=>({to,subject,attempts,nextAttempt,lastError})):[],members:rows.map(({ticket,...row})=>({...row,practice:practiceName(row.name)})),resources:(await list('resources/')).filter(canReadResource).map(r=>admin?r:({...r,audience:undefined})).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
   }
   if((action==='invite'||action==='resend')&&post){
     onlyAdmin();requireThat(production&&mailReady(),'Invitation email is awaiting sender setup. No invitation was sent.',503);
@@ -375,7 +421,8 @@ export default async function handle(req) {
   }
   if(action==='agreement'&&post){
 
-    onlyAdmin();const m=await target(),t={};
+    onlyAdmin();const m=await target(),t={},profile=findProfile(m,productionId);
+    if(!body.preview&&profile)requireThat(!await hasOfflineSigning(profile.id),'This profile already has an uploaded agreement in countersigning. Use its existing request.',409);
     for(const k of ['legal','character','credit','rate','date','start'])t[k]=string(body[k],120);
     requireThat(/^\d{1,5}(\.\d{1,2})?$/.test(t.rate),'Enter a daily rate.');
     for(const k of ['date','start'])requireThat(/^\d{4}-\d{2}-\d{2}$/.test(t[k])&&!Number.isNaN(Date.parse(t[k]))&&new Date(t[k]).toISOString().slice(0,10)===t[k],'Enter valid dates.');
@@ -389,7 +436,11 @@ export default async function handle(req) {
     const existing=await store.getWithMetadata(key,{type:'json'});
     const lock=await store.setJSON(key,{status:'Preparing — check SignWell before retrying',created:Date.now(),name:film+' — '+t.legal},existing?.data?.cleared?{onlyIfMatch:existing.etag}:{onlyIfNew:true});
     requireThat(lock.modified,'An agreement already exists or is being prepared.',409);
-    let d;try{d=await signwell('documents/',{test_mode:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes'),name:film+' — '+t.legal,files:[{name:'Actor Agreement.pdf',file_base64:bytes.toString('base64')}],recipients:[{id:'1',name:t.legal,email:m.email},{id:'2',name:'Heidi Mikac',email:heidi}],apply_signing_order:true,embedded_signing:true,text_tags:true});}catch(e){await set(key,{status:'Needs recovery — check SignWell',created:Date.now(),name:film+' — '+t.legal});throw e;}
+    let d;try{
+      // Reciprocal checks after each route's reservation prevent simultaneous regular and offline requests.
+      if(profile)requireThat(!await hasOfflineSigning(profile.id),'A countersignature request was prepared for the uploaded agreement. Use its existing request.',409);
+      d=await signwell('documents/',{test_mode:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes'),name:film+' — '+t.legal,files:[{name:'Actor Agreement.pdf',file_base64:bytes.toString('base64')}],recipients:[{id:'1',name:t.legal,email:m.email},{id:'2',name:'Heidi Mikac',email:heidi}],apply_signing_order:true,embedded_signing:true,text_tags:true});
+    }catch(e){await set(key,{status:'Needs recovery — check SignWell',created:Date.now(),name:film+' — '+t.legal});throw e;}
     await set(key,{id:d.id,status:'Waiting on actor',checkedAt:Date.now()});await notify(m,d.id,'Document ready for signature','Your agreement is ready to review and sign.');return json({ok:true});
   }
   if(action==='recoverAgreement'&&post){

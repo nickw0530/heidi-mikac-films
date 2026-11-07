@@ -1,7 +1,7 @@
 const app=document.querySelector('#app'), message=document.querySelector('#message');
 const endpoint='/.netlify/functions/portal';
 const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let activeView='overview',peopleSearch='',peopleFilter='all',lastState;
+let activeView='overview',peopleSearch='',peopleFilter='all',lastState,offlineBulkInProgress=false;
 const dirty=()=>[...app.querySelectorAll('form[data-dirty]')];
 window.addEventListener('beforeunload',e=>{if(dirty().length){e.preventDefault();e.returnValue='';}});
 let selectedProduction=new URLSearchParams(location.search).get('production')||'';
@@ -115,7 +115,23 @@ async function load(){
  }).join('')+'<button>Save productions</button></form>')).join('')):'';
  const library=s.catalog||[];
  const available=library.filter(x=>!s.members.some(m=>m.filmProfile===x.id));
- const offline=x=>x.offline?'<p><b>Signed offline</b> · '+escape(x.offline)+' · <a href="'+escape(url('offline',x.id))+'">Download private agreement</a></p>':panel('File a signed paper agreement',form('offline',file('Returned agreement PDF','application/pdf')+'<label>Paperwork status<select name="status"><option>Waiting on Heidi</option><option>Missing page 1 · waiting on Heidi</option><option>Complete</option></select></label>','File privately',x.id));
+ const offline=x=>{
+  if(!x.offline)return panel('File a signed paper agreement',form('offline',file('Returned agreement PDF','application/pdf')+'<label>Paperwork status<select name="status"><option>Waiting on Heidi</option><option>Missing page 1 · waiting on Heidi</option><option>Complete</option></select></label>','File privately',x.id));
+  const signing=x.offlineSigning;
+  let controls='';
+  if(signing){
+   controls='<p><strong>'+escape(signing.status)+'</strong>'+(signing.testMode?' · Test draft':'')+'</p>';
+   if(signing.sourceChanged)controls+='<p>The uploaded file has changed. Review the existing request before proceeding.</p>';
+   if(signing.syncError)controls+='<p>'+escape(signing.syncError)+'</p>';
+   if(signing.id)controls+='<button type="button" data-offline-status="'+escape(x.id)+'">'+(signing.status==='Draft prepared'?'Review countersignature draft':'Check countersignature status')+'</button>';
+   else controls+='<p>Check SignWell before preparing another request.</p>';
+  }else if(x.offline==='Waiting on Heidi'){
+   controls=form('prepareOfflineCountersign','<p>Prepare an unsent draft for Heidi using this uploaded agreement. Existing signatures stay intact; Heidi receives a separate signature page.</p>','Prepare Heidi countersignature draft',x.id);
+  }else if(/missing/i.test(x.offline))controls='<p>Upload the complete agreement before preparing Heidi’s signature request.</p>';
+  return '<div data-offline-profile="'+escape(x.id)+'"><p><b>Signed offline</b> · '+escape(x.offline)+' · <a href="'+escape(url('offline',x.id))+'">Download original agreement</a></p>'+controls+'<div data-offline-links></div></div>';
+ };
+ const uploaded=library.filter(x=>x.offline),eligibleUploads=uploaded.filter(x=>x.offline==='Waiting on Heidi'&&!x.offlineSigning);
+ const uploadedDocuments=admin?'<section><h2>Uploaded agreements</h2><p>Prepare Heidi-only drafts from the signed files already on record. Drafts are not sent automatically.</p>'+(eligibleUploads.length?'<button type="button" data-prepare-offline>Prepare all eligible drafts ('+eligibleUploads.length+')</button>':'')+(uploaded.length?uploaded.map(x=>panel(escape(x.name)+' · '+escape(x.offlineSigning?.status||x.offline),offline(x))).join(''):'<p>No signed agreements have been uploaded for this production.</p>')+'</section>':'';
  const people=[...available,...s.members];
  function outstanding(person){
   const source=library.find(x=>x.id===(person.filmProfile||person.id));
@@ -166,7 +182,7 @@ async function load(){
   app.innerHTML='<div class="office-header">'+productionPicker+form('logout','','Sign out')+'</div>'+account+'<nav class="office-nav" aria-label="Production office">'+tabs.map(([id,label])=>'<button type="button" data-view-button="'+id+'">'+label+'</button>').join('')+'<div class="office-layout"><div class="office-main">'+
    '<div data-view="overview">'+counts+attention+'<p>Roster includes existing film profiles and portal accounts, counted once per linked person.</p></div>'+
    '<div data-view="people"><h2>People & profiles <span class="count">'+people.length+'</span></h2><div class="people-toolbar"><label>Search name, role or email<input data-people-search type="search" value="'+escape(peopleSearch)+'"></label><label>Show<select data-people-filter><option value="all">All portal accounts</option><option value="missing">No agreement</option><option value="progress">Paperwork in progress</option><option value="bio">Missing bio</option><option value="headshot">Missing headshot</option><option value="tasks">Open tasks</option></select></label></div><p data-results></p>'+rows+'<h2>Browse film profiles <span class="count">'+people.length+'</span></h2>'+panel('Profiles without a portal account ('+available.length+')',directory)+'</div>'+
-   '<div data-view="documents"><h2>Paperwork</h2><p>'+(s.test?'Signing is in test mode.':'Live signing is enabled.')+'</p>'+attention+'<div class="document-list">'+s.members.map(m=>'<p><b>'+escape(m.name)+'</b> · '+escape(m.paperworkStatus)+' <button data-open-person="'+m.id+'">Open paperwork</button></p>').join('')+'</div><div data-tool-zone="documents"></div><div id="signing"></div></div>'+
+   '<div data-view="documents"><h2>Paperwork</h2><p>'+(s.test?'Signing is in test mode.':'Live signing is enabled.')+'</p>'+attention+uploadedDocuments+'<div class="document-list">'+s.members.map(m=>'<p><b>'+escape(m.name)+'</b> · '+escape(m.paperworkStatus)+' <button data-open-person="'+m.id+'">Open paperwork</button></p>').join('')+'</div><div data-tool-zone="documents"></div><div id="signing"></div></div>'+
    '<div data-view="messages"><h2>Messages & files</h2><div data-tool-zone="messages"></div>'+mailPanel+'<h2>Production board</h2>'+updates+'</div>'+
    '<div data-view="calendar"><h2>Production calendar</h2><p>Your connected Exchange calendar appears alongside this workspace. It shows the next 30 days in Eastern time.</p></div>'+
    '<div data-view="settings"><h2>Production settings</h2>'+assignmentsPanel+panel('Revoked portal accounts',s.revokedAccounts?.length?s.revokedAccounts.filter(m=>m.productions[s.productionId]).map(m=>'<section><h3>'+escape(m.name)+'</h3><p>Portal access revoked. Public profile '+(m.keepPublic?'retained':'removed')+'.</p>'+form('publication','<label><input type="checkbox" name="visible" '+(m.keepPublic&&m.publication[s.productionId]!==false?'checked':'')+'> Show on this production website</label>','Save website visibility',m.id)+'</section>').join(''):'<p>No revoked accounts.</p>')+'<div data-tool-zone="settings"></div></div></div><div id="calendar-slot"></div></div>';
@@ -261,6 +277,7 @@ app.addEventListener('submit',async e=>{
   }
   if(a==='activate')history.replaceState(null,'',location.pathname);
   if(a==='agreement'&&data.preview){const href=URL.createObjectURL(result);const link=document.createElement('a');link.href=href;link.download='Agreement-preview.pdf';link.click();setTimeout(()=>URL.revokeObjectURL(href),60000);return;}
+  if(a==='prepareOfflineCountersign'){await load();message.textContent=result.created?(result.status==='Draft prepared'?'Heidi’s countersignature draft is prepared.':'SignWell is preparing Heidi’s countersignature draft.')+' Review its status under Documents → Uploaded agreements. No signing request has been sent.':'An existing preparation record was found. Review its status under Documents → Uploaded agreements.';return;}
   await load();message.textContent=['invite','resend'].includes(a)?'Invitation queued for email delivery.':['login','passwordLogin','activate'].includes(a)?'':a==='logout'?'Signed out.':'Saved.';
  }catch(e){message.textContent=e.message;}finally{button.disabled=false;}
 });
@@ -281,6 +298,40 @@ app.addEventListener('click',async e=>{
  if(r.url)await showSigning(r.url,b.dataset.status,container,attempt);
  else{const note=document.createElement('p');note.textContent=r.status==='Complete'?'Your part is complete.':'No signing link is available for this account right now. Check the agreement status again or contact production.';container.replaceChildren(note);}
  }catch(e){if(attempt===undefined||attempt===signingRequest)message.textContent=e.message;}finally{b.disabled=false;}
+});
+app.addEventListener('click',async e=>{
+ const button=e.target.closest('[data-prepare-offline],[data-offline-status]');if(!button||offlineBulkInProgress)return;
+ if(button.hasAttribute('data-prepare-offline')){
+  if(!lastState?.admin)return;
+  const productionId=selectedProduction,items=lastState.catalog.filter(x=>x.offline==='Waiting on Heidi'&&!x.offlineSigning),failures=[];
+  let created=0,existing=0;
+  offlineBulkInProgress=true;button.disabled=true;
+  const picker=app.querySelector('[data-production]');if(picker)picker.disabled=true;
+  try{
+   for(const [index,item] of items.entries()){
+    if(selectedProduction!==productionId)break;
+    message.textContent='Preparing draft '+(index+1)+' of '+items.length+' · '+item.name;
+    try{const result=await request('prepareOfflineCountersign',{},item.id);if(result.created)created++;else existing++;}
+    catch(error){failures.push(item.name+': '+error.message);if([401,403].includes(error.status))break;}
+   }
+   if(selectedProduction===productionId){await load();message.textContent='Started '+created+' countersignature draft'+(created===1?'':'s')+' for Heidi. '+(existing?existing+' existing preparation record'+(existing===1?' was':'s were')+' retained. ':'')+'Review each draft’s status below. No signing requests have been sent.'+(failures.length?'\nNeeds review:\n'+failures.join('\n'):'');}
+  }catch(error){message.textContent=error.message;}
+  finally{offlineBulkInProgress=false;button.disabled=false;if(picker?.isConnected)picker.disabled=false;}
+  return;
+ }
+ const container=button.closest('[data-offline-profile]'),links=container?.querySelector('[data-offline-links]');if(!links)return;
+ button.disabled=true;links.textContent='Checking countersignature request…';
+ try{
+  const result=await request('offlineCountersignStatus',undefined,button.dataset.offlineStatus);if(!container.isConnected)return;
+  links.replaceChildren();const note=document.createElement('p');note.textContent=result.status;links.append(note);
+  if(result.offlineSigning?.sourceChanged||result.offlineSigning?.syncError){note.textContent=result.offlineSigning.sourceChanged?'The uploaded file changed. Review the existing request before continuing.':result.offlineSigning.syncError;return;}
+  const raw=result.editUrl||result.url;
+  if(raw){
+   const u=new URL(raw);if(u.protocol!=='https:'||u.username||u.password||!(u.hostname==='signwell.com'||u.hostname.endsWith('.signwell.com')))throw Error('Unexpected signing address.');
+   const link=document.createElement('a');link.href=u.href;link.target='_blank';link.rel='noopener noreferrer';link.textContent=result.editUrl?'Open countersignature draft in SignWell':'Open agreement for Heidi to sign';links.append(link);
+   const hint=document.createElement('p');hint.textContent=result.editUrl?'Review the original pages and Heidi’s signature page before sending. To reopen a used draft link, click Review countersignature draft again.':'Return here to check the status after signing.';links.append(hint);
+  }else if(result.status==='Waiting on Heidi')note.textContent='Waiting on Heidi. She can open the signing link from her administrator account.';
+ }catch(error){if(links.isConnected)links.textContent=error.message;}finally{button.disabled=false;}
 });
 load().catch(e=>{app.textContent='Portal unavailable.';message.textContent=e.message;});
 
@@ -342,4 +393,4 @@ app.addEventListener('click',e=>{
 });
 app.addEventListener('input',e=>{if(e.target.matches('[data-people-search]')){peopleSearch=e.target.value;applyPeopleFilter();}});
 app.addEventListener('change',e=>{if(e.target.form)e.target.form.dataset.dirty='true';if(e.target.matches('[data-people-filter]')){peopleFilter=e.target.value;applyPeopleFilter();}});
-setInterval(()=>{if(lastState&&!document.hidden&&!dirty().length&&!signingSession)load().catch(()=>{});},300000);
+setInterval(()=>{if(lastState&&!document.hidden&&!dirty().length&&!signingSession&&!offlineBulkInProgress)load().catch(()=>{});},300000);
