@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {COUNTERSIGN_EMAIL, signwell as providerSignwell} from './signing.mjs';
+import {COUNTERSIGN_EMAIL, hasSigned, signwell as providerSignwell} from './signing.mjs';
 
 export const HEIDI_COUNTERSIGN_EMAIL = COUNTERSIGN_EMAIL;
 const mode = 'offline-countersign';
@@ -112,7 +112,10 @@ export function offlineCountersignStatus(document) {
   if (status === 'completed') return 'Complete';
   if (['declined', 'canceled', 'cancelled', 'expired'].includes(status)) return status;
   if (status === 'bounced') return 'Delivery failed';
-  if (['sent', 'viewed', 'pending', 'in_progress'].includes(status)) return 'Waiting on Heidi';
+  if (['sent', 'viewed', 'pending', 'in_progress'].includes(status)) {
+    const recipients = document.recipients || [];
+    return recipients.length === 1 && String(recipients[0].id) === '2' && hasSigned(recipients[0]) ? 'Complete' : 'Waiting on Heidi';
+  }
   return 'Needs review';
 }
 
@@ -120,7 +123,7 @@ export function offlineCountersignStatus(document) {
 export async function refreshOfflineCountersign({store, profileId, productionId, force = false, signwell = providerSignwell, onDocument}) {
   const key = offlineSigningKey(profileId, productionId);
   const record = await store.getWithMetadata(key, {type: 'json'}), agreement = record?.data;
-  if (!agreement?.id || (!force && Date.now() - (agreement.checkedAt || 0) < 300000))
+  if (!agreement?.id || agreement.status === 'Complete' || (!force && Date.now() - (agreement.checkedAt || 0) < 300000))
     return withSourceState(store, agreement);
   let next;
   try {

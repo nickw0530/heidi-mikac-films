@@ -6,13 +6,22 @@ export async function signwell(path, body) {
  if(!response.ok)throw Object.assign(Error('SignWell could not confirm this request. Check the SignWell dashboard.'),{status:502,providerStatus:response.status});
  return response.json();
 }
+export function hasSigned(recipient){
+ return Boolean(recipient?.signed_at)||['signed','completed'].includes(String(recipient?.status||'').trim().toLowerCase());
+}
 export function documentStatus(d){
- const actor=d.recipients?.find(r=>String(r.id)==='1');
- return d.status==='completed'?'Complete':['declined','canceled','cancelled','expired','bounced','error'].includes(d.status)?d.status:(actor?.signed_at||['signed','completed'].includes(actor?.status))?'Waiting on Heidi':'Waiting on actor';
+ const status=String(d.status||'').trim().toLowerCase();
+ if(status==='completed')return 'Complete';
+ if(['declined','canceled','cancelled','expired','bounced','error'].includes(status))return status;
+ const recipients=d.recipients||[];
+ const actor=recipients.find(r=>String(r.id)==='1');
+ const producer=recipients.find(r=>String(r.id)==='2');
+ if(!['created','draft'].includes(status)&&hasSigned(actor)&&hasSigned(producer)&&recipients.every(hasSigned))return 'Complete';
+ return hasSigned(actor)?'Waiting on Heidi':'Waiting on actor';
 }
 export async function refreshAgreement(store,key,force=false){
  const record=await store.getWithMetadata(key,{type:'json'}),a=record?.data;
- if(!a?.id||(!force&&Date.now()-(a.checkedAt||0)<300000))return a;
+ if(!a?.id||a.status==='Complete'||(!force&&Date.now()-(a.checkedAt||0)<300000))return a;
  try{
   const d=await signwell('documents/'+encodeURIComponent(a.id)+'/');
   const next={...a,status:documentStatus(d),checkedAt:Date.now(),syncError:null};

@@ -472,11 +472,15 @@ export default async function handle(req) {
     return json({ok:true});
   }
   if(action==='status'){
-    await target();const a=await get('agreements/'+uid);requireThat(a?.id,'No active signing request.');
+    await target();
+    const key='agreements/'+uid,record=await store.getWithMetadata(key,{type:'json'}),a=record?.data;
+    requireThat(a?.id,'No active signing request.');
+    if(a.status==='Complete')return json({status:'Complete',url:null});
     const d=await signwell('documents/'+encodeURIComponent(a.id)+'/');
     const [actor,producer]=['1','2'].map(id=>d.recipients?.find(r=>String(r.id)===id));
     const status=documentStatus(d);
-    await set('agreements/'+uid,{id:a.id,status,checkedAt:Date.now()});
+    const saved=await store.setJSON(key,{...a,status,checkedAt:Date.now(),syncError:null},{onlyIfMatch:record.etag});
+    if(!saved.modified)return json({status:(await get(key))?.status||status,url:null});
     const signer=admin?(status==='Waiting on Heidi'?producer:null):(status==='Waiting on actor'?actor:null);
     return json({status,url:signer?.embedded_signing_url||null});
   }

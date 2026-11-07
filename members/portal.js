@@ -128,7 +128,7 @@ async function load(){
   }else if(x.offline==='Waiting on Heidi'){
    controls=form('prepareOfflineCountersign','<p>Prepare an unsent draft for Heidi using this uploaded agreement. Existing signatures stay intact; Heidi receives a separate signature page.</p>','Prepare Heidi countersignature draft',x.id);
   }else if(/missing/i.test(x.offline))controls='<p>Upload the complete agreement before preparing Heidi’s signature request.</p>';
-  return '<div data-offline-profile="'+escape(x.id)+'"><p><b>Signed offline</b> · '+escape(x.offline)+' · <a href="'+escape(url('offline',x.id))+'">Download original agreement</a></p>'+controls+'<div data-offline-links></div></div>';
+  return '<div data-offline-profile="'+escape(x.id)+'"><p><b>Signed offline</b> · '+escape(x.offlineSigning?.status||x.offline)+' · <a href="'+escape(url('offline',x.id))+'">Download original agreement</a></p>'+controls+'<div data-offline-links></div></div>';
  };
  const uploaded=library.filter(x=>x.offline),eligibleUploads=uploaded.filter(x=>x.offline==='Waiting on Heidi'&&!x.offlineSigning);
  const uploadedDocuments=admin?'<section><h2>Uploaded agreements</h2><p>Prepare Heidi-only drafts from the signed files already on record. Drafts are not sent automatically.</p>'+(eligibleUploads.length?'<button type="button" data-prepare-offline>Prepare all eligible drafts ('+eligibleUploads.length+')</button>':'')+(uploaded.length?uploaded.map(x=>panel(escape(x.name)+' · '+escape(x.offlineSigning?.status||x.offline),offline(x))).join(''):'<p>No signed agreements have been uploaded for this production.</p>')+'</section>':'';
@@ -331,7 +331,7 @@ app.addEventListener('click',async e=>{
   if(raw){
    const u=new URL(raw);if(u.protocol!=='https:'||u.username||u.password||!(u.hostname==='signwell.com'||u.hostname.endsWith('.signwell.com')))throw Error('Unexpected signing address.');
    const link=document.createElement('a');link.href=u.href;link.target='_blank';link.rel='noopener noreferrer';link.textContent=result.editUrl?'Open countersignature draft in SignWell':'Open agreement for Heidi to sign';links.append(link);
-   const hint=document.createElement('p');hint.textContent=result.editUrl?'Review the original pages and Heidi’s signature page before sending. To reopen a used draft link, click Review countersignature draft again.':'Return here to check the status after signing.';links.append(hint);
+   const hint=document.createElement('p');hint.textContent=result.editUrl?'Review the original pages and Heidi’s signature page before sending. To reopen a used draft link, click Review countersignature draft again.':'The portal updates automatically after the final signature.';links.append(hint);
   }else if(result.status==='Waiting on Heidi')note.textContent='Waiting on Heidi. Either admin can open the agreement for Heidi to sign.';
  }catch(error){if(links.isConnected)links.textContent=error.message;}finally{button.disabled=false;}
 });
