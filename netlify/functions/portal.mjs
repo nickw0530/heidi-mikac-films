@@ -411,7 +411,6 @@ export default async function handle(req) {
       // A revoked account must receive a fresh identity on re-invitation.
       const index='active-email/'+hex;
       m={id:randomUUID(),email:address,name:string(body.name),role:string(body.role)};
-      m.publication={[productionId]:false};
       m.productions={[productionId]:{role:m.role,filmProfile:''}};
       if(body.filmProfile){allowPublicProfile(m);const base=entry(body.filmProfile);requireThat(base,'Unknown film profile.');m.productions[productionId].filmProfile=base.id;if(productionId==='written-in-the-dark')m.filmProfile=base.id;}
       const reserved=await store.setJSON(index,{id:m.id},{onlyIfNew:true});requireThat(reserved.modified,'An invitation already exists.');
