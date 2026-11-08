@@ -122,11 +122,11 @@ function combinedPeople(states){
  }
  for(const state of states){
   const linked=new Set(state.members.map(m=>m.filmProfile).filter(Boolean));
-  const add=(key,person)=>{
+  const add=(key,person,target='profile')=>{
    if(!people.has(key))people.set(key,{name:person.name,hasAccount:key.startsWith('account/'),films:[]});
-   people.get(key).films.push({id:state.productionId,name:state.film,role:person.role,profileId:person.id});
+   people.get(key).films.push({id:state.productionId,name:state.film,role:person.role,profileId:person.id,target});
   };
-  for(const member of state.members)add('account/'+member.id,member);
+  for(const member of state.members)add('account/'+member.id,member,'person');
   for(const profile of state.catalog){
    if(linked.has(profile.id))continue;
    const key=identity(profile),accounts=owners.get(key);
@@ -145,13 +145,10 @@ function renderCombinedOffice(states,picker){
  const wasOpen=!!app.querySelector('[data-combined-directory]')?.open;
  const row=person=>{
   const searchText=[person.name,...person.films.map(f=>f.role)].join(' ').toLowerCase();
-  const films=person.films.map(f=>{
-   const label=escape(f.name)+(f.role?' · '+escape(f.role):'');
-   if(person.hasAccount)return '<p>'+label+'</p>';
-   const params=new URLSearchParams({production:f.id,view:'people',profile:f.profileId});
-   return '<p><a href="?'+escape(params.toString())+'">'+label+'</a></p>';
-  }).join('');
-  return '<section data-roster-name="'+escape(searchText)+'"><strong>'+escape(person.name)+'</strong>'+films+'</section>';
+  const profileUrl=f=>'?'+escape(new URLSearchParams({production:f.id,view:'people',[f.target]:f.profileId}).toString());
+  const primary=person.films.find(f=>f.id===selectedProduction)||person.films[0];
+  const films=person.films.map(f=>'<p><a href="'+profileUrl(f)+'">'+escape(f.name)+'</a>'+(f.role?' · '+escape(f.role):'')+'</p>').join('');
+  return '<section data-roster-name="'+escape(searchText)+'"><strong><a href="'+profileUrl(primary)+'" title="Open profile for '+escape(primary.name)+'">'+escape(person.name)+'</a></strong>'+films+'</section>';
  };
  const rows=people.filter(person=>person.hasAccount).map(row).join('');
  const directory='<h2>Browse film profiles <span class="count">'+people.length+'</span></h2><details data-combined-directory'+(wasOpen?' open':'')+'><summary>Profiles without a portal account ('+available.length+')</summary>'+available.map(row).join('')+'</details>';
@@ -260,6 +257,7 @@ async function load(){
  (admin?'<strong>'+escape(m.paperworkStatus)+'</strong> ':'')+
  (m.agreement?.id?'<button data-status="'+m.id+'">'+(admin?(m.agreement.status==='Waiting on Heidi'?'Open for Heidi’s signature':'Check agreement status'):'Review my agreement')+'</button>':'')+
  ((m.referencePhoto||m.hasPhoto)?'<img data-headshot src="'+escape(m.hasPhoto?url('photo',m.id):m.referencePhoto)+'" alt="Saved headshot">':'')+(admin?profile(m):(m.hasPhoto?'<img data-headshot alt="Your saved headshot" src="'+escape(url('photo',m.id))+'">':'')+form('photo',file(m.hasPhoto?'Replace your headshot':'Upload your headshot · JPG or PNG, up to 4 MB','image/jpeg,image/png'),'Save headshot',m.id)+form('bio','<label>My bio<textarea name="bio" rows="4" maxlength="5000" placeholder="Tell us a little about yourself.">'+escape(m.profile?.bio)+'</textarea></label>','Save bio',m.id))+
+ (admin?panel('Send a document',form('resource','<p>For '+escape(m.name)+' · '+escape(s.film)+'</p><input type="hidden" name="audience" value="selected"><input type="hidden" name="recipient" value="'+escape(m.id)+'">'+input('title','Document title')+file('PDF · up to 4 MB','application/pdf'),'Send to '+escape(m.name),m.id)):'')+
  tasks(m)+(admin&&m.filmProfile&&library.find(x=>x.id===m.filmProfile)?offline(library.find(x=>x.id===m.filmProfile)):'')+(admin?linkControls(m):'')+(admin?panel('Assign a task',form('task',input('title','What needs to be done?'),'Assign task',m.id)):'')+
  (admin&&s.agreementReady&&(!m.agreement||m.agreement.cleared)?agreement(m):'')+(admin?publication(m)+recover(m)+(m.agreement?.syncError?'<p>'+escape(m.agreement.syncError)+'</p>':''):'')+(admin?panel('Manage access',(!m.activated&&s.mailReady?form('resend','','Resend invitation',m.id):'')+form('revoke','<label><input type="checkbox" name="keepPublic" checked> Keep public film credits and profile visible</label><p>Uncheck to also remove this account’s public profiles. Access is revoked immediately.</p>','Revoke portal access',m.id)):'')+'</section></details>').join('');
  const account=s.passwordSet?'':'<section><h2>Set your password</h2><p>Your sign-in name is <strong>'+escape(admin?s.self:s.members[0].email)+'</strong>.</p>'+form('choosePassword',newPassword,'Save my password')+'</section>';
@@ -281,6 +279,14 @@ async function load(){
   for(const tool of [...staging.children]){const action=tool.querySelector('form')?.dataset.action;const zone=['notice','resource'].includes(action)?'messages':action==='master'?'documents':'settings';app.querySelector('[data-tool-zone="'+zone+'"]').append(tool);}
   applyView();mountCalendar();
   const params=new URLSearchParams(location.search);
+  if(params.has('person')){
+   const card=[...app.querySelectorAll('[data-person]')].find(node=>node.dataset.person===params.get('person'));
+   if(card){
+    card.open=true;
+    card.scrollIntoView({block:'start'});
+    params.delete('person');history.replaceState(null,'',location.pathname+'?'+params);
+   }
+  }
   if(params.has('profile')){
    const profile=[...app.querySelectorAll('[data-catalog-profile]')].find(node=>node.dataset.catalogProfile===params.get('profile'));
    if(profile){
