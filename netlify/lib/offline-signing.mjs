@@ -1,3 +1,4 @@
+import {PDFDocument} from 'pdf-lib';
 import {createHash} from 'node:crypto';
 import {COUNTERSIGN_EMAIL, hasSigned, signwell as providerSignwell} from './signing.mjs';
 
@@ -82,10 +83,19 @@ export async function prepareOfflineCountersign({
     document = await signwell('documents/', {
       test_mode: live !== true,
       draft: true,
-      with_signature_page: true,
+      with_signature_page: false,
+      text_tags: false,
       embedded_signing: true,
       name: film + ' — ' + profile.name + ' — Heidi countersignature',
-      files: [{name: 'Original signed agreement.pdf', file_base64: bytes.toString('base64')}],
+      files: [
+        {name: 'Original signed agreement.pdf', file_base64: bytes.toString('base64')},
+        {name: 'Producer countersignature.pdf', file_base64: await countersignaturePage()}
+      ],
+      fields: [[], [
+        {type: 'signature', recipient_id: '2', page: 1, x: 64, y: 235, width: 240, height: 48, required: true},
+        {type: 'date', recipient_id: '2', page: 1, x: 345, y: 245, width: 145, height: 28,
+          required: true, lock_sign_date: true, date_format: 'MM/DD/YYYY'}
+      ]],
       recipients: [{id: '2', name: 'Heidi Mikac', email: HEIDI_COUNTERSIGN_EMAIL, send_email: true}]
     });
     if (!document?.id || typeof document.id !== 'string') throw fail('SignWell returned no document ID. Check the dashboard before continuing.', 502);
@@ -103,6 +113,15 @@ export async function prepareOfflineCountersign({
     try { await store.setJSON(key, recovery, {onlyIfMatch: lock.etag}); } catch { /* The original reservation still blocks duplicates. */ }
     throw error;
   }
+}
+
+async function countersignaturePage() {
+  const pdf = await PDFDocument.create();
+  const page = pdf.addPage([612, 792]);
+  page.drawText('Heidi Mikac Films', {x: 48, y: 728, size: 20});
+  page.drawText('Producer countersignature', {x: 48, y: 694, size: 16});
+  page.drawText('Heidi Mikac', {x: 48, y: 660, size: 12});
+  return Buffer.from(await pdf.save()).toString('base64');
 }
 
 export function offlineCountersignStatus(document) {

@@ -76,9 +76,11 @@ async function packet(bytes, terms) {
   write(pages[0],51,526.6,489,"Actor's services shall be rendered during principal photography scheduled to begin on "+terms.start+".",white);
   write(pages[1],51,270.8,131,terms.credit,white);
   write(pages[1],310,383.3,150,terms.legal,white);
-  for(const [x,top,field] of [[310,414,'s:1:y'],[310,457,'af_n:1:y'],[310,500,'af_d_s:1:y'],[52,414,'s:2:y'],[52,500,'af_d_s:2:y']]) {
+  for(const [x,top,field] of [[310,414,'s:1:y'],[310,457,'af_n:1:y'],[310,500,'af_d_s:1:y'],[52,414,'s:2:y']]) {
     pages[1].drawText('{{'+field+'          }}',{x,y:pages[1].getHeight()-top,size:12,font,color:white});
   }
+  // The ninth date-tag option locks this field to the actual signing date.
+  pages[1].drawText('{{d:2:y::::120:24:y}}',{x:52,y:pages[1].getHeight()-500,size:9,font,color:white});
   return Buffer.from(await doc.save());
 }
 export default async function handle(req) {
