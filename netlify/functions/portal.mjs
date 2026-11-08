@@ -24,6 +24,11 @@ const allowPublicProfile=m=>requireThat(!practiceName(m.name),'Practice accounts
 const productions=[{id:'written-in-the-dark',name:'Written in the Dark'},{id:'wherein-lies-continue',name:'Wherein Lies Continue'}];
 const catalogs={'written-in-the-dark':darkCatalog,'wherein-lies-continue':whereinCatalog};
 const normalizeName=name=>name.trim().toLowerCase().replace(/[^a-z0-9]/g,'');
+function publicCredit(profile) {
+  if (typeof profile.role !== 'string' || !profile.role.includes(',')) return profile;
+  const titles = profile.role.split(/[,·]/).map(title => title.trim()).filter(Boolean);
+  return {...profile, role: titles.join(' · ')};
+}
 const assignments=m=>m.productions??{'written-in-the-dark':{role:m.role,filmProfile:m.filmProfile||''}};
 const findProfile=(m,productionId)=>{
  const assigned=assignments(m)[productionId];
@@ -118,7 +123,7 @@ export default async function handle(req) {
   requireThat(post||req.method==='GET','Unsupported method.',405);
   if(post) requireThat(req.headers.get('origin')===url.origin,'Origin rejected.',403);
   const entry=id=>catalog.find(item=>item.id===id);
-  if(!post&&action==='published')return json(await publicItems(),{'Access-Control-Allow-Origin':'*','Cache-Control':'public, max-age=30'});
+  if(!post&&action==='published')return json((await publicItems()).map(publicCredit),{'Access-Control-Allow-Origin':'*','Cache-Control':'public, max-age=30'});
   if(!post&&action==='memberPhoto'){
     const id=url.searchParams.get('id');requireThat(uuid.test(id),'Invalid image.');
     const m=await get('members/'+id);
