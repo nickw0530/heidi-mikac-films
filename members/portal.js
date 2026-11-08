@@ -123,8 +123,8 @@ function combinedPeople(states){
  for(const state of states){
   const linked=new Set(state.members.map(m=>m.filmProfile).filter(Boolean));
   const add=(key,person)=>{
-   if(!people.has(key))people.set(key,{name:person.name,films:[]});
-   people.get(key).films.push({id:state.productionId,name:state.film,role:person.role});
+   if(!people.has(key))people.set(key,{name:person.name,hasAccount:key.startsWith('account/'),films:[]});
+   people.get(key).films.push({id:state.productionId,name:state.film,role:person.role,profileId:person.id});
   };
   for(const member of state.members)add('account/'+member.id,member);
   for(const profile of state.catalog){
@@ -141,8 +141,21 @@ function combinedPeople(states){
 function renderCombinedOffice(states,picker){
  const people=combinedPeople(states);
  const query=app.querySelector('[data-roster-search]')?.value||'';
- const rows=people.map(person=>'<section data-roster-name="'+escape([person.name,...person.films.map(f=>f.role)].join(' ').toLowerCase())+'"><strong>'+escape(person.name)+'</strong>'+person.films.map(f=>'<p>'+escape(f.name)+(f.role?' · '+escape(f.role):'')+'</p>').join('')+'</section>').join('');
- app.innerHTML='<div class="office-header">'+picker+form('logout','','Sign out')+'</div><p>Manage profiles and paperwork in '+states.map(f=>'<a href="?'+escape(new URLSearchParams({production:f.productionId,view:'people'}).toString())+'">'+escape(f.film)+'</a>').join(' or ')+'.</p><h2>People &amp; profiles <span class="count">'+people.length+'</span></h2><label>Search name or role<input type="search" data-roster-search value="'+escape(query)+'"></label>'+rows;
+ const available=people.filter(person=>!person.hasAccount);
+ const wasOpen=!!app.querySelector('[data-combined-directory]')?.open;
+ const row=person=>{
+  const searchText=[person.name,...person.films.map(f=>f.role)].join(' ').toLowerCase();
+  const films=person.films.map(f=>{
+   const label=escape(f.name)+(f.role?' · '+escape(f.role):'');
+   if(person.hasAccount)return '<p>'+label+'</p>';
+   const params=new URLSearchParams({production:f.id,view:'people',profile:f.profileId});
+   return '<p><a href="?'+escape(params.toString())+'">'+label+'</a></p>';
+  }).join('');
+  return '<section data-roster-name="'+escape(searchText)+'"><strong>'+escape(person.name)+'</strong>'+films+'</section>';
+ };
+ const rows=people.filter(person=>person.hasAccount).map(row).join('');
+ const directory='<h2>Browse film profiles <span class="count">'+people.length+'</span></h2><details data-combined-directory'+(wasOpen?' open':'')+'><summary>Profiles without a portal account ('+available.length+')</summary>'+available.map(row).join('')+'</details>';
+ app.innerHTML='<div class="office-header">'+picker+form('logout','','Sign out')+'</div><p>Manage profiles and paperwork in '+states.map(f=>'<a href="?'+escape(new URLSearchParams({production:f.productionId,view:'people'}).toString())+'">'+escape(f.film)+'</a>').join(' or ')+'.</p><h2>People &amp; profiles <span class="count">'+people.length+'</span></h2><label>Search name or role<input type="search" data-roster-search value="'+escape(query)+'"></label>'+rows+directory;
  if(query)app.querySelector('[data-roster-search]').dispatchEvent(new Event('input',{bubbles:true}));
 }
 
@@ -205,7 +218,7 @@ async function load(){
  const audit=people.map(outstanding);
  const group=(label,items,detail)=>'<details class="audit-group"><summary>'+label+' <b>'+items.length+'</b></summary>'+(items.length?'<ul>'+items.map(x=>'<li><strong>'+escape(x.name)+'</strong><span>'+escape(detail(x))+'</span></li>').join('')+'</ul>':'<p>Nothing outstanding.</p>')+'</details>';
  const attention='<section class="audit"><small>'+escape(s.film)+' · PRODUCTION OFFICE</small><h2>Needs attention</h2><p>Open a category to see who needs follow-up.</p>'+group('No agreement on file',audit.filter(x=>!x.exempt&&x.status==='No agreement on file'),x=>x.status)+group('Paperwork in progress',audit.filter(x=>(!x.exempt||/waiting on Heidi/i.test(x.status))&&!['Complete','Not required','No agreement on file'].includes(x.status)),x=>x.status)+group('Missing profile items or open tasks',audit.filter(x=>x.gaps.length),x=>x.gaps.join(' · '))+'</section>';
- const directory=admin?'<p>Profiles available to invite</p>'+available.map(x=>panel(escape(x.name)+' · '+escape(x.role),'<img loading="lazy" alt="Approved headshot" src="'+escape(x.photo)+'"><p style="white-space:pre-line">'+escape(x.bio)+'</p>'+offline(x)+(s.mailReady?form('invite',input('email','Invitation email','email')+['name','role','filmProfile'].map((k,i)=>'<input type="hidden" name="'+k+'" value="'+escape([x.name,x.role,x.id][i])+'">').join(''),'Invite '+escape(x.name)):'') )).join(''):'';
+ const directory=admin?'<p>Profiles available to invite</p>'+available.map(x=>'<div data-catalog-profile="'+escape(x.id)+'">'+panel(escape(x.name)+' · '+escape(x.role),'<img loading="lazy" alt="Approved headshot" src="'+escape(x.photo)+'"><p style="white-space:pre-line">'+escape(x.bio)+'</p>'+offline(x)+(s.mailReady?form('invite',input('email','Invitation email','email')+['name','role','filmProfile'].map((k,i)=>'<input type="hidden" name="'+k+'" value="'+escape([x.name,x.role,x.id][i])+'">').join(''),'Invite '+escape(x.name)):'') )+'</div>').join(''):'';
  const linkControls=m=>m.practice?'':m.filmProfile?'<p>Biography and headshot sync automatically to assigned film websites.</p>':panel('Link an existing film profile',form('linkProfile','<label>Approved profile<select name="filmProfile" required><option value="">Select person</option>'+available.map(x=>'<option value="'+escape(x.id)+'" '+(x.name===m.name?'selected':'')+'>'+escape(x.name)+'</option>').join('')+'</select></label>','Confirm profile match',m.id));
  const audience='<fieldset><legend>Who should receive this?</legend><select name="audience" aria-label="Audience"><option value="all">Include all cast and crew</option><option value="selected">Select individuals</option></select><div data-recipients hidden>'+s.members.map(m=>'<label><input type="checkbox" style="width:auto;display:inline" name="recipient" value="'+escape(m.id)+'"> '+escape(m.name)+' · '+escape(m.role)+'</label>').join('')+'<small>Choose from the portal roster.</small></div></fieldset>';
  const setup=panel('Welcome video',form('welcomeSettings','<label>Direct video URL (MP4)<input type="url" name="video" value="'+escape(s.welcome?.video)+'"></label><label>Thumbnail URL (optional)<input type="url" name="poster" value="'+escape(s.welcome?.poster)+'"></label><label>English captions URL (.vtt)<input type="url" name="captions" value="'+escape(s.welcome?.captions)+'"></label>','Save welcome video'))+panel('Invite cast or crew',s.mailReady?form('invite',input('name','Name')+input('role','Character or crew title')+input('email','Email','email'),'Email invitation'):'<p>Email invitations are waiting for the production sender to be connected.</p>')+
@@ -267,6 +280,16 @@ async function load(){
   const staging=document.createElement('div');staging.innerHTML=setup;
   for(const tool of [...staging.children]){const action=tool.querySelector('form')?.dataset.action;const zone=['notice','resource'].includes(action)?'messages':action==='master'?'documents':'settings';app.querySelector('[data-tool-zone="'+zone+'"]').append(tool);}
   applyView();mountCalendar();
+  const params=new URLSearchParams(location.search);
+  if(params.has('profile')){
+   const profile=[...app.querySelectorAll('[data-catalog-profile]')].find(node=>node.dataset.catalogProfile===params.get('profile'));
+   if(profile){
+    profile.closest('details').open=true;
+    profile.querySelector('details').open=true;
+    profile.scrollIntoView({block:'start'});
+    params.delete('profile');history.replaceState(null,'',location.pathname+'?'+params);
+   }
+  }
  }
  if(!admin)app.innerHTML=productionPicker+'<p>Cast &amp; crew · One shared profile for all your productions</p>'+form('logout','','Sign out')+account+s.members.map(memberView).join('')+'<section class="member-panel member-board"><h2>Production board</h2>'+(updates||'<p>No updates posted yet.</p>')+'</section>';
  if(!admin&&s.welcome?.video){
@@ -303,6 +326,8 @@ app.addEventListener('input',e=>{
  if(!e.target.matches('[data-roster-search]'))return;
  const query=e.target.value.trim().toLowerCase();
  for(const row of app.querySelectorAll('[data-roster-name]'))row.hidden=!row.dataset.rosterName.includes(query);
+ const directory=app.querySelector('[data-combined-directory]');
+ if(query&&directory?.querySelector('[data-roster-name]:not([hidden])'))directory.open=true;
 });
 app.addEventListener('change',e=>{
  const box=e.target.closest('[data-office-film]');
