@@ -233,12 +233,12 @@ export default async function handle(req) {
   if(!admin&&action==='home'&&!url.searchParams.has('production')&&Object.keys(memberProductions).length){
     productionId=Object.keys(memberProductions)[0];catalog=catalogs[productionId];film=productions.find(p=>p.id===productionId).name;
   }
-  if(!admin&&!['home','bio','photo','choosePassword','welcomePlayed','requestProductions'].includes(action))requireThat(memberProductions[productionId],'You are not assigned to this production.',403);
+  if(!admin&&!['home','bio','photo','choosePassword','welcomePlayed','requestProductions','calendarEvents'].includes(action))requireThat(memberProductions[productionId],'You are not assigned to this production.',403);
   if(!admin&&action==='home'&&Object.keys(memberProductions).length)requireThat(memberProductions[productionId],'You are not assigned to this production.',403);
   if(action==='calendarConnect'||action==='calendarEvents'){
-    onlyAdmin(); requireThat(url.origin==='https://heidimikacfilms.com','Production only.',403);
-    if(action==='calendarConnect'){requireThat(post,'Use the connect button.',405);return await beginCalendar(store,sessionKey);}
-    return await calendarEvents(store);
+    requireThat(url.origin==='https://heidimikacfilms.com','Production only.',403);
+    if(action==='calendarConnect'){onlyAdmin();requireThat(post,'Use the connect button.',405);return await beginCalendar(store,sessionKey);}
+    return await calendarEvents(store,admin,url.searchParams.get('event'));
   }
   const target=async()=>{requireThat(uuid.test(uid)&& (admin||uid===self),'Access denied.',403);const m=await get('members/'+uid);requireThat(m,'Member unavailable.',404);if(!['bio','photo','revoke','enrollments','resend'].includes(action))requireThat(assignments(m)[productionId],'Member is not assigned to this production.',403);return m};
   const hasOfflineSigning=profileId=>rawStore.getMetadata(offlineSigningKey(profileId,productionId));

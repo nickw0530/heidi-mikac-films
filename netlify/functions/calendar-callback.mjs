@@ -29,28 +29,86 @@ async function exchange(fields){
 }
 async function graph(path,token){
  const response=await fetch('https://graph.microsoft.com/v1.0/'+path,{signal:AbortSignal.timeout(15000),headers:{Authorization:'Bearer '+token}});
- if(!response.ok)throw new Error('Calendar unavailable');
+ if(!response.ok)throw Object.assign(new Error('Calendar unavailable'),{status:response.status});
  return response.json();
+}
+const fields='id,subject,start,end,isAllDay,isCancelled,sensitivity';
+const visible=e=>!e.isCancelled&&e.sensitivity==='normal';
+const display=e=>({key:digest(e.id),title:e.subject,start:e.start.dateTime,end:e.end.dateTime,allDay:e.isAllDay});
+async function* pages(path,token){
+ while(path){
+  const data=await graph(path,token);
+  yield data.value;
+  const next=data['@odata.nextLink'];
+  if(!next)break;
+  const u=new URL(next);
+  if(u.origin!=='https://graph.microsoft.com'||!u.pathname.startsWith('/v1.0/'))throw Error('Unexpected calendar page');
+  path=u.pathname.slice('/v1.0/'.length)+u.search;
+ }
 }
 async function upcoming(token){
  const now=Date.now();
- const params=new URLSearchParams({startDateTime:new Date(now).toISOString(),endDateTime:new Date(now+30*86400000).toISOString(),'$select':'subject,start,end,isAllDay,isCancelled','$orderby':'start/dateTime','$top':'100'});
- let path='me/calendarView?'+params;const events=[];
- while(path){
-  const data=await graph(path,token);events.push(...data.value);
-  const next=data['@odata.nextLink'];
-  if(next){const u=new URL(next);if(u.origin!=='https://graph.microsoft.com'||!u.pathname.startsWith('/v1.0/'))throw Error('Unexpected calendar page');path=u.pathname.slice('/v1.0/'.length)+u.search;}else path=null;
- }
- return events.filter(e=>!e.isCancelled).map(e=>({title:e.subject,start:e.start.dateTime,end:e.end.dateTime,allDay:e.isAllDay}));
+ const params=new URLSearchParams({startDateTime:new Date(now).toISOString(),endDateTime:new Date(now+30*86400000).toISOString(),'$select':fields,'$orderby':'start/dateTime','$top':'100'});
+ const rows=[];
+ for await(const page of pages('me/calendarView?'+params,token))rows.push(...page.filter(e=>!e.isCancelled));
+ return rows.map(e=>({...display(e),memberVisible:visible(e)}));
 }
-export async function events(store){
+async function access(store,record){
+ const token=await exchange({grant_type:'refresh_token',refresh_token:record.data.refresh});
+ const updated={...record.data,refresh:token.refresh_token||record.data.refresh};
+ await store.setJSON(binding,updated,{onlyIfMatch:record.etag});
+ return token.access_token;
+}
+export async function events(store,admin,eventKey){
  const record=await store.getWithMetadata(binding,{type:'json'});
  if(!record)return Response.json({connected:false},{headers});
- if(record.data.items&&record.data.cachedUntil>Date.now())return Response.json({connected:true,items:record.data.items},{headers});
- const token=await exchange({grant_type:'refresh_token',refresh_token:record.data.refresh});
- const items=await upcoming(token.access_token);
- await store.setJSON(binding,{refresh:token.refresh_token||record.data.refresh,items,cachedUntil:Date.now()+120000},{onlyIfMatch:record.etag});
- return Response.json({connected:true,items},{headers});
+ let token;
+ let rows=record.data.calendarRows;
+ if(!rows||record.data.cachedUntil<=Date.now()){
+  token=await access(store,record);
+  rows=await upcoming(token);
+  const latest=await store.getWithMetadata(binding,{type:'json'});
+  if(latest)await store.setJSON(binding,{...latest.data,calendarRows:rows,cachedUntil:Date.now()+120000},{onlyIfMatch:latest.etag});
+ }
+ const items=rows.filter(e=>admin||e.memberVisible).map(({memberVisible,...e})=>e);
+ let selected=null;
+ if(/^[\w-]{43}$/.test(eventKey||'')){
+  const id=await store.get('calendar/event-links/'+eventKey);
+  if(id){
+   token??=await access(store,await store.getWithMetadata(binding,{type:'json'}));
+   try{
+    const event=await graph('me/calendar/events/'+encodeURIComponent(id)+'?$select='+fields,token);
+    if(admin?!event.isCancelled:visible(event))selected=display(event);
+   }catch(error){if(error.status!==404&&error.status!==410)throw error;}
+  }
+ }
+ return Response.json({connected:true,items,selected},{headers});
+}
+export async function notifyNewEvents(store,enqueue,portalUrl){
+ const checkpoint='calendar/notification-cursor';
+ const end=new Date(Date.now()-60000).toISOString();
+ const cursor=await store.getWithMetadata(checkpoint,{type:'json'});
+ if(!cursor){await store.setJSON(checkpoint,end,{onlyIfNew:true});return;}
+ if(cursor.data>=end)return;
+ const connection=await store.getWithMetadata(binding,{type:'json'});
+ if(!connection)return;
+ const token=await access(store,connection);
+ const query=new URLSearchParams({'$select':fields+',createdDateTime','$filter':'createdDateTime ge '+cursor.data+' and createdDateTime lt '+end,'$top':'100'});
+ let members;
+ for await(const page of pages('me/calendar/events?'+query,token)){
+  for(const event of page.filter(visible)){
+   if(!members){
+    const {blobs}=await store.list({prefix:'members/'});
+    members=(await Promise.all(blobs.map(b=>store.get(b.key,{type:'json'})))).filter(m=>m&&!m.revoked&&m.email);
+   }
+   const key=digest(event.id);
+   await store.set('calendar/event-links/'+key,event.id,{onlyIfNew:true});
+   for(const member of members){
+    await enqueue(store,member,'calendar/'+key,'New event on the production calendar','An event has been added to the Heidi Mikac Films calendar. Sign in to see the event and its scheduled time.\n\n'+portalUrl+'?event='+key);
+   }
+  }
+ }
+ await store.setJSON(checkpoint,end,{onlyIfMatch:cursor.etag});
 }
 export default async function callback(req){
  try{

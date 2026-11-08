@@ -3,6 +3,7 @@ export const mailReady=()=>Boolean(process.env.RESEND_API_KEY&&process.env.HMF_M
 export const portalUrl='https://heidimikacfilms.com/members/';
 export async function enqueue(store, member, event, subject, text, expires=0){
  const key='outbox/'+createHash('sha256').update(member.id+'/'+event).digest('hex');
+ if(event.startsWith('calendar/')&&(await store.getMetadata('mail-log/'+key.split('/')[1])||await store.getMetadata('failed-mail/'+key.split('/')[1])))return;
  await store.setJSON(key,{id:member.id,to:member.email,subject,text,expires,created:Date.now(),attempts:0,nextAttempt:0},{onlyIfNew:true});
 }
 
@@ -10,8 +11,8 @@ const escapeHtml=value=>String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<'
 export function emailHtml(message){
  const paragraphs=String(message.text).split(/\n\n+/).map(paragraph=>{
   const escaped=escapeHtml(paragraph);
-  const linked=escaped.replace(/https:\/\/heidimikacfilms\.com\/members\/(?:\?production=[a-z-]+)?(?:#(?:invite|reset)=[a-f0-9]{64})?(?=\s|$)/g,link=>{
-   const label=link.includes('#invite=')?'Set up your account':link.includes('#reset=')?'Reset your password':'Open your dashboard';
+  const linked=escaped.replace(/https:\/\/heidimikacfilms\.com\/members\/(?:\?(?:production=[a-z-]+|event=[\w-]{43}))?(?:#(?:invite|reset)=[a-f0-9]{64})?(?=\s|$)/g,link=>{
+   const label=link.includes('#invite=')?'Set up your account':link.includes('#reset=')?'Reset your password':link.includes('?event=')?'View event':'Open your dashboard';
    return '<a href="'+link+'" style="display:inline-block;background:#803d48;color:#ffffff;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:bold">'+label+'</a>';
   });
   return '<p style="margin:0 0 20px">'+linked.replace(/\n/g,'<br>')+'</p>';

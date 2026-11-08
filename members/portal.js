@@ -302,6 +302,7 @@ async function load(){
   }
  }
  if(!admin)app.innerHTML=productionPicker+'<p>Cast &amp; crew · One shared profile for all your productions</p>'+form('logout','','Sign out')+account+s.members.map(memberView).join('')+'<section class="member-panel member-board"><h2>Production board</h2>'+(updates||'<p>No updates posted yet.</p>')+'</section>';
+ if(!admin){app.insertAdjacentHTML('beforeend','<div id="calendar-slot"></div>');mountCalendar(false);}
  if(!admin&&s.welcome?.video){
   const section=document.createElement('section');section.className='member-panel';section.innerHTML='<small>CAST &amp; CREW ORIENTATION</small><h2>Welcome to Heidi Mikac Films</h2><div style="background:linear-gradient(125deg,#492430,#15161a);padding:16px"><video controls playsinline preload="metadata" style="width:100%;display:none"></video><button type="button">▶ Play welcome video</button></div><p data-audio hidden>Sound is off. Use the speaker control to hear Heidi and Nick.</p>';
   app.querySelector('.member-tasks')?.before(section);
@@ -471,15 +472,19 @@ app.addEventListener('click',async e=>{
 load().catch(e=>{app.textContent='Portal unavailable.';message.textContent=e.message;});
 
 
-async function mountCalendar(){
+let focusedCalendarEvent='';
+async function mountCalendar(admin=true){
+ const key=new URLSearchParams(location.search).get('event');
+ const eventKey=/^[\w-]{43}$/.test(key||'')?key:'';
  const panel=document.createElement('aside');
  panel.className='exchange-calendar';panel.innerHTML='<h2>Production calendar</h2><p>Loading calendar…</p>';
  app.querySelector('#calendar-slot')?.append(panel);
  const refresh=async()=>{
   try{
-   const result=await request('calendarEvents');
+   const result=await request('calendarEvents',undefined,'',eventKey?'&event='+encodeURIComponent(eventKey):'');
    if(!panel.isConnected)return;
    if(!result.connected){
+    if(!admin){panel.innerHTML='<h2>Production calendar</h2><p>The calendar is currently unavailable.</p>';return;}
 
     const connect=document.createElement('button');
     connect.textContent='Connect Outlook calendar';
@@ -487,19 +492,24 @@ async function mountCalendar(){
     const heading=document.createElement('h2');heading.textContent='Production calendar';const note=document.createElement('p');note.textContent='Connect the hello@ Exchange calendar.';panel.replaceChildren(heading,note,connect);
    }else{
     const list=document.createElement('ul');
-    for(const event of result.items){
+    const rows=result.selected?[result.selected,...result.items.filter(e=>e.key!==eventKey)]:result.items;
+    for(const event of rows){
      const item=document.createElement('li');
      const date=new Date(event.start+'Z');
      const when=event.allDay?event.start.slice(0,10)+' · All day':date.toLocaleString('en-US',{timeZone:'America/Indiana/Indianapolis',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
      item.textContent=when+' — '+event.title;
+     if(event.key===eventKey&&result.selected){const label=document.createElement('strong');label.textContent='Selected event · ';item.prepend(label);}
      list.append(item);
     }
     const heading=document.createElement('h2');heading.textContent='Production calendar';
     const note=document.createElement('p');note.textContent=result.items.length?'Next 30 days · Eastern time':'No upcoming events in the next 30 days.';
+    if(eventKey&&!result.selected)note.textContent='The linked event is no longer available. '+note.textContent;
+    if(result.selected)note.textContent='The linked event is listed first. Upcoming events follow in Eastern time.';
     panel.replaceChildren(heading,note,list);
+    if(eventKey&&focusedCalendarEvent!==eventKey){focusedCalendarEvent=eventKey;panel.scrollIntoView({block:'start'});}
    }
    panel.className='exchange-calendar';panel.hidden=false;
-  }catch{panel.innerHTML='<h2>Production calendar</h2><p>Calendar unavailable. Your connection may need attention.</p>';const retry=document.createElement('button');retry.textContent='Try again';retry.onclick=refresh;const reconnect=document.createElement('button');reconnect.textContent='Reconnect Outlook';reconnect.onclick=async()=>{try{location.assign((await request('calendarConnect',{})).url);}catch(e){message.textContent=e.message;}};panel.append(retry,reconnect);}
+  }catch{panel.innerHTML='<h2>Production calendar</h2><p>Calendar unavailable. Your connection may need attention.</p>';const retry=document.createElement('button');retry.textContent='Try again';retry.onclick=refresh;const reconnect=document.createElement('button');reconnect.textContent='Reconnect Outlook';reconnect.onclick=async()=>{try{location.assign((await request('calendarConnect',{})).url);}catch(e){message.textContent=e.message;}};panel.append(retry);if(admin)panel.append(reconnect);}
 
  };
  await refresh();
