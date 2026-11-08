@@ -99,7 +99,7 @@ function login(){
  app.innerHTML='<section><h2>Welcome back</h2>'+form('passwordLogin','<label>Email or admin name<input name="username" autocomplete="username" required></label><label>Password<input type="password" name="password" autocomplete="current-password" required></label>','Sign in')+'</section>'+panel('Forgot your password?',form('requestReset','<label>Email or admin name<input name="username" autocomplete="username" required></label>','Email reset link'))+(new URLSearchParams(location.search).has('setup')?panel('First-time admin setup',form('login',input('code','Existing access key','password'),'Continue to password setup')):'');
 }
 function adminProductionPicker(productions, selected){
- const all=selected.length===productions.length;
+ const all=selected.length>0&&selected.length===productions.length;
  const checkbox=(value,label,checked)=>'<label><input style="width:auto;display:inline" type="checkbox" data-office-film="'+escape(value)+'" '+(checked?'checked':'')+'> '+escape(label)+'</label>';
  return '<fieldset class="production-picker"><legend>Productions</legend>'+checkbox('all','All productions',all)+productions.map(p=>checkbox(p.id,p.name,selected.includes(p.id))).join('')+'</fieldset>';
 }
@@ -165,9 +165,10 @@ async function load(){
  let s;try{s=await request('home');}catch(e){if(e.status===401)return login();throw e;}
  lastState=s;let admin=s.admin;
  selectedProduction=s.productionId;
- const requested=new URLSearchParams(location.search).getAll('films');
+ const params=new URLSearchParams(location.search);
+ const requested=params.getAll('films');
  const selected=s.productions.filter(p=>requested.includes(p.id)).map(p=>p.id);
- if(!selected.length&&!requested.includes('none'))selected.push(s.productionId);
+ if(!requested.length&&params.get('production')===s.productionId)selected.push(s.productionId);
  const productionPicker=admin?adminProductionPicker(s.productions,selected):s.productions.length?'<label class="production-picker">Production<select data-production>'+s.productions.map(p=>'<option value="'+escape(p.id)+'" '+(p.id===s.productionId?'selected':'')+'>'+escape(p.name)+'</option>').join('')+'</select></label>':'<p>No productions assigned yet. Production will add them to your account.</p>';
  if(admin&&!selected.length){
   app.innerHTML='<div class="office-header">'+productionPicker+form('logout','','Sign out')+'</div><h2>People &amp; profiles <span class="count">0</span></h2><p>Select a production to see its cast and crew.</p>';
