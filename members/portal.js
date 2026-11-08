@@ -106,6 +106,20 @@ function adminProductionPicker(productions, selected){
 
 function combinedPeople(states){
  const people=new Map();
+ const owners=new Map();
+ // Film catalogs reuse a profile ID for many returning cast and crew members.
+ // Include the credited name because short IDs alone can coincide across films.
+ const identity=profile=>JSON.stringify([profile.id,profile.name.trim().toLowerCase()]);
+ for(const state of states){
+  const catalog=new Map(state.catalog.map(profile=>[profile.id,profile]));
+  for(const member of state.members){
+   const profile=catalog.get(member.filmProfile);
+   if(!profile)continue;
+   const key=identity(profile);
+   if(!owners.has(key))owners.set(key,new Set());
+   owners.get(key).add(member.id);
+  }
+ }
  for(const state of states){
   const linked=new Set(state.members.map(m=>m.filmProfile).filter(Boolean));
   const add=(key,person)=>{
@@ -114,7 +128,11 @@ function combinedPeople(states){
   };
   for(const member of state.members)add('account/'+member.id,member);
   for(const profile of state.catalog){
-   if(!linked.has(profile.id))add(state.productionId+'/'+profile.id,profile);
+   if(linked.has(profile.id))continue;
+   const key=identity(profile),accounts=owners.get(key);
+   if(accounts?.size===1)add('account/'+[...accounts][0],profile);
+   else if(accounts?.size>1)add(state.productionId+'/'+key,profile);
+   else add('catalog/'+key,profile);
   }
  }
  return [...people.values()].sort((a,b)=>a.name.localeCompare(b.name));
