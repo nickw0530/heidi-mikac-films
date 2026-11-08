@@ -1,14 +1,14 @@
 const app=document.querySelector('#app'), message=document.querySelector('#message');
 const endpoint='/.netlify/functions/portal';
 const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let activeView='overview',peopleSearch='',peopleFilter='all',lastState,offlineBulkInProgress=false;
+let activeView=new URLSearchParams(location.search).get('view')==='people'?'people':'overview',peopleSearch='',peopleFilter='all',lastState,offlineBulkInProgress=false;
 const dirty=()=>[...app.querySelectorAll('form[data-dirty]')];
 window.addEventListener('beforeunload',e=>{if(dirty().length){e.preventDefault();e.returnValue='';}});
 let selectedProduction=new URLSearchParams(location.search).get('production')||'';
-const url=(action,id='')=>endpoint+'?'+new URLSearchParams({action,id,...(selectedProduction?{production:selectedProduction}:{})});
-async function request(action,body,id='',suffix=''){
+const url=(action,id='',production=selectedProduction)=>endpoint+'?'+new URLSearchParams({action,id,...(production?{production}:{})});
+async function request(action,body,id='',suffix='',production=selectedProduction){
  const raw=body instanceof File;
- const r=await fetch(url(action,id)+suffix,{method:body===undefined?'GET':'POST',headers:raw?{}:{'Content-Type':'application/json'},body:raw?body:JSON.stringify(body),cache:'no-store'});
+ const r=await fetch(url(action,id,production)+suffix,{method:body===undefined?'GET':'POST',headers:raw?{}:{'Content-Type':'application/json'},body:raw?body:JSON.stringify(body),cache:'no-store'});
  if(!r.ok){let failure=await r.json().catch(()=>({}));throw Object.assign(new Error(failure.error||'Request failed.'),{status:r.status});}
  return r.headers.get('content-type')?.includes('application/json')?r.json():r.blob();
 }
@@ -98,6 +98,36 @@ function login(){
  clearSigning();
  app.innerHTML='<section><h2>Welcome back</h2>'+form('passwordLogin','<label>Email or admin name<input name="username" autocomplete="username" required></label><label>Password<input type="password" name="password" autocomplete="current-password" required></label>','Sign in')+'</section>'+panel('Forgot your password?',form('requestReset','<label>Email or admin name<input name="username" autocomplete="username" required></label>','Email reset link'))+(new URLSearchParams(location.search).has('setup')?panel('First-time admin setup',form('login',input('code','Existing access key','password'),'Continue to password setup')):'');
 }
+function adminProductionPicker(productions, selected){
+ const all=selected.length===productions.length;
+ const checkbox=(value,label,checked)=>'<label><input style="width:auto;display:inline" type="checkbox" data-office-film="'+escape(value)+'" '+(checked?'checked':'')+'> '+escape(label)+'</label>';
+ return '<fieldset class="production-picker"><legend>Productions</legend>'+checkbox('all','All productions',all)+productions.map(p=>checkbox(p.id,p.name,selected.includes(p.id))).join('')+'</fieldset>';
+}
+
+function combinedPeople(states){
+ const people=new Map();
+ for(const state of states){
+  const linked=new Set(state.members.map(m=>m.filmProfile).filter(Boolean));
+  const add=(key,person)=>{
+   if(!people.has(key))people.set(key,{name:person.name,films:[]});
+   people.get(key).films.push({id:state.productionId,name:state.film,role:person.role});
+  };
+  for(const member of state.members)add('account/'+member.id,member);
+  for(const profile of state.catalog){
+   if(!linked.has(profile.id))add(state.productionId+'/'+profile.id,profile);
+  }
+ }
+ return [...people.values()].sort((a,b)=>a.name.localeCompare(b.name));
+}
+
+function renderCombinedOffice(states,picker){
+ const people=combinedPeople(states);
+ const query=app.querySelector('[data-roster-search]')?.value||'';
+ const rows=people.map(person=>'<section data-roster-name="'+escape([person.name,...person.films.map(f=>f.role)].join(' ').toLowerCase())+'"><strong>'+escape(person.name)+'</strong>'+person.films.map(f=>'<p>'+escape(f.name)+(f.role?' · '+escape(f.role):'')+'</p>').join('')+'</section>').join('');
+ app.innerHTML='<div class="office-header">'+picker+form('logout','','Sign out')+'</div><p>Manage profiles and paperwork in '+states.map(f=>'<a href="?'+escape(new URLSearchParams({production:f.productionId,view:'people'}).toString())+'">'+escape(f.film)+'</a>').join(' or ')+'.</p><h2>People &amp; profiles <span class="count">'+people.length+'</span></h2><label>Search name or role<input type="search" data-roster-search value="'+escape(query)+'"></label>'+rows;
+ if(query)app.querySelector('[data-roster-search]').dispatchEvent(new Event('input',{bubbles:true}));
+}
+
 async function load(){
  clearSigning();
  const savedForms=dirty().map(f=>({action:f.dataset.action,id:f.dataset.id,node:f}));
@@ -107,7 +137,15 @@ async function load(){
  let s;try{s=await request('home');}catch(e){if(e.status===401)return login();throw e;}
  lastState=s;let admin=s.admin;
  selectedProduction=s.productionId;
- const productionPicker=s.productions.length?'<label class="production-picker">Production<select data-production>'+s.productions.map(p=>'<option value="'+escape(p.id)+'" '+(p.id===s.productionId?'selected':'')+'>'+escape(p.name)+'</option>').join('')+'</select></label>':'<p>No productions assigned yet. Production will add them to your account.</p>';
+ const requested=new URLSearchParams(location.search).getAll('films');
+ const selected=s.productions.filter(p=>requested.includes(p.id)).map(p=>p.id);
+ if(!selected.length)selected.push(s.productionId);
+ const productionPicker=admin?adminProductionPicker(s.productions,selected):s.productions.length?'<label class="production-picker">Production<select data-production>'+s.productions.map(p=>'<option value="'+escape(p.id)+'" '+(p.id===s.productionId?'selected':'')+'>'+escape(p.name)+'</option>').join('')+'</select></label>':'<p>No productions assigned yet. Production will add them to your account.</p>';
+ if(admin&&selected.length>1){
+  const states=await Promise.all(selected.map(id=>id===s.productionId?s:request('home',undefined,'','',id)));
+  renderCombinedOffice(states,productionPicker);
+  return;
+ }
  const reviews=(s.productionReviews||[]).map(r=>panel(escape(r.name),'<p>'+escape(r.bio||'Biography needed')+'</p>'+(r.photo?'<img alt="Headshot submitted for approval" style="width:8rem;max-width:100%" src="'+escape(r.photo==='uploaded'?url('photo',r.id)+'&v='+r.revision:r.photo)+'">':'<p>Headshot needed</p>')+'<form data-action="reviewProduction" data-id="'+escape(r.id)+'"><input type="hidden" name="requestId" value="'+escape(r.requestId)+'"><input type="hidden" name="revision" value="'+escape(r.revision)+'"><label>Character or crew title<input required name="role" value="'+escape(r.role)+'"></label><button value="approve" '+(r.bio.trim()&&r.photo?'':'disabled')+'>Approve for '+escape(s.film)+'</button> <button formnovalidate value="decline">Decline</button></form>')).join('');
  const assignmentsPanel=admin?panel('Manage production assignments ('+s.accounts.length+')','<p>One account, one shared biography and headshot. Check each production this person belongs to. Saved profiles appear automatically on the selected film websites. Named Test accounts stay private.</p>'+s.accounts.map(m=>panel(escape(m.name),'<form data-action="enrollments" data-id="'+m.id+'">'+s.productions.map(p=>{
   const assigned=m.productions[p.id];
@@ -243,7 +281,27 @@ async function load(){
  applyPeopleFilter();
 
 }
+app.addEventListener('input',e=>{
+ if(!e.target.matches('[data-roster-search]'))return;
+ const query=e.target.value.trim().toLowerCase();
+ for(const row of app.querySelectorAll('[data-roster-name]'))row.hidden=!row.dataset.rosterName.includes(query);
+});
 app.addEventListener('change',e=>{
+ const box=e.target.closest('[data-office-film]');
+ if(box){
+  if(offlineBulkInProgress||(dirty().length&&!confirm('Discard unsaved edits and change productions?'))){box.checked=!box.checked;return;}
+  const films=lastState.productions;
+  const selected=box.dataset.officeFilm==='all'
+   ?(box.checked?films.map(p=>p.id):[selectedProduction])
+   :[...app.querySelectorAll('[data-office-film]:checked')].map(input=>input.dataset.officeFilm).filter(id=>id!=='all');
+  if(!selected.length){box.checked=true;return;}
+  const params=new URLSearchParams({production:selected.includes(selectedProduction)?selectedProduction:selected[0]});
+  if(selected.length>1)for(const id of selected)params.append('films',id);
+  if(activeView==='people'||selected.length>1)params.set('view','people');
+  for(const f of dirty())delete f.dataset.dirty;
+  location.assign(location.pathname+'?'+params);
+  return;
+ }
  if(e.target.name==='audience')e.target.form.querySelector('[data-recipients]').hidden=e.target.value!=='selected';
  if(e.target.name==='production')e.target.form.elements['role_'+e.target.value].disabled=!e.target.checked;
  if(e.target.matches('[data-production]')){
