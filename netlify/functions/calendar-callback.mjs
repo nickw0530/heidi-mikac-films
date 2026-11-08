@@ -1,3 +1,4 @@
+import {eventProductions,includesMember} from '../lib/calendar-audience.mjs';
 import {createHash, randomBytes} from 'node:crypto';
 import {getStore} from '@netlify/blobs';
 
@@ -32,8 +33,7 @@ async function graph(path,token){
  if(!response.ok)throw Object.assign(new Error('Calendar unavailable'),{status:response.status});
  return response.json();
 }
-const fields='id,subject,start,end,isAllDay,isCancelled,sensitivity';
-const visible=e=>!e.isCancelled&&e.sensitivity==='normal';
+const fields='id,subject,start,end,isAllDay,isCancelled,sensitivity,categories';
 const display=e=>({key:digest(e.id),title:e.subject,start:e.start.dateTime,end:e.end.dateTime,allDay:e.isAllDay});
 async function* pages(path,token){
  while(path){
@@ -51,7 +51,7 @@ async function upcoming(token){
  const params=new URLSearchParams({startDateTime:new Date(now).toISOString(),endDateTime:new Date(now+30*86400000).toISOString(),'$select':fields,'$orderby':'start/dateTime','$top':'100'});
  const rows=[];
  for await(const page of pages('me/calendarView?'+params,token))rows.push(...page.filter(e=>!e.isCancelled));
- return rows.map(e=>({...display(e),memberVisible:visible(e)}));
+ return rows.map(e=>({...display(e),audience:eventProductions(e)}));
 }
 async function access(store,record){
  const token=await exchange({grant_type:'refresh_token',refresh_token:record.data.refresh});
@@ -59,18 +59,18 @@ async function access(store,record){
  await store.setJSON(binding,updated,{onlyIfMatch:record.etag});
  return token.access_token;
 }
-export async function events(store,admin,eventKey){
+export async function events(store,admin,eventKey,member){
  const record=await store.getWithMetadata(binding,{type:'json'});
  if(!record)return Response.json({connected:false},{headers});
  let token;
- let rows=record.data.calendarRows;
+ let rows=record.data.productionCalendarRows;
  if(!rows||record.data.cachedUntil<=Date.now()){
   token=await access(store,record);
   rows=await upcoming(token);
   const latest=await store.getWithMetadata(binding,{type:'json'});
-  if(latest)await store.setJSON(binding,{...latest.data,calendarRows:rows,cachedUntil:Date.now()+120000},{onlyIfMatch:latest.etag});
+  if(latest)await store.setJSON(binding,{...latest.data,productionCalendarRows:rows,cachedUntil:Date.now()+120000},{onlyIfMatch:latest.etag});
  }
- const items=rows.filter(e=>admin||e.memberVisible).map(({memberVisible,...e})=>e);
+ const items=rows.filter(e=>admin||includesMember(e.audience,member)).map(({audience,...e})=>e);
  let selected=null;
  if(/^[\w-]{43}$/.test(eventKey||'')){
   const id=await store.get('calendar/event-links/'+eventKey);
@@ -78,7 +78,7 @@ export async function events(store,admin,eventKey){
    token??=await access(store,await store.getWithMetadata(binding,{type:'json'}));
    try{
     const event=await graph('me/calendar/events/'+encodeURIComponent(id)+'?$select='+fields,token);
-    if(admin?!event.isCancelled:visible(event))selected=display(event);
+    if(admin?!event.isCancelled:includesMember(eventProductions(event),member))selected=display(event);
    }catch(error){if(error.status!==404&&error.status!==410)throw error;}
   }
  }
@@ -93,17 +93,20 @@ export async function notifyNewEvents(store,enqueue,portalUrl){
  const connection=await store.getWithMetadata(binding,{type:'json'});
  if(!connection)return;
  const token=await access(store,connection);
- const query=new URLSearchParams({'$select':fields+',createdDateTime','$filter':'createdDateTime ge '+cursor.data+' and createdDateTime lt '+end,'$top':'100'});
+ const query=new URLSearchParams({'$select':fields+',lastModifiedDateTime,recurrence','$filter':'lastModifiedDateTime ge '+cursor.data+' and lastModifiedDateTime lt '+end,'$top':'100'});
  let members;
  for await(const page of pages('me/calendar/events?'+query,token)){
-  for(const event of page.filter(visible)){
+  for(const event of page){
+   const key=digest(event.id);
+   const audience=eventProductions(event);
+   await store.setJSON('calendar/audiences/'+key,audience);
+   if(!audience.length||(!event.recurrence&&Date.parse(event.end.dateTime+'Z')<Date.now()))continue;
    if(!members){
     const {blobs}=await store.list({prefix:'members/'});
     members=(await Promise.all(blobs.map(b=>store.get(b.key,{type:'json'})))).filter(m=>m&&!m.revoked&&m.email);
    }
-   const key=digest(event.id);
    await store.set('calendar/event-links/'+key,event.id,{onlyIfNew:true});
-   for(const member of members){
+   for(const member of members.filter(m=>includesMember(audience,m))){
     await enqueue(store,member,'calendar/'+key,'New event on the production calendar','An event has been added to the Heidi Mikac Films calendar. Sign in to see the event and its scheduled time.\n\n'+portalUrl+'?event='+key);
    }
   }
