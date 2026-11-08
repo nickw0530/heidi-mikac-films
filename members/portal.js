@@ -167,8 +167,12 @@ async function load(){
  selectedProduction=s.productionId;
  const requested=new URLSearchParams(location.search).getAll('films');
  const selected=s.productions.filter(p=>requested.includes(p.id)).map(p=>p.id);
- if(!selected.length)selected.push(s.productionId);
+ if(!selected.length&&!requested.includes('none'))selected.push(s.productionId);
  const productionPicker=admin?adminProductionPicker(s.productions,selected):s.productions.length?'<label class="production-picker">Production<select data-production>'+s.productions.map(p=>'<option value="'+escape(p.id)+'" '+(p.id===s.productionId?'selected':'')+'>'+escape(p.name)+'</option>').join('')+'</select></label>':'<p>No productions assigned yet. Production will add them to your account.</p>';
+ if(admin&&!selected.length){
+  app.innerHTML='<div class="office-header">'+productionPicker+form('logout','','Sign out')+'</div><h2>People &amp; profiles <span class="count">0</span></h2><p>Select a production to see its cast and crew.</p>';
+  return;
+ }
  if(admin&&selected.length>1){
   const states=await Promise.all(selected.map(id=>id===s.productionId?s:request('home',undefined,'','',id)));
   renderCombinedOffice(states,productionPicker);
@@ -341,12 +345,12 @@ app.addEventListener('change',e=>{
   if(offlineBulkInProgress||(dirty().length&&!confirm('Discard unsaved edits and change productions?'))){box.checked=!box.checked;return;}
   const films=lastState.productions;
   const selected=box.dataset.officeFilm==='all'
-   ?(box.checked?films.map(p=>p.id):[selectedProduction])
+   ?(box.checked?films.map(p=>p.id):[])
    :[...app.querySelectorAll('[data-office-film]:checked')].map(input=>input.dataset.officeFilm).filter(id=>id!=='all');
-  if(!selected.length){box.checked=true;return;}
-  const params=new URLSearchParams({production:selected.includes(selectedProduction)?selectedProduction:selected[0]});
+  const params=new URLSearchParams({production:selected.includes(selectedProduction)?selectedProduction:(selected[0]||selectedProduction)});
+  if(!selected.length)params.set('films','none');
   if(selected.length>1)for(const id of selected)params.append('films',id);
-  if(activeView==='people'||selected.length>1)params.set('view','people');
+  if(activeView==='people'||selected.length!==1)params.set('view','people');
   for(const f of dirty())delete f.dataset.dirty;
   location.assign(location.pathname+'?'+params);
   return;
