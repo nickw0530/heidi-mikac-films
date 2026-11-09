@@ -66,7 +66,7 @@ async function showSigning(rawUrl,id,container,attempt){
  session.timeout=setTimeout(fallback,20000);
  try{
   const Embed=await loadSigningLibrary();if(!current()||session.failed)return;
-  session.embed=new Embed({url:u.href,containerId:mount.id,allowRedirect:false,events:{
+  session.embed=new Embed({url:u.href,containerId:mount.id,allowRedirect:false,signatureDefaultName:true,events:{
    documentLoaded:()=>{if(current()&&!session.failed&&!session.completed){clearTimeout(session.timeout);note.textContent='Review and sign your agreement below, or use the new-tab link above.';}},
    error:fallback,
    closed:()=>{if(current()&&!session.failed&&!session.completed){session.failed=true;clearTimeout(session.timeout);mount.replaceChildren();note.textContent='Signing window closed. Open the agreement in a new tab or refresh its status above.';}},
