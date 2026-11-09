@@ -1,10 +1,11 @@
-const officeTabs=[['overview','Overview'],['people','People'],['documents','Documents'],['messages','Messages & files'],['calendar','Calendar'],['settings','Settings']];
+import {mountAvailability} from './availability.js';
+const officeTabs=[['overview','Overview'],['people','People'],['documents','Documents'],['messages','Messages & files'],['availability','Availability'],['calendar','Calendar'],['settings','Settings']];
 function startPortal(app, office=null){
 const message=document.querySelector('#message');
 let combined=null;
 function listen(type,handler){
  app.addEventListener(type,event=>{
-  if(event.target.closest('[data-office-root]')===app)handler(event);
+  if(event.target.closest('[data-office-root]')===app&&!event.target.closest('[data-availability-root]'))handler(event);
  });
 }
 app.dataset.officeRoot='';
@@ -12,7 +13,23 @@ const endpoint='/.netlify/functions/portal';
 const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let activeView=new URLSearchParams(location.search).get('view')==='people'?'people':'overview',peopleSearch='',peopleFilter='all',lastState,offlineBulkInProgress=false;
 const dirty=()=>[...app.querySelectorAll('form[data-dirty]')];
-window.addEventListener('beforeunload',e=>{if(dirty().length){e.preventDefault();e.returnValue='';}});
+const availabilityViews=new Map();
+const availabilityBusy=()=>[...availabilityViews.values()].some(view=>view.busy());
+const availabilityOpen=()=>[...availabilityViews.keys()].some(slot=>slot.isConnected&&slot.getBoundingClientRect().height>0);
+function clearAvailability(){for(const view of availabilityViews.values())view.destroy();availabilityViews.clear();}
+function openAvailability(slot,memberId){
+ if(!slot||!lastState||availabilityViews.has(slot))return;
+ slot.dataset.availabilityRoot='';
+ const view=mountAvailability(slot,{request:(action,body,id,suffix)=>request(action,body,id,suffix),productionId:lastState.productionId,admin:lastState.admin,selfId:lastState.self,memberId});
+ availabilityViews.set(slot,view);
+}
+function ensureAvailability(){
+ const board=app.querySelector('[data-view="availability"] [data-availability-slot]');
+ if(activeView==='availability'&&board)openAvailability(board);
+ for(const details of app.querySelectorAll('details[data-availability-panel][open]'))openAvailability(details.querySelector('[data-availability-slot]'),details.dataset.availabilityPerson||undefined);
+}
+app.addEventListener('toggle',event=>{const details=event.target;if(details.closest('[data-office-root]')===app&&details.matches('details[data-availability-panel]')&&details.open)openAvailability(details.querySelector('[data-availability-slot]'),details.dataset.availabilityPerson||undefined);},true);
+window.addEventListener('beforeunload',e=>{if(dirty().length||availabilityBusy()||combined?.busy()){e.preventDefault();e.returnValue='';}});
 let selectedProduction=office?.id||new URLSearchParams(location.search).get('production')||'';
 const url=(action,id='',production=selectedProduction)=>endpoint+'?'+new URLSearchParams({action,id,...(production?{production}:{})});
 async function request(action,body,id='',suffix='',production=selectedProduction){
@@ -85,6 +102,7 @@ const input=(name,label,type='text',value='')=>'<label>'+label+'<input required 
 const file=(label,accept)=>'<label>'+label+'<input required type="file" name="file" accept="'+accept+'"></label>';
 const form=(action,fields,button,id='')=>'<form data-action="'+action+'" data-id="'+id+'">'+fields+'<button>'+button+'</button></form>';
 const panel=(name,body)=>'<details><summary>'+name+'</summary>'+body+'</details>';
+const detailKey=details=>details.matches('[data-availability-panel]')?'availability/'+(details.dataset.availabilityPerson||'self'):details.dataset.person||details.querySelector(':scope > summary')?.textContent;
 const trackingLabel=reason=>['complete','hard-copy'].includes(reason)?'Complete':reason==='not-required'?'Document N/A':'';
 function profile(m){
  return panel('Headshot &amp; biography · '+((m.hasPhoto||m.referencePhoto)?'photo received':'photo needed')+' · '+(m.profile?.bio?'bio received':'bio needed'),form('bio','<label>Biography<textarea name="bio" rows="5" maxlength="5000">'+escape(m.profile?.bio)+'</textarea></label>','Save biography',m.id)+form('photo',file('Headshot · JPG or PNG, up to 4 MB','image/jpeg,image/png'),'Upload headshot',m.id)+(m.hasPhoto?'<button data-photo="'+m.id+'">View current headshot</button><div class="portrait"></div>':''));
@@ -112,6 +130,7 @@ listen('input',e=>{
 });
 function login(){
  clearSigning();
+ clearAvailability();
  app.innerHTML='<section><h2>Welcome back</h2>'+form('passwordLogin','<label>Email or admin name<input name="username" autocomplete="username" required></label><label>Password<input type="password" name="password" autocomplete="current-password" required></label>','Sign in')+'</section>'+panel('Forgot your password?',form('requestReset','<label>Email or admin name<input name="username" autocomplete="username" required></label>','Email reset link'))+(new URLSearchParams(location.search).has('setup')?panel('First-time admin setup',form('login',input('code','Existing access key','password'),'Continue to password setup')):'');
 }
 function adminProductionPicker(productions, selected){
@@ -280,13 +299,15 @@ function renderCombinedOffice(states,picker){
 }
 
 async function load(initial){
- if(combined)return;
+ if(combined||availabilityBusy())return;
  clearSigning();
  const savedForms=dirty().map(f=>({action:f.dataset.action,id:f.dataset.id,node:f}));
- const openDetails=[...app.querySelectorAll('details[open]')].map(d=>d.dataset.person||d.querySelector(':scope > summary')?.textContent);
+ const openDetails=[...app.querySelectorAll('details[open]')].map(detailKey);
  if(resetTicket&&location.hash){app.innerHTML='<section><h2>Reset your password</h2>'+form('resetPassword',newPassword,'Save new password')+'</section>';return;}
  if(ticket&&location.hash){app.innerHTML='<section><h2>Welcome to the cast &amp; crew</h2><p>Choose your password to open your dashboard. Next time, sign in with the email where you received this invitation.</p>'+form('activate',newPassword,'Create my account')+'</section>';return;}
  let s;try{s=initial||await request('home');}catch(e){if(e.status===401){if(office)return location.reload();return login();}throw e;}
+ if(availabilityBusy())return;
+ clearAvailability();
  if(office&&!s.admin){location.reload();return;}
  lastState=s;let admin=s.admin;
  selectedProduction=s.productionId;
@@ -370,6 +391,7 @@ async function load(initial){
   const photo=m.hasPhoto?url('photo',m.id):m.referencePhoto;
   return '<section class="member-panel member-tasks"><h2>My tasks</h2><p>'+(items.length?(count?count+' to complete':'All tasks completed.'):'No tasks assigned yet.')+'</p>'+taskList+'</section>'+
    '<section class="member-panel member-paperwork"><h2>My documents</h2>'+agreementControls+(documents.length?'<ul>'+documents.join('')+'</ul>':(agreementControls?'':'<p>No documents assigned yet.</p>'))+'<div id="signing"></div></section>'+
+   (m.productions[s.productionId]?'<section class="member-panel"><h2>Availability</h2><p>Share your earliest arrival on set and latest departure with the cast and crew of '+escape(s.film)+'. All times are Eastern.</p><details data-availability-panel><summary>Open availability calendar</summary><div data-availability-slot></div></details></section>':'')+
    '<section class="member-panel member-profile"><h2>My profile</h2><p>Your biography and headshot are shared across your approved productions.</p>'+choices+'<p>'+escape(m.name)+' · '+escape(m.role)+'</p>'+(photo?'<img data-headshot src="'+escape(photo)+'" alt="Your headshot">':'')+form('photo',file(m.hasPhoto?'Replace your headshot':'Upload your headshot · JPG or PNG, up to 4 MB','image/jpeg,image/png'),'Save headshot',m.id)+form('bio','<label>Import biography (.txt)<input type="file" accept=".txt,text/plain" data-bio-file></label><label>My bio<textarea name="bio" rows="5" maxlength="5000">'+escape(m.profile?.bio)+'</textarea></label>','Save bio',m.id)+'</section>';
  }
  const publication=m=>'<div class="publication-status"><h4>Website publishing</h4>'+Object.entries(m.publication||{}).map(([pid,p])=>'<p>'+escape(s.productions.find(x=>x.id===pid)?.name||pid)+' · <strong>'+escape(p.state)+'</strong></p>').join('')+(m.practice?'':form('publication','<label><input type="checkbox" name="visible" '+(m.publication?.[s.productionId]?.visible?'checked':'')+'> Show on this production’s website</label>','Save website visibility',m.id))+'</div>';
@@ -393,7 +415,7 @@ async function load(initial){
  (admin?'<strong>'+escape(m.paperworkStatus)+'</strong>'+contactName(m)+contactEmail(m):'')+
  (!admin&&m.agreement?.id?'<button data-status="'+m.id+'">Review my agreement</button>':'')+
  ((m.referencePhoto||m.hasPhoto)?'<img data-headshot src="'+escape(m.hasPhoto?url('photo',m.id):m.referencePhoto)+'" alt="Saved headshot">':'')+(admin?profile(m):(m.hasPhoto?'<img data-headshot alt="Your saved headshot" src="'+escape(url('photo',m.id))+'">':'')+form('photo',file(m.hasPhoto?'Replace your headshot':'Upload your headshot · JPG or PNG, up to 4 MB','image/jpeg,image/png'),'Save headshot',m.id)+form('bio','<label>Import biography (.txt)<input type="file" accept=".txt,text/plain" data-bio-file></label><label>My bio<textarea name="bio" rows="4" maxlength="5000" placeholder="Tell us a little about yourself.">'+escape(m.profile?.bio)+'</textarea></label>','Save bio',m.id))+
- (admin?panel(m.needsEmail?'Save a document for this person':'Send a document',form('resource','<p>For '+escape(m.name)+' · '+escape(s.film)+'</p><input type="hidden" name="audience" value="selected"><input type="hidden" name="recipient" value="'+escape(m.id)+'">'+input('title','Document title')+file('PDF · up to 4 MB','application/pdf'),m.needsEmail?'Save document':'Send to '+escape(m.name),m.id)):'')+
+ (admin?'<details data-availability-panel data-availability-person="'+escape(m.id)+'"><summary>Availability calendar</summary><div data-availability-slot></div></details>'+panel(m.needsEmail?'Save a document for this person':'Send a document',form('resource','<p>For '+escape(m.name)+' · '+escape(s.film)+'</p><input type="hidden" name="audience" value="selected"><input type="hidden" name="recipient" value="'+escape(m.id)+'">'+input('title','Document title')+file('PDF · up to 4 MB','application/pdf'),m.needsEmail?'Save document':'Send to '+escape(m.name),m.id)):'')+
  (admin?personPaperwork(m)+personalMessage(m)+personalReview(m)+productionAssignments([m],s.productions,'Manage production assignments'):'')+tasks(m)+(admin&&m.filmProfile&&library.find(x=>x.id===m.filmProfile)?offline(library.find(x=>x.id===m.filmProfile)):'')+(admin?linkControls(m):'')+(admin?panel('Assign a task',form('task',input('title','What needs to be done?'),'Assign task',m.id)):'')+
  (admin?publication(m):'')+(admin?panel('Manage access',(!m.needsEmail&&!m.activated&&s.mailReady?form('resend','','Resend invitation',m.id):'')+form('revoke','<label><input type="checkbox" name="keepPublic" checked> Keep public film credits and profile visible</label><p>Uncheck to also remove this account’s public profiles. Access is revoked immediately.</p>','Revoke portal access',m.id)):'')+'</section></details>').join('');
  const account=s.passwordSet?'':'<section><h2>Set your password</h2><p>Your sign-in name is <strong>'+escape(admin?s.self:s.members[0].email)+'</strong>.</p>'+form('choosePassword',newPassword,'Save my password')+'</section>';
@@ -410,6 +432,7 @@ async function load(initial){
    '<div data-view="people">'+(!office?pendingPeoplePanel(s,[s.productionId])+(s.unassignedProfiles?.length?'<h3>Profiles without a production</h3>'+s.unassignedProfiles.map(m=>unassignedProfile(m,s)).join(''):''):'')+'<h2>People & profiles <span class="count">'+people.length+'</span></h2><div class="people-toolbar"><label>Search name, role or email<input data-people-search type="search" value="'+escape(peopleSearch)+'"></label><label>Show<select data-people-filter><option value="all">All profiles</option><option value="missing">No agreement</option><option value="progress">Paperwork in progress</option><option value="bio">Missing bio</option><option value="headshot">Missing headshot</option><option value="tasks">Open tasks</option></select></label></div><p data-results></p>'+rows+'<h2>Browse film profiles <span class="count">'+people.length+'</span></h2>'+panel('Website profiles to link ('+available.length+')',directory)+'</div>'+
    '<div data-view="documents"><h2>Paperwork</h2><p>'+(s.test?'Signing is in test mode.':'Live signing is enabled.')+'</p>'+attention+uploadedDocuments+'<div class="document-list">'+s.members.map(m=>'<p><b>'+escape(m.name)+'</b> · '+escape(m.paperworkStatus)+' <button data-open-person="'+m.id+'">Open paperwork</button></p>').join('')+'</div><div data-tool-zone="documents"></div><div id="signing"></div></div>'+
    '<div data-view="messages"><h2>Messages & files</h2><div data-tool-zone="messages"></div>'+mailPanel+'<h2>Production board</h2>'+updates+'</div>'+
+   '<div data-view="availability"><div data-availability-slot></div></div>'+
    '<div data-view="calendar"><h2>Production calendar</h2><p>Your connected Exchange calendar appears alongside this workspace. It shows the next 30 days in Eastern time. In Outlook, categorize a member event as Written in the Dark, Wherein Lies Continue, or both. Events without a film category stay in the admin calendar.</p></div>'+
    '<div data-view="settings"><h2>Production settings</h2>'+(reviews?'<section data-review-list><h3>Review profiles for publication</h3>'+reviews+'</section>':'')+assignmentsPanel+panel('Revoked portal accounts',s.revokedAccounts?.length?s.revokedAccounts.filter(m=>m.productions[s.productionId]).map(m=>'<section><h3>'+escape(m.name)+'</h3><p>Portal access revoked. Public profile '+(m.keepPublic?'retained':'removed')+'.</p>'+form('publication','<label><input type="checkbox" name="visible" '+(m.keepPublic&&m.publication[s.productionId]!==false?'checked':'')+'> Show on this production website</label>','Save website visibility',m.id)+'</section>').join(''):'<p>No revoked accounts.</p>')+(waitingAccounts?panel('Accounts without a production',waitingAccounts):'')+'<div data-tool-zone="settings"></div></div></div><div id="calendar-slot"></div></div>';
   const staging=document.createElement('div');staging.innerHTML=setup;
@@ -467,7 +490,7 @@ async function load(initial){
   if(bio&&m.profile)profileStatus(bio,'Saved');
  }
  for(const saved of savedForms){const replacement=[...app.querySelectorAll('form')].find(f=>f.dataset.action===saved.action&&f.dataset.id===saved.id);if(replacement)replacement.replaceWith(saved.node);}
- for(const d of app.querySelectorAll('details'))if(openDetails.includes(d.dataset.person||d.querySelector(':scope > summary')?.textContent))d.open=true;
+ for(const d of app.querySelectorAll('details'))if(openDetails.includes(detailKey(d)))d.open=true;
  applyPeopleFilter();
  if(office){office.update(s);syncOffice();}
 
@@ -482,6 +505,7 @@ listen('input',e=>{
 listen('change',e=>{
  const box=e.target.closest('[data-office-film]');
  if(box){
+  if(availabilityBusy()||combined?.busy()){message.textContent='Save or discard open availability changes before changing productions.';box.checked=!box.checked;return;}
   if(offlineBulkInProgress||combined?.busy()||(dirty().length&&!confirm('Discard unsaved edits and change productions?'))){box.checked=!box.checked;return;}
   const films=lastState.productions;
   const selected=box.dataset.officeFilm==='all'
@@ -503,7 +527,8 @@ listen('change',e=>{
  if(e.target.name==='audience')e.target.form.querySelector('[data-recipients]').hidden=e.target.value!=='selected';
  if(e.target.name==='production')e.target.form.elements['role_'+e.target.value].disabled=!e.target.checked;
  if(e.target.matches('[data-production]')){
-  if(dirty().length&&!confirm('You have unsaved changes. Switch productions and discard them?')){e.target.value=selectedProduction;return;}
+  if((dirty().length||availabilityBusy())&&!confirm('You have unsaved changes. Switch productions and discard them?')){e.target.value=selectedProduction;return;}
+  clearAvailability();
   selectedProduction=e.target.value;
   history.replaceState(null,'',location.pathname+'?'+new URLSearchParams({production:selectedProduction}));
   app.textContent='Loading production…';
@@ -674,6 +699,7 @@ async function mountCalendar(admin=true){
 function applyView(){
  app.querySelectorAll('[data-view]').forEach(el=>el.hidden=el.dataset.view!==activeView);
  app.querySelectorAll('[data-view-button]').forEach(b=>b.setAttribute('aria-current',b.dataset.viewButton===activeView?'page':'false'));
+ ensureAvailability();
 }
 function applyPeopleFilter(){
  const search=app.querySelector('[data-people-search]'),filter=app.querySelector('[data-people-filter]');if(!search)return;
@@ -692,7 +718,7 @@ listen('click',e=>{
 });
 listen('input',e=>{if(e.target.matches('[data-people-search]')){peopleSearch=e.target.value;applyPeopleFilter();}});
 listen('change',e=>{if(e.target.form)e.target.form.dataset.dirty='true';if(e.target.matches('[data-people-filter]')){peopleFilter=e.target.value;applyPeopleFilter();}});
-setInterval(()=>{if(!combined&&lastState&&!document.hidden&&!dirty().length&&!signingSession&&!offlineBulkInProgress)load().catch(()=>{});},300000);
+setInterval(()=>{if(!combined&&lastState&&!document.hidden&&!dirty().length&&!availabilityBusy()&&!availabilityOpen()&&!signingSession&&!offlineBulkInProgress)load().catch(()=>{});},300000);
 let focusFilm=null;
 function syncOffice(){
  if(!office)return;
@@ -716,8 +742,8 @@ return {
  review(){const list=app.querySelector('[data-review-list]');if(list){list.querySelector('details').open=true;list.scrollIntoView({block:'start'});}},
  show(view){activeView=view;focusFilm=null;applyView();syncOffice();},
  open(film,scroll){focusFilm=film;syncOffice();if(scroll)office.section.scrollIntoView({block:'start'});},
- refresh(){if(!dirty().length&&!offlineBulkInProgress&&!signingSession)load().catch(e=>{message.textContent=e.message;});},
- busy(){return offlineBulkInProgress||!!signingSession;}
+ refresh(){if(!dirty().length&&!availabilityBusy()&&!availabilityOpen()&&!offlineBulkInProgress&&!signingSession)load().catch(e=>{message.textContent=e.message;});},
+ busy(){return offlineBulkInProgress||!!signingSession||availabilityBusy();}
 };
 }
 startPortal(document.querySelector('#app'));

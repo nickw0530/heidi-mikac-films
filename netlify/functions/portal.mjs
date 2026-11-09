@@ -2,6 +2,7 @@ import {AGREEMENT_CYCLE,currentAgreementKey} from '../lib/agreement-cycle.mjs';
 import {manualAgreementKey,resourceTrackingKey,normalizePaperworkReason,manualPaperworkStatus,readAgreementTracking} from '../lib/paperwork.mjs';
 import {COUNTERSIGN_EMAIL} from '../lib/signing.mjs';
 import {adminActions} from '../lib/admin-actions.mjs';
+import {AVAILABILITY_TIME_ZONE,normalizeAvailability,availabilityForDate,listDates,matchAvailability} from '../lib/availability.mjs';
 import {begin as beginCalendar,events as calendarEvents} from './calendar-callback.mjs';
 import sharp from 'sharp';
 import {signwell,documentStatus,refreshAgreement,completedAgreementPdf} from '../lib/signing.mjs';
@@ -256,6 +257,47 @@ export default async function handle(req) {
   }
   if(!admin&&!['home','bio','photo','choosePassword','welcomePlayed','requestProductions','calendarEvents'].includes(action))requireThat(memberProductions[productionId],'You are not assigned to this production.',403);
   if(!admin&&action==='home'&&Object.keys(memberProductions).length)requireThat(memberProductions[productionId],'You are not assigned to this production.',403);
+  if(['availability','saveAvailability','availabilityMatch'].includes(action)){
+    requireThat(admin||memberProductions?.[productionId],'You are not assigned to this production.',403);
+    requireThat(action==='availability'?!post:post,action==='availability'?'Use GET to view availability.':'Use POST to update or compare availability.',405);
+    // Availability is private to the current production and deliberately has a
+    // smaller response than member administration. No email, profile draft,
+    // invitation, document or authentication fields belong in this projection.
+    const roster=(await globalRecords('members/')).filter(m=>active(m)&&uuid.test(m.id)&&assignments(m)[productionId]&&(admin||!!m.email)&&(admin||m.id===self||!practiceName(m.name))).sort((a,b)=>a.name.localeCompare(b.name));
+    const key=id=>'availability/'+productionId+'/'+id;
+    const schedule=record=>record?{
+      ...normalizeAvailability(record),
+      updated:Number.isFinite(record.updated)?record.updated:null,
+      updatedByLabel:typeof record.updatedByLabel==='string'?record.updatedByLabel.slice(0,200):'Member'
+    }:null;
+    if(action==='saveAvailability'){
+      const id=uid||self;
+      requireThat(uuid.test(id)&&(admin||id===self),'You can update only your own availability.',403);
+      const member=roster.find(m=>m.id===id);requireThat(member,'This person is not available in the selected production.',404);
+      requireThat(Object.hasOwn(body,'revision')&&(body.revision===null||typeof body.revision==='string'&&body.revision.length<=300),'Refresh availability before saving.');
+      const value=normalizeAvailability(body),record=await rawStore.getWithMetadata(key(id),{type:'json'});
+      requireThat(body.revision===(record?.etag??null),'Availability changed in another window. Reload before saving.',409);
+      const updated={...value,updated:Date.now(),updatedByLabel:admin?'Production':member.name};
+      const saved=await rawStore.setJSON(key(id),updated,record?{onlyIfMatch:record.etag}:{onlyIfNew:true});
+      requireThat(saved.modified,'Availability changed in another window. Reload before saving.',409);
+      const current=await rawStore.getWithMetadata(key(id),{type:'json'});
+      return json({ok:true,id,productionId,availability:schedule(current?.data||updated),revision:current?.etag??null});
+    }
+    if(action==='availabilityMatch'){
+      requireThat(Array.isArray(body.members)&&body.members.length>0&&body.members.length<=100&&body.members.every(id=>typeof id==='string'&&roster.some(m=>m.id===id)),'Select people from this production (up to 100).');
+      const ids=[...new Set(body.members)];
+      const people=await Promise.all(ids.map(async id=>({id,name:roster.find(m=>m.id===id).name,availability:await rawStore.get(key(id),{type:'json'})})));
+      return json({productionId,film,...matchAvailability(people,{from:body.from,to:body.to,minMinutes:body.minMinutes})});
+    }
+    const from=url.searchParams.get('from'),to=url.searchParams.get('to');
+    const dates=from||to?listDates(from,to):null;
+    const members=await Promise.all(roster.map(async member=>{
+      const record=await rawStore.getWithMetadata(key(member.id),{type:'json'});
+      const availability=schedule(record?.data);
+      return {id:member.id,name:member.name,role:assignments(member)[productionId].role||'',needsEmail:!member.email,availability,revision:record?.etag??null,canEdit:admin||member.id===self,...(dates?{days:dates.map(date=>availabilityForDate(availability,date))}:{})};
+    }));
+    return json({productionId,film,timezone:AVAILABILITY_TIME_ZONE,selfId:self,admin,members,...(dates?{from,to}:{})});
+  }
   if(action==='calendarConnect'||action==='calendarEvents'){
     requireThat(url.origin==='https://heidimikacfilms.com','Production only.',403);
     if(action==='calendarConnect'){onlyAdmin();requireThat(post,'Use the connect button.',405);return await beginCalendar(store,sessionKey);}

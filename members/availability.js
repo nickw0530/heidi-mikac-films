@@ -1,0 +1,267 @@
+const ZONE='America/Indiana/Indianapolis';
+const DAYS=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+const STATUSES={available:'Available',unavailable:'Unavailable',unknown:'Not answered','needs-confirmation':'Check clock change'};
+const clone=value=>JSON.parse(JSON.stringify(value));
+const emptyDay=()=>({status:'unknown',windows:[]});
+const emptySchedule=()=>({timezone:ZONE,weekly:DAYS.map(emptyDay),exceptions:{}});
+const parts=(date,options)=>Object.fromEntries(new Intl.DateTimeFormat('en-US',{timeZone:ZONE,...options}).formatToParts(date).map(part=>[part.type,part.value]));
+const today=()=>{const p=parts(new Date(),{year:'numeric',month:'2-digit',day:'2-digit'});return p.year+'-'+p.month+'-'+p.day;};
+const addDays=(date,count)=>new Date(Date.parse(date+'T12:00:00Z')+count*86400000).toISOString().slice(0,10);
+const dayLabel=date=>new Intl.DateTimeFormat('en-US',{timeZone:'UTC',weekday:'long',month:'long',day:'numeric',year:'numeric'}).format(new Date(date+'T12:00:00Z'));
+const shortDate=date=>new Intl.DateTimeFormat('en-US',{timeZone:'UTC',month:'short',day:'numeric'}).format(new Date(date+'T12:00:00Z'));
+const timeLabel=time=>{if(time==='24:00')return 'midnight';const [hours,minutes]=time.split(':').map(Number);return (hours%12||12)+(minutes?':'+String(minutes).padStart(2,'0'):'')+(hours<12?' a.m.':' p.m.');};
+const windowsLabel=windows=>windows.map(window=>timeLabel(window.start)+'–'+timeLabel(window.end)).join(', ');
+function el(tag,attributes={},...children){
+ const node=document.createElement(tag);
+ for(const [key,value] of Object.entries(attributes)){
+  if(key==='class')node.className=value;
+  else if(key==='text')node.textContent=value;
+  else if(key.startsWith('on'))node.addEventListener(key.slice(2),value);
+  else if(value!==undefined&&value!==null)node.setAttribute(key,String(value));
+ }
+ for(const child of children.flat())if(child!==undefined&&child!==null)node.append(typeof child==='string'?document.createTextNode(child):child);
+ return node;
+}
+const button=(text,action,attributes={})=>el('button',{type:'button',onclick:action,...attributes},text);
+function field(text,control){return el('label',{},el('span',{},text),control);}
+function stamp(date,time){
+ if(time==='24:00'){date=addDays(date,1);time='00:00';}
+ if(!/^\d{2}:\d{2}$/.test(time))return null;
+ const [hours,minutes]=time.split(':').map(Number);
+ const base=Date.parse(date+'T00:00:00Z')+hours*3600000+minutes*60000;
+ const matches=[240,300].map(offset=>base+offset*60000).filter(value=>{
+  const p=parts(new Date(value),{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
+  return p.year+'-'+p.month+'-'+p.day===date&&p.hour+':'+p.minute===time;
+ });
+ return matches.length===1?matches[0]:null;
+}
+function scheduleDay(record,date){
+ const index=new Date(date+'T12:00:00Z').getUTCDay();
+ const entry=record?.exceptions?.[date]||record?.weekly?.[index]||emptyDay();
+ if(entry.status!=='available')return {...entry,status:entry.status||'unknown',windows:[]};
+ const windows=entry.windows||[];
+ if(!windows.length||windows.some(window=>stamp(date,window.start)===null||stamp(date,window.end)===null))return {status:'needs-confirmation',windows:[],warning:'A time falls within a clock change. Update this date with an unambiguous time.'};
+ return {status:'available',windows};
+}
+
+/** The request callback uses the portal's authenticated request(action, body, memberId). */
+export function mountAvailability(container,options){
+ const {request,admin=false,memberId,onSaved}=options;
+ let data=null,selectedMember=memberId||'',selectedDate=today(),month=selectedDate.slice(0,7),draft=null,revision=null;
+ let destroyed=false,dirty=false,saving=false,loading=false,weeklyOpen=false,matchingBusy=false,loadSequence=0,matchSequence=0,matchResults=null;
+ let scene='',matchFrom=today(),matchTo=addDays(today(),29),minimumHours='2';
+ const selectedPeople=new Set();
+ const notice=el('p',{class:'availability-notice',role:'status','aria-live':'polite'});
+ const body=el('div',{class:'availability-body'});
+ container.classList.add('availability-widget');
+ container.setAttribute('data-availability-root','');
+ container.replaceChildren(notice,body);
+ const markDirty=()=>{dirty=true;container.dataset.availabilityDirty='true';invalidateMatches();const discard=body.querySelector('[data-availability-discard]');if(discard)discard.hidden=false;};
+ const markClean=()=>{dirty=false;delete container.dataset.availabilityDirty;const discard=body.querySelector('[data-availability-discard]');if(discard)discard.hidden=true;};
+ const beforeUnload=event=>{if(dirty){event.preventDefault();event.returnValue='';}};
+ window.addEventListener('beforeunload',beforeUnload);
+ const currentMember=()=>data?.members.find(member=>member.id===selectedMember);
+ const canEdit=()=>!!currentMember()?.canEdit;
+ const note=(text,error=false)=>{notice.textContent=text;notice.classList.toggle('availability-error',error);};
+ function invalidateMatches(){matchSequence++;matchResults=null;body.querySelectorAll('.availability-match-results').forEach(result=>result.remove());}
+ function pickMember(id){
+  if(id===selectedMember)return;
+  if(dirty&&!confirm('Discard unsaved availability changes?'))return;
+  selectedMember=id;adopt();matchResults=null;render();note('');
+ }
+ function adopt(){
+  const member=currentMember();draft=clone(member?.availability||emptySchedule());
+  draft.timezone=ZONE;draft.weekly=DAYS.map((_,index)=>draft.weekly?.[index]||emptyDay());draft.exceptions??={};
+  revision=member?.revision??null;markClean();
+ }
+ function monthRange(){const [year,number]=month.split('-').map(Number);return {from:month+'-01',to:month+'-'+String(new Date(Date.UTC(year,number,0)).getUTCDate()).padStart(2,'0')};}
+ async function refresh(force=false,preserveEdits=false){
+  if(destroyed||saving||dirty&&!force)return false;
+  const sequence=++loadSequence;loading=true;
+  if(!data)body.replaceChildren(el('p',{},'Loading availability…'));
+  else if(!preserveEdits)body.querySelectorAll('input,select,button').forEach(control=>{control.disabled=true;});
+  try{
+   const result=await request('availability',undefined,'','&'+new URLSearchParams(monthRange()));if(destroyed||sequence!==loadSequence)return false;
+   data=result;
+   invalidateMatches();
+   const visibleIds=new Set(data.members.map(member=>member.id));
+   for(const id of selectedPeople)if(!visibleIds.has(id))selectedPeople.delete(id);
+   if(!data.members.some(member=>member.id===selectedMember))selectedMember=data.members.find(member=>member.id===data.selfId)?.id||data.members[0]?.id||'';
+   if(!preserveEdits||!draft)adopt();render();return true;
+  }catch(error){if(!destroyed&&sequence===loadSequence){note(error.message||'Availability could not be loaded.',true);if([401,403].includes(error.status)){data=null;draft=null;markClean();body.replaceChildren(el('p',{},'Availability is no longer accessible. Refresh the portal or sign in again.'));}else if(!data)body.replaceChildren(button('Try again',()=>refresh(true)));else render();}return false;}
+  finally{if(sequence===loadSequence)loading=false;}
+ }
+ function viewDay(member,date){
+  if(member.id===selectedMember&&dirty)return scheduleDay(draft,date);
+  return member.days?.find(day=>day.date===date)||scheduleDay(member.id===selectedMember?draft:member.availability,date);
+ }
+ function validateDraft(){
+  for(const entry of [...draft.weekly,...Object.values(draft.exceptions)]){
+   if(entry.status!=='available')continue;
+   if(!entry.windows.length)throw Error('Add an arrival and departure time for every Available day.');
+   for(const window of entry.windows){
+    if(!window.start||!window.end)throw Error('Complete both the earliest arrival and latest departure times.');
+    if(window.end<=window.start)throw Error('Departure must be after arrival. For overnight availability, split the hours across the two dates.');
+   }
+  }
+ }
+ async function save(success){
+  if(saving||!canEdit())return;
+  try{
+   validateDraft();saving=true;render();note('Saving availability…');
+   const saved=await request('saveAvailability',{revision,timezone:ZONE,weekly:draft.weekly,exceptions:draft.exceptions},selectedMember);
+   invalidateMatches();
+   const member=currentMember();
+   if(member&&saved.availability){member.availability=saved.availability;member.revision=saved.revision??null;delete member.days;adopt();}
+   else markClean();
+   saving=false;const refreshed=await refresh(true);
+   note(refreshed?success:success+' The latest production view could not refresh. Try Refresh availability.',!refreshed);onSaved?.();
+  }catch(error){saving=false;render();note(error.status===409?'This availability changed in another session. Your edits are still here. Refresh the schedule before saving again.':error.message||'Availability could not be saved.',true);}
+ }
+ function windowEditor(entry,window,index,label,rerender){
+  const midnight=window.end==='24:00';
+  const arrival=el('input',{type:'time',value:window.start,'aria-label':label+' earliest arrival '+(index+1),oninput:event=>{window.start=event.target.value;markDirty();}});
+  const departure=el('input',{type:'time',value:midnight?'00:00':window.end,'aria-label':label+' latest departure '+(index+1),oninput:event=>{window.end=event.target.value;markDirty();}});
+  if(midnight)departure.disabled=true;
+  const nextMidnight=el('input',{type:'checkbox','aria-label':label+' departure at midnight '+(index+1),onchange:event=>{window.end=event.target.checked?'24:00':'';markDirty();rerender();}});nextMidnight.checked=midnight;
+  return el('div',{class:'availability-window'},field('Earliest arrival on set',arrival),field('Latest departure from set',departure),field('Departure at midnight',nextMidnight),button('Remove window',()=>{entry.windows.splice(index,1);markDirty();rerender();},{class:'availability-small'}));
+ }
+ function entryEditor(entry,label,changed){
+  const host=el('div',{class:'availability-entry'});
+  host.addEventListener('input',()=>changed?.());
+  host.addEventListener('change',()=>changed?.());
+  function redraw(){
+   const select=el('select',{'aria-label':label+' availability',onchange:event=>{entry.status=event.target.value;entry.windows=entry.status==='available'?(entry.windows.length?entry.windows:[{start:'',end:''}]):[];markDirty();redraw();changed?.();}});
+   for(const status of ['unknown','available','unavailable']){const option=el('option',{value:status},STATUSES[status]);option.selected=entry.status===status;select.append(option);}
+   host.replaceChildren(field('Availability',select));
+   if(entry.status==='available'){
+    host.append(...entry.windows.map((window,index)=>windowEditor(entry,window,index,label,()=>{redraw();changed?.();})));
+    if(entry.windows.length<4)host.append(button('Add another time window',()=>{entry.windows.push({start:'',end:''});markDirty();redraw();changed?.();},{class:'availability-small'}));
+   }
+  }
+  redraw();return host;
+ }
+ function weeklyEditor(){
+  const details=el('details',{class:'availability-weekly'},el('summary',{},admin?'Usual weekly availability':'Your usual week'));
+  details.open=weeklyOpen;details.addEventListener('toggle',()=>{weeklyOpen=details.open;});
+  details.append(el('p',{},'Enter the hours you can physically be on set after allowing for your drive. Change a particular date below when your usual week does not apply.'));
+  const week=el('div',{class:'availability-week'});
+  DAYS.forEach((name,index)=>week.append(el('section',{class:'availability-weekday'},el('h5',{},name),entryEditor(draft.weekly[index],name))));
+  details.append(week,button('Copy Monday to Tuesday–Friday',()=>{for(const index of [2,3,4,5])draft.weekly[index]=clone(draft.weekly[1]);markDirty();render();},{class:'availability-small'}),el('p',{class:'availability-help'},'For overnight availability, enter one window ending at midnight and another starting on the following date. Saving also includes any unsaved date changes.'),button('Save weekly availability',()=>save('Weekly availability saved.'),{disabled:saving?'disabled':null}));
+  return details;
+ }
+ function calendar(){
+  const [year,number]=month.split('-').map(Number),first=new Date(Date.UTC(year,number-1,1,12));
+  const count=new Date(Date.UTC(year,number,0)).getUTCDate(),offset=first.getUTCDay();
+  const heading=new Intl.DateTimeFormat('en-US',{timeZone:'UTC',month:'long',year:'numeric'}).format(first);
+  const shift=delta=>{const date=new Date(Date.UTC(year,number-1+delta,1,12));month=date.toISOString().slice(0,7);selectedDate=month+'-01';render();refresh(true,true);};
+  const section=el('section',{class:'availability-calendar'});
+  section.append(el('div',{class:'availability-month-nav'},button('Previous month',()=>shift(-1)),el('h4',{},heading),button('Next month',()=>shift(1))));
+  section.append(el('p',{class:'availability-help'},'Calendar for '+(currentMember()?.name||'this person')+'. Select a date to see everyone’s availability.'));
+  const grid=el('div',{class:'availability-month-grid',role:'group','aria-label':heading+' availability'});
+  DAYS.forEach(name=>grid.append(el('div',{class:'availability-day-heading','aria-label':name},name.slice(0,3))));
+  for(let blank=0;blank<offset;blank++)grid.append(el('span',{'aria-hidden':'true'}));
+  for(let day=1;day<=count;day++){
+   const date=month+'-'+String(day).padStart(2,'0'),value=viewDay(currentMember(),date),label=STATUSES[value.status]||STATUSES.unknown;
+   const cell=button('',()=>{selectedDate=date;render();},{class:'availability-date availability-'+value.status+(date===selectedDate?' availability-selected':''),'aria-label':dayLabel(date)+' · '+label,'aria-pressed':date===selectedDate?'true':'false'});
+   cell.append(el('b',{},String(day)),el('span',{},label));
+   if(Object.hasOwn(draft.exceptions,date))cell.append(el('span',{class:'availability-changed'},'Changed'));
+   grid.append(cell);
+  }
+  section.append(grid,el('p',{class:'availability-legend'},el('span',{class:'availability-key availability-available'},'Available'),el('span',{class:'availability-key availability-unavailable'},'Unavailable'),el('span',{class:'availability-key availability-unknown'},'Not answered')));
+  return section;
+ }
+ function dateEditor(){
+  const entry=clone(draft.exceptions[selectedDate]||draft.weekly[new Date(selectedDate+'T12:00:00Z').getUTCDay()]||emptyDay());
+  const exception=Object.hasOwn(draft.exceptions,selectedDate);
+  const section=el('section',{class:'availability-date-editor'},el('h4',{},dayLabel(selectedDate)));
+  section.append(el('p',{},exception?'This date has a saved change to the usual week.':'This date currently follows the usual week.'));
+  const dateInput=el('input',{type:'date',value:selectedDate,'aria-label':'Date to change',onchange:event=>{if(event.target.value){const previousMonth=month;selectedDate=event.target.value;month=selectedDate.slice(0,7);render();if(previousMonth!==month)refresh(true,true);}}});
+  section.append(field('Choose date',dateInput),entryEditor(entry,dayLabel(selectedDate),()=>{draft.exceptions[selectedDate]=entry;}));
+  section.append(button('Save this date',()=>{draft.exceptions[selectedDate]=entry;markDirty();save('Availability saved for '+shortDate(selectedDate)+'.');},{disabled:saving?'disabled':null}));
+  if(exception)section.append(button('Use weekly schedule',()=>{delete draft.exceptions[selectedDate];markDirty();save('This date now follows the weekly schedule.');},{disabled:saving?'disabled':null}));
+  return section;
+ }
+ function productionDay(){
+  const section=el('section',{class:'availability-production-day'},el('h4',{},'Production availability · '+shortDate(selectedDate)));
+  const list=el('ul',{class:'availability-people-day'});
+  for(const member of data.members){
+   const value=viewDay(member,selectedDate);
+   const row=el('li',{},el('div',{},el('strong',{},member.name),member.role?el('span',{class:'availability-role'},member.role):null),el('div',{class:'availability-status availability-'+value.status},el('strong',{},STATUSES[value.status]||STATUSES.unknown),value.status==='available'?el('span',{},windowsLabel(value.windows)):null));
+   if(value.warning)row.append(el('small',{},value.warning));
+   list.append(row);
+  }
+  section.append(list);return section;
+ }
+ function matching(){
+  const section=el('section',{class:'availability-matching'},el('h4',{},'Find a time for a scene'));
+  section.append(el('p',{},'Select everyone needed. A shared window requires confirmed availability from every selected person.'));
+  const sceneInput=el('input',{type:'text',value:scene,maxlength:120,'aria-label':'Scene name',oninput:event=>{scene=event.target.value;invalidateMatches();}});
+  section.append(field('Scene name (optional)',sceneInput));
+  const checklist=el('div',{class:'availability-cast','aria-label':'People needed for this scene'});
+  for(const member of data.members){
+   const check=el('input',{type:'checkbox',value:member.id,onchange:event=>{event.target.checked?selectedPeople.add(member.id):selectedPeople.delete(member.id);invalidateMatches();}});check.checked=selectedPeople.has(member.id);
+   checklist.append(field(member.name+(member.role?' · '+member.role:''),check));
+  }
+  section.append(checklist);
+  const from=el('input',{type:'date',value:matchFrom,onchange:event=>{matchFrom=event.target.value;invalidateMatches();},'aria-label':'Search from date'}),to=el('input',{type:'date',value:matchTo,onchange:event=>{matchTo=event.target.value;invalidateMatches();},'aria-label':'Search through date'}),hours=el('input',{type:'number',min:0.25,max:24,step:0.25,value:minimumHours,oninput:event=>{minimumHours=event.target.value;invalidateMatches();},'aria-label':'Minimum shared hours'});
+  section.append(el('div',{class:'availability-search-fields'},field('From',from),field('Through',to),field('Minimum hours together',hours)));
+  const find=button('Find shared times',async()=>{
+   if(dirty){note('Save or discard your availability changes before comparing dates.',true);return;}
+   if(!selectedPeople.size){note('Select at least one person needed for this scene.',true);return;}
+   const sequence=matchSequence;
+   find.disabled=true;matchingBusy=true;note('Comparing availability…');
+   try{const result=await request('availabilityMatch',{members:[...selectedPeople],from:matchFrom,to:matchTo,minMinutes:Math.round(Number(minimumHours)*60)});if(destroyed||sequence!==matchSequence)return;matchResults=result;render();note('Availability comparison updated.');}
+   catch(error){if(!destroyed&&sequence===matchSequence)note(error.message||'The availability comparison could not be completed.',true);}
+   finally{matchingBusy=false;find.disabled=false;}
+  });section.append(find);
+  if(matchResults)section.append(matchOutput());
+  return section;
+ }
+ function matchOutput(){
+  const result=el('div',{class:'availability-match-results','aria-live':'polite'},el('h5',{},scene?'Shared windows · '+scene:'Shared windows'));
+  const matches=matchResults.matches||[];
+  result.append(el('p',{},matches.length?matches.length+' day'+(matches.length===1?' has':'s have')+' a shared window.':'No confirmed shared window meets this duration.'));
+  if(matches.length){const list=el('ul');for(const day of matches)list.append(el('li',{},el('strong',{},dayLabel(day.date)),el('span',{},day.windows.map(window=>timeLabel(window.start)+'–'+timeLabel(window.end)+' ('+(Math.round(window.minutes/60*100)/100)+' hours)').join('; '))));result.append(list);}
+  const blocked=(matchResults.days||[]).filter(day=>!day.windows?.length);
+  if(blocked.length){
+   const details=el('details',{},el('summary',{},'Dates needing follow-up ('+blocked.length+')')),list=el('ul');
+   for(const day of blocked){
+    const reasons=[];
+    if(day.missing?.length)reasons.push('Not answered: '+day.missing.map(person=>person.name).join(', '));
+    if(day.unavailable?.length)reasons.push('Unavailable: '+day.unavailable.map(person=>person.name).join(', '));
+    if(day.needsConfirmation?.length)reasons.push('Check clock change: '+day.needsConfirmation.map(person=>person.name).join(', '));
+    list.append(el('li',{},el('strong',{},shortDate(day.date)),el('span',{},reasons.join(' · ')||'Available hours do not overlap for the requested duration.')));
+   }
+   details.append(list);result.append(details);
+  }
+  result.append(el('p',{class:'availability-help'},'Availability is a planning aid. A shared window is not a confirmed filming event.'));
+  return result;
+ }
+ function render(){
+  if(destroyed||!data)return;
+  const member=currentMember();
+  const header=el('div',{class:'availability-heading'},el('h3',{},'Availability · '+data.film),button('Refresh availability',()=>{if(!dirty||confirm('Discard unsaved availability changes and refresh?')){markClean();refresh(true);}},{disabled:saving?'disabled':null}));
+  body.replaceChildren(header,el('p',{class:'availability-timezone'},'All times are Eastern time. Enter earliest arrival on set and latest departure, with travel already accounted for.'),el('p',{class:'availability-help'},'Availability is visible to members of this production. Not answered never counts as available.'));
+  body.append(button('Discard unsaved changes',()=>{adopt();render();note('Unsaved availability changes discarded.');},{class:'availability-discard','data-availability-discard':'',hidden:dirty?null:'hidden',disabled:saving?'disabled':null}));
+  if(!data.members.length){body.append(el('p',{},'No cast or crew profiles are assigned to this production yet.'));return;}
+  if(admin){
+   const select=el('select',{'aria-label':'Availability profile',onchange:event=>{pickMember(event.target.value);event.target.value=selectedMember;}});
+   for(const person of data.members){const option=el('option',{value:person.id},person.name+(person.needsEmail?' · Email needed':''));option.selected=person.id===selectedMember;select.append(option);}
+   body.append(field('Manage availability for',select));
+  }else body.append(el('p',{},'Your availability · '+(member?.name||'')));
+  if(member?.availability?.updated){const date=new Intl.DateTimeFormat('en-US',{timeZone:ZONE,month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}).format(new Date(member.availability.updated));body.append(el('p',{class:'availability-help'},'Last updated '+date+(member.availability.updatedByLabel?' · '+member.availability.updatedByLabel:'')));}
+  if(canEdit())body.append(weeklyEditor());
+  body.append(calendar());
+  if(canEdit())body.append(dateEditor());
+  body.append(productionDay());
+  if(admin)body.append(matching());
+  if(saving)body.querySelectorAll('button,input,select').forEach(control=>{control.disabled=true;});
+ }
+ refresh();
+ return {
+  refresh:()=>refresh(),
+  busy:()=>dirty||saving||loading||matchingBusy,
+  destroy(){destroyed=true;loadSequence++;window.removeEventListener('beforeunload',beforeUnload);delete container.dataset.availabilityDirty;container.replaceChildren();}
+ };
+}
