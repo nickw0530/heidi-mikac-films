@@ -95,7 +95,7 @@ function creditFields(value={},suffix=''){
 }
 function agreement(m){
  const fields=input('legal','Legal name','text',m.name)+'<p>Enter at least one character or crew title. Previewing or creating the agreement saves these credits for '+escape(lastState.film)+'.</p>'+creditFields(m.proposedCredits?.[lastState.productionId]||m.productions[lastState.productionId]||{})+(m.role?'<p>Current credit · '+escape(m.role)+'</p>':'')+input('credit','Screen credit / professional name','text',m.name)+input('rate','Agreed daily rate (USD)')+input('date','Agreement date','date')+'<p>This agreement covers services already performed for this film and any future services mutually agreed. Each signer’s date is filled automatically when they sign.</p>';
- return panel('Prepare agreement for '+escape(lastState.film),'<form data-action="agreement" data-id="'+m.id+'">'+fields+'<button value="preview">Preview agreement</button><button value="send">Create signing request</button></form>');
+ return panel('Prepare agreement for '+escape(lastState.film),'<form data-action="agreement" data-id="'+m.id+'">'+fields+'<button value="preview">Preview agreement</button><button value="send"'+(m.needsEmail?' disabled':'')+'>Create signing request</button>'+(m.needsEmail?'<p>Add this person’s email to send a signing request.</p>':'')+'</form>');
 }
 const ticket=new URLSearchParams(location.hash.slice(1)).get('invite');
 const resetTicket=new URLSearchParams(location.hash.slice(1)).get('reset');
@@ -139,7 +139,8 @@ function combinedPeople(states){
  for(const state of states){
   const linked=new Set(state.members.map(m=>m.filmProfile).filter(Boolean));
   const add=(key,person,target='profile')=>{
-   if(!people.has(key))people.set(key,{name:person.name,hasAccount:key.startsWith('account/'),films:[]});
+   if(!people.has(key))people.set(key,{name:person.name,memberId:target==='person'?person.id:null,hasMemberProfile:key.startsWith('account/'),hasAccount:key.startsWith('account/')&&!person.needsEmail,needsEmail:!!person.needsEmail,films:[]});
+   if(target==='person')Object.assign(people.get(key),{name:person.name,memberId:person.id,hasMemberProfile:true,hasAccount:!person.needsEmail,needsEmail:!!person.needsEmail});
    people.get(key).films.push({id:state.productionId,name:state.film,role:person.role,profileId:person.id,target});
   };
   for(const member of state.members)add('account/'+member.id,member,'person');
@@ -151,22 +152,58 @@ function combinedPeople(states){
    else add('catalog/'+key,profile);
   }
  }
+ for(const member of states[0].unassignedProfiles||[]){
+  const key='account/'+member.id;
+  if(!people.has(key))people.set(key,{name:member.name,memberId:member.id,hasMemberProfile:true,hasAccount:!member.needsEmail,needsEmail:!!member.needsEmail,unassigned:true,member,films:[]});
+ }
  return [...people.values()].sort((a,b)=>a.name.localeCompare(b.name));
 }
 
-function productionAssignments(accounts,productions,label='Manage production assignments ('+accounts.length+' portal account'+(accounts.length===1?'':'s')+')'){
- return panel(label,'<p>One account, one shared biography and headshot. Check each production this person belongs to. Review member submissions before publishing them. Named Test accounts stay private.</p>'+accounts.map(m=>panel(escape(m.name),'<form data-action="enrollments" data-id="'+m.id+'">'+productions.map(p=>{
+function productionAssignments(accounts,productions,label='Manage production assignments ('+accounts.length+' '+(accounts.length===1?'person':'people')+')'){
+ return panel(label,'<p>One profile, one shared biography and headshot. Check each production this person belongs to. Review member submissions before publishing them. Named Test accounts stay private.</p>'+accounts.map(m=>panel(escape(m.name),'<form data-action="enrollments" data-id="'+m.id+'">'+productions.map(p=>{
   const assigned=m.productions[p.id];
   const role=assigned?.role||'';
   return '<fieldset><label><input style="width:auto;display:inline" type="checkbox" name="production" value="'+p.id+'" '+(assigned?'checked':'')+'> '+escape(p.name)+'</label><label>Character / crew title for this production<input name="role_'+p.id+'" value="'+escape(role)+'" '+(assigned?'':'disabled')+'></label></fieldset>';
  }).join('')+'<button>Save productions</button></form>')).join(''));
 }
 
+function pendingPeoplePanel(state,selected){
+ const choices=state.productionChoices||state.productions;
+ const fields=values=>'<fieldset><legend>Productions (optional)</legend>'+choices.map(p=>'<label><input type="checkbox" name="pendingProduction" value="'+escape(p.id)+'" '+(values.includes(p.id)?'checked':'')+'> '+escape(p.name)+'</label>').join('')+'</fieldset>';
+ const records=(state.pendingPeople||[]).filter(p=>!p.productions.length||p.productions.some(id=>selected.includes(id)));
+ const row=person=>{
+  const films=person.productions.map(id=>choices.find(p=>p.id===id)?.name||id).join(' · ')||'Production not selected';
+  const edit=person.memberId?'':panel('Edit saved name',form('savePendingPerson',input('name','Name','text',person.name)+fields(person.productions),'Save name',person.id));
+  const invite=person.status==='Email needed'?form('invite','<input type="hidden" name="pendingId" value="'+escape(person.id)+'">'+input('email','Email address','email'),'Add email & send invitation',person.id):person.status==='Invitation pending'?'<p>Invitation sent. Waiting for this person to create their password.</p>'+form('resend','','Resend invitation',person.memberId):'<p>'+escape(person.status)+(person.status==='Account created'?'. Production assignments are available in Settings.':'. Review this account in Settings.')+'</p>';
+  return '<details data-pending-person="'+escape(person.id)+'"><summary>'+escape(person.name)+' · '+escape(person.status)+'</summary><p>'+escape(films)+'</p><button type="button" data-open-setup-profile="'+escape(person.profileId||person.memberId||person.id)+'">Open profile</button>'+edit+invite+form('removePendingPerson','<input type="hidden" name="id" value="'+escape(person.id)+'">','Remove from this list',person.id)+'</details>';
+ };
+ const outstanding=records.filter(p=>p.status!=='Account created'),completed=records.filter(p=>p.status==='Account created');
+ return '<section class="pending-people"><h2>Awaiting portal setup <span class="count">'+outstanding.length+'</span></h2><p>Save a name while you wait for their email address. These names stay private and are tracked separately from portal accounts.</p>'+panel('Add a name without an email',form('savePendingPerson',input('name','Name')+fields([]),'Add name'))+(outstanding.length?outstanding.map(row).join(''):'<p>No saved names are waiting for portal setup.</p>')+(completed.length?panel('Completed setup ('+completed.length+')',completed.map(row).join('')):'')+'</section>';
+}
+function contactEmail(m){
+ return !m.needsEmail?'':panel('Add email & invite',form('invite','<input type="hidden" name="pendingId" value="'+escape(m.pendingPersonId||m.id)+'">'+input('email','Email address','email'),'Add email & send invitation',m.id));
+}
+function contactName(m){
+ return !m.needsEmail?'':panel('Edit name',form('savePendingPerson',input('name','Name','text',m.name)+Object.keys(m.productions).map(id=>'<input type="hidden" name="pendingProduction" value="'+escape(id)+'">').join(''),'Save name',m.pendingPersonId||m.id));
+}
+function unassignedProfile(m,state){
+ const image=m.hasPhoto?url('photo',m.id):m.referencePhoto||'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2264%22 height=%2280%22%3E%3Crect width=%2264%22 height=%2280%22 fill=%22%2353434a%22/%3E%3C/svg%3E';
+ return '<details class="person-card" data-unassigned-person="'+escape(m.id)+'" data-roster-name="'+escape(m.name.toLowerCase())+'"><summary><img alt="" src="'+escape(image)+'"><span><b>'+escape(m.name)+'</b><span>Production not selected'+(m.needsEmail?' · Email needed':'')+'</span></span><span class="open-profile">Open profile</span></summary><section><h3>'+escape(m.name)+'</h3><p>'+(m.needsEmail?'Email needed':escape(m.email||''))+'</p><p>Choose a production below to manage its contracts, documents and tasks.</p>'+contactName(m)+profile(m)+contactEmail(m)+productionAssignments([m],state.productionChoices||state.productions,'Manage production assignments')+panel('Manage access',(!m.needsEmail&&!m.activated&&state.mailReady?form('resend','','Resend invitation',m.id):'')+form('revoke','<label><input type="checkbox" name="keepPublic" checked> Keep public film credits and profile visible</label>','Revoke portal access',m.id))+'</section></details>';
+}
+function renderPendingPeople(host,state,selected){
+ const drafts=[...host.querySelectorAll('form')].filter(f=>f.hasAttribute('data-dirty')||f.querySelector('button:disabled'));
+ const expanded=[...host.querySelectorAll('details[open]')].map(d=>d.dataset.pendingPerson||d.querySelector(':scope > summary')?.textContent);
+ host.innerHTML=pendingPeoplePanel(state,selected);
+ for(const draft of drafts){const replacement=[...host.querySelectorAll('form')].find(f=>f.dataset.action===draft.dataset.action&&f.dataset.id===draft.dataset.id);if(replacement)replacement.replaceWith(draft);}
+ for(const details of host.querySelectorAll('details'))if(expanded.includes(details.dataset.pendingPerson||details.querySelector(':scope > summary')?.textContent))details.open=true;
+}
+
 function renderCombinedOffice(states,picker){
  const offices=new Map();
  const snapshots=new Map(states.map(state=>[state.productionId,state]));
+ let pendingState=states[0];
  const nav=officeTabs.map(([id,label])=>'<button type="button" data-main-tab="'+id+'">'+label+'</button>').join('');
- app.innerHTML='<div class="office-header">'+picker+form('logout','','Sign out')+'</div><nav class="office-nav" aria-label="Production office">'+nav+'</nav><div data-main-reviews></div><section data-shared-settings hidden><h2>All productions · account settings</h2><div data-shared-assignments></div></section><div data-main-people><h2>People &amp; profiles <span class="count" data-total></span></h2><label>Search name or role<input type="search" data-roster-search></label><div data-accounts></div><details data-combined-directory><summary></summary><div data-catalog></div></details></div><div data-offices></div>';
+ app.innerHTML='<div class="office-header">'+picker+form('logout','','Sign out')+'</div><nav class="office-nav" aria-label="Production office">'+nav+'</nav><div data-main-reviews></div><section data-shared-settings hidden><h2>All productions · account settings</h2><div data-shared-assignments></div></section><div data-main-people><div data-pending-people></div><h2>People &amp; profiles <span class="count" data-total></span></h2><label>Search name or role<input type="search" data-roster-search></label><div data-accounts></div><details data-combined-directory><summary></summary><div data-catalog></div></details></div><div data-offices></div>';
  function renderAssignments(state){
   const host=app.querySelector('[data-shared-assignments]');
   const expanded=[...host.querySelectorAll('details[open] > summary')].map(node=>node.textContent);
@@ -183,18 +220,26 @@ function renderCombinedOffice(states,picker){
  }
  let people=[];
  const roster=()=>{
+  renderPendingPeople(app.querySelector('[data-pending-people]'),pendingState,[...snapshots.keys()]);
   const alerts=[...snapshots.values()].filter(s=>s.productionReviews?.length);
   app.querySelector('[data-main-reviews]').innerHTML=alerts.length?'<section style="border-left:5px solid #df8e9b;padding:1rem;background:#322329"><h2>Profiles awaiting approval</h2>'+alerts.map(s=>'<button data-review-film="'+escape(s.productionId)+'">Review '+escape(s.film)+' ('+s.productionReviews.length+')</button>').join(' ')+'</section>':'';
-  people=combinedPeople([...snapshots.values()]);
+  const openUnassigned=[...app.querySelectorAll('[data-unassigned-person][open]')].map(card=>card.dataset.unassignedPerson);
+  const contactDrafts=[...app.querySelectorAll('[data-unassigned-person] form')].filter(f=>f.hasAttribute('data-dirty')||f.querySelector('button:disabled'));
+  const contactPanels=[...app.querySelectorAll('[data-unassigned-person] details[open]')].map(d=>({id:d.closest('[data-unassigned-person]').dataset.unassignedPerson,summary:d.querySelector(':scope > summary')?.textContent}));
+  people=combinedPeople([...snapshots.values()].map(state=>({...state,unassignedProfiles:pendingState.unassignedProfiles})));
   const row=(person,index)=>{
+   if(person.unassigned)return unassignedProfile(person.member,pendingState);
    const links=person.films.map((film,n)=>'<button type="button" data-person-index="'+index+'" data-film-index="'+n+'">'+escape(film.name)+'</button>'+(film.role?' · '+escape(film.role):'')).join('<br>');
-   return '<section data-roster-name="'+escape([person.name,...person.films.map(f=>f.role)].join(' ').toLowerCase())+'"><button type="button" data-person-index="'+index+'"><strong>'+escape(person.name)+'</strong></button><p>'+links+'</p></section>';
+   return '<section data-roster-name="'+escape([person.name,...person.films.map(f=>f.role)].join(' ').toLowerCase())+'"><button type="button" data-person-index="'+index+'"><strong>'+escape(person.name)+'</strong></button>'+(person.needsEmail?'<span class="status-pill">Email needed</span>':'')+'<p>'+links+'</p></section>';
   };
   const rows=people.map(row);
   app.querySelector('[data-total]').textContent=people.length;
-  app.querySelector('[data-accounts]').innerHTML=rows.filter((_,i)=>people[i].hasAccount).join('');
-  app.querySelector('[data-catalog]').innerHTML=rows.filter((_,i)=>!people[i].hasAccount).join('');
-  app.querySelector('[data-combined-directory] summary').textContent='Profiles without a portal account ('+people.filter(p=>!p.hasAccount).length+')';
+  app.querySelector('[data-accounts]').innerHTML=rows.filter((_,i)=>people[i].hasMemberProfile).join('');
+  app.querySelector('[data-catalog]').innerHTML=rows.filter((_,i)=>!people[i].hasMemberProfile).join('');
+  app.querySelector('[data-combined-directory] summary').textContent='Website profiles to link ('+people.filter(p=>!p.hasMemberProfile).length+')';
+  for(const draft of contactDrafts){const replacement=[...app.querySelectorAll('[data-unassigned-person] form')].find(f=>f.dataset.action===draft.dataset.action&&f.dataset.id===draft.dataset.id);if(replacement)replacement.replaceWith(draft);}
+  for(const saved of contactPanels)for(const details of app.querySelectorAll('[data-unassigned-person="'+saved.id+'"] details'))if(details.querySelector(':scope > summary')?.textContent===saved.summary)details.open=true;
+  for(const id of openUnassigned){const person=people.find(p=>p.memberId===id);if(person?.unassigned)app.querySelector('[data-unassigned-person="'+id+'"]').open=true;else if(person&&activeView==='people')person.films.forEach((film,i)=>offices.get(film.id)?.open(film,i===0));}
   app.querySelector('[data-roster-search]').dispatchEvent(new Event('input',{bubbles:true}));
  };
  function show(view){
@@ -210,15 +255,22 @@ function renderCombinedOffice(states,picker){
   section.innerHTML='<h2>'+escape(state.film)+'</h2><div></div>';
   app.querySelector('[data-offices]').append(section);
   const child=startPortal(section.lastElementChild,{id:state.productionId,state,section,first:state===states[0],show,
-   update(next){snapshots.set(next.productionId,next);roster();renderAssignments(next);},
+   update(next){snapshots.set(next.productionId,next);pendingState=next;roster();renderAssignments(next);},
    changed(){for(const [id,other] of offices)if(id!==state.productionId)other.refresh();}});
   offices.set(state.productionId,child);
  }
  listen('click',event=>{
-  const button=event.target.closest('[data-main-tab],[data-person-index],[data-review-film]');
+  const button=event.target.closest('[data-main-tab],[data-person-index],[data-review-film],[data-open-setup-profile]');
   if(!button)return;
   if(button.dataset.reviewFilm){show('settings');offices.get(button.dataset.reviewFilm).review();return;}
   if(button.dataset.mainTab){show(button.dataset.mainTab);return;}
+  if(button.dataset.openSetupProfile){
+   const person=people.find(p=>p.memberId===button.dataset.openSetupProfile);if(!person)return;
+   show('people');
+   if(person.unassigned){const card=app.querySelector('[data-unassigned-person="'+person.memberId+'"]');card.open=true;card.scrollIntoView({block:'start'});}
+   else person.films.forEach((film,i)=>offices.get(film.id).open(film,i===0));
+   return;
+  }
   const person=people[Number(button.dataset.personIndex)];
   const films=button.hasAttribute('data-film-index')?[person.films[Number(button.dataset.filmIndex)]]:person.films;
   show('people');
@@ -332,21 +384,21 @@ async function load(initial){
  function personPaperwork(m){
   const tracked=m.paperworkTracking,actual=m.agreement?.status;
   const downloads=(m.documents||[]).map(d=>'<li><a href="'+escape(url('memberDocument',m.id)+'&'+new URLSearchParams({kind:d.kind,...(d.version?{version:d.version}:{})}))+'">'+escape(d.title)+'</a></li>').join('');
-  const draft=m.agreement?.id&&actual==='Draft ready to send'&&!tracked?form('sendAgreement','<input type="hidden" name="documentId" value="'+escape(m.agreement.id)+'"><p>Send this prepared contract to '+escape(m.name)+'.</p>','Send pending contract',m.id):'';
+  const draft=m.agreement?.id&&actual==='Draft ready to send'&&!tracked&&!m.needsEmail?form('sendAgreement','<input type="hidden" name="documentId" value="'+escape(m.agreement.id)+'"><p>Send this prepared contract to '+escape(m.name)+'.</p>','Send pending contract',m.id):'';
   return '<section class="member-paperwork"><h4>Documents &amp; agreements</h4><p><strong>'+escape(m.paperworkStatus)+'</strong>'+(tracked?' · Recorded by an admin.':'')+'</p>'+(tracked&&actual?'<p>Signing request status · <span data-signing-status>'+escape(actual)+'</span></p>':'')+'<p>Use Complete for paperwork handled outside the portal, or Document N/A when it is not needed. An existing SignWell request stays active.</p>'+documentControls(m,'agreement',tracked?.reason)+(tracked?'<p>Reopen the requirement to prepare or send a new contract.</p>':'')+(m.agreement?.id?'<button data-status="'+escape(m.id)+'">'+(!tracked&&actual==='Waiting on Heidi'?'Open for Heidi’s signature':'Check signing request status')+'</button>':'')+draft+(!tracked&&s.agreementReady&&(!m.agreement||m.agreement.cleared)?agreement(m):'')+recover(m)+(m.agreement?.syncError?'<p>'+escape(m.agreement.syncError)+'</p>':'')+(downloads?'<h5>Saved agreements</h5><ul>'+downloads+'</ul>':'')+s.resources.filter(d=>d.type==='PDF'&&(!d.audience||d.audience.includes(m.id))).map(d=>trackDocument(m,d)).join('')+'<div data-signing></div></section>';
  }
  const personalReview=m=>(s.productionReviews||[]).filter(r=>r.id===m.id).map(reviewCard).join('');
- const personalMessage=m=>panel('Send a message',form('notice','<p>For '+escape(m.name)+' · '+escape(s.film)+'</p><input type="hidden" name="audience" value="selected"><input type="hidden" name="recipient" value="'+escape(m.id)+'">'+input('title','Subject')+'<label>Message<textarea required name="text"></textarea></label>','Send to '+escape(m.name),m.id));
- const rows=s.members.map(m=>'<details class="person-card" data-person="'+m.id+'" data-search="'+escape((m.name+' '+m.role+' '+m.email).toLowerCase())+'" data-gaps="'+escape(outstanding(m).gaps.join(' ').toLowerCase())+'" data-paperwork="'+escape(m.paperworkStatus)+'"><summary><img loading="lazy" alt="" src="'+escape(m.hasPhoto?url('photo',m.id):m.referencePhoto||'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 80%22%3E%3Crect width=%2264%22 height=%2280%22 fill=%22%2353434a%22/%3E%3Ccircle cx=%2232%22 cy=%2226%22 r=%2213%22 fill=%22%23cbb9be%22/%3E%3Cellipse cx=%2232%22 cy=%2269%22 rx=%2226%22 ry=%2223%22 fill=%22%23cbb9be%22/%3E%3C/svg%3E')+'"><span><b>'+escape(m.name)+'</b><span>'+escape(m.role)+'</span></span><span class="status-pill">'+escape(m.paperworkStatus)+'</span><span class="open-profile">Open profile</span></summary><section><h3>'+escape(admin?m.name:'My dashboard')+'</h3><p>'+escape(m.role)+' · '+escape(m.email)+'</p>'+
- (admin?'<strong>'+escape(m.paperworkStatus)+'</strong>':'')+
+ const personalMessage=m=>panel(m.needsEmail?'Save a message for this person':'Send a message',form('notice','<p>For '+escape(m.name)+' · '+escape(s.film)+'</p><input type="hidden" name="audience" value="selected"><input type="hidden" name="recipient" value="'+escape(m.id)+'">'+input('title','Subject')+'<label>Message<textarea required name="text"></textarea></label>',m.needsEmail?'Save message':'Send to '+escape(m.name),m.id));
+ const rows=s.members.map(m=>'<details class="person-card" data-person="'+m.id+'" data-search="'+escape((m.name+' '+m.role+' '+(m.email||'')).toLowerCase())+'" data-gaps="'+escape(outstanding(m).gaps.join(' ').toLowerCase())+'" data-paperwork="'+escape(m.paperworkStatus)+'"><summary><img loading="lazy" alt="" src="'+escape(m.hasPhoto?url('photo',m.id):m.referencePhoto||'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 80%22%3E%3Crect width=%2264%22 height=%2280%22 fill=%22%2353434a%22/%3E%3Ccircle cx=%2232%22 cy=%2226%22 r=%2213%22 fill=%22%23cbb9be%22/%3E%3Cellipse cx=%2232%22 cy=%2269%22 rx=%2226%22 ry=%2223%22 fill=%22%23cbb9be%22/%3E%3C/svg%3E')+'"><span><b>'+escape(m.name)+'</b><span>'+escape(m.role)+'</span></span><span class="status-pill">'+escape(m.paperworkStatus)+'</span><span class="open-profile">Open profile</span></summary><section><h3>'+escape(admin?m.name:'My dashboard')+'</h3><p>'+escape([m.role,m.needsEmail?'Email needed':m.email].filter(Boolean).join(' · '))+'</p>'+
+ (admin?'<strong>'+escape(m.paperworkStatus)+'</strong>'+contactName(m)+contactEmail(m):'')+
  (!admin&&m.agreement?.id?'<button data-status="'+m.id+'">Review my agreement</button>':'')+
  ((m.referencePhoto||m.hasPhoto)?'<img data-headshot src="'+escape(m.hasPhoto?url('photo',m.id):m.referencePhoto)+'" alt="Saved headshot">':'')+(admin?profile(m):(m.hasPhoto?'<img data-headshot alt="Your saved headshot" src="'+escape(url('photo',m.id))+'">':'')+form('photo',file(m.hasPhoto?'Replace your headshot':'Upload your headshot · JPG or PNG, up to 4 MB','image/jpeg,image/png'),'Save headshot',m.id)+form('bio','<label>Import biography (.txt)<input type="file" accept=".txt,text/plain" data-bio-file></label><label>My bio<textarea name="bio" rows="4" maxlength="5000" placeholder="Tell us a little about yourself.">'+escape(m.profile?.bio)+'</textarea></label>','Save bio',m.id))+
- (admin?panel('Send a document',form('resource','<p>For '+escape(m.name)+' · '+escape(s.film)+'</p><input type="hidden" name="audience" value="selected"><input type="hidden" name="recipient" value="'+escape(m.id)+'">'+input('title','Document title')+file('PDF · up to 4 MB','application/pdf'),'Send to '+escape(m.name),m.id)):'')+
+ (admin?panel(m.needsEmail?'Save a document for this person':'Send a document',form('resource','<p>For '+escape(m.name)+' · '+escape(s.film)+'</p><input type="hidden" name="audience" value="selected"><input type="hidden" name="recipient" value="'+escape(m.id)+'">'+input('title','Document title')+file('PDF · up to 4 MB','application/pdf'),m.needsEmail?'Save document':'Send to '+escape(m.name),m.id)):'')+
  (admin?personPaperwork(m)+personalMessage(m)+personalReview(m)+productionAssignments([m],s.productions,'Manage production assignments'):'')+tasks(m)+(admin&&m.filmProfile&&library.find(x=>x.id===m.filmProfile)?offline(library.find(x=>x.id===m.filmProfile)):'')+(admin?linkControls(m):'')+(admin?panel('Assign a task',form('task',input('title','What needs to be done?'),'Assign task',m.id)):'')+
- (admin?publication(m):'')+(admin?panel('Manage access',(!m.activated&&s.mailReady?form('resend','','Resend invitation',m.id):'')+form('revoke','<label><input type="checkbox" name="keepPublic" checked> Keep public film credits and profile visible</label><p>Uncheck to also remove this account’s public profiles. Access is revoked immediately.</p>','Revoke portal access',m.id)):'')+'</section></details>').join('');
+ (admin?publication(m):'')+(admin?panel('Manage access',(!m.needsEmail&&!m.activated&&s.mailReady?form('resend','','Resend invitation',m.id):'')+form('revoke','<label><input type="checkbox" name="keepPublic" checked> Keep public film credits and profile visible</label><p>Uncheck to also remove this account’s public profiles. Access is revoked immediately.</p>','Revoke portal access',m.id)):'')+'</section></details>').join('');
  const account=s.passwordSet?'':'<section><h2>Set your password</h2><p>Your sign-in name is <strong>'+escape(admin?s.self:s.members[0].email)+'</strong>.</p>'+form('choosePassword',newPassword,'Save my password')+'</section>';
  const updates=s.resources.map(r=>'<section><small>'+escape(new Date(r.created).toLocaleDateString())+' · '+escape(r.type)+'</small><h3>'+escape(r.title)+'</h3>'+(r.type==='PDF'?'<a href="'+escape(url('resource',r.id))+'">Download PDF</a>':'<p>'+escape(r.text)+'</p>')+'</section>').join('');
- const counts='<div class="metrics"><div><b>'+people.length+'</b><span>Production roster</span></div><div><b>'+s.members.length+'</b><span>Portal accounts</span></div><div><b>'+s.members.filter(m=>m.activated).length+'</b><span>Activated accounts</span></div><div><b>'+s.members.filter(m=>!outstanding(m).gaps.some(x=>['Bio','Headshot'].includes(x))).length+'</b><span>Complete account profiles</span></div></div>';
+ const counts='<div class="metrics"><div><b>'+people.length+'</b><span>Production roster</span></div><div><b>'+s.members.filter(m=>!m.needsEmail).length+'</b><span>Portal accounts</span></div><div><b>'+s.members.filter(m=>!m.needsEmail&&m.activated).length+'</b><span>Activated accounts</span></div><div><b>'+s.members.filter(m=>!m.needsEmail&&!outstanding(m).gaps.some(x=>['Bio','Headshot'].includes(x))).length+'</b><span>Complete account profiles</span></div></div>';
  const mailRows=[...(s.mailQueue||[]).map(x=>({...x,status:x.lastError?'Retry scheduled':'Queued'})),...(s.mailLog||[])];
  const mailPanel='<section><h2>Email delivery</h2><p>Provider acceptance is not proof of inbox delivery. Delivery updates appear when available.</p>'+(mailRows.length?'<div class="table-scroll"><table><thead><tr><th>Recipient</th><th>Subject</th><th>Status</th></tr></thead><tbody>'+mailRows.map(x=>'<tr><td>'+escape(x.to)+'</td><td>'+escape(x.subject)+'</td><td>'+escape(x.status)+(x.lastError||x.error?'<br>'+escape(x.lastError||x.error):'')+'</td></tr>').join('')+'</tbody></table></div>':'<p>No email activity recorded yet.</p>')+'</section>';
  const urgent=reviews?'<section role="region" aria-label="Pending profile approvals" style="border-left:5px solid #df8e9b;padding:1rem;background:#322329"><strong>'+s.productionReviews.length+' pending profile approval'+(s.productionReviews.length===1?'':'s')+' · '+escape(s.film)+'</strong> <button data-view-button="settings" data-review-jump>Review now</button></section>':'';
@@ -355,7 +407,7 @@ async function load(initial){
  if(admin){
   app.innerHTML='<div class="office-header">'+productionPicker+form('logout','','Sign out')+'</div>'+account+'<nav class="office-nav" aria-label="Production office">'+tabs.map(([id,label])=>'<button type="button" data-view-button="'+id+'">'+label+'</button>').join('')+'</nav>'+(office?'':urgent)+'<div class="office-layout"><div class="office-main">'+
    '<div data-view="overview">'+personal+counts+attention+'<p>Roster includes existing film profiles and portal accounts, counted once per linked person.</p></div>'+
-   '<div data-view="people"><h2>People & profiles <span class="count">'+people.length+'</span></h2><div class="people-toolbar"><label>Search name, role or email<input data-people-search type="search" value="'+escape(peopleSearch)+'"></label><label>Show<select data-people-filter><option value="all">All portal accounts</option><option value="missing">No agreement</option><option value="progress">Paperwork in progress</option><option value="bio">Missing bio</option><option value="headshot">Missing headshot</option><option value="tasks">Open tasks</option></select></label></div><p data-results></p>'+rows+'<h2>Browse film profiles <span class="count">'+people.length+'</span></h2>'+panel('Profiles without a portal account ('+available.length+')',directory)+'</div>'+
+   '<div data-view="people">'+(!office?pendingPeoplePanel(s,[s.productionId])+(s.unassignedProfiles?.length?'<h3>Profiles without a production</h3>'+s.unassignedProfiles.map(m=>unassignedProfile(m,s)).join(''):''):'')+'<h2>People & profiles <span class="count">'+people.length+'</span></h2><div class="people-toolbar"><label>Search name, role or email<input data-people-search type="search" value="'+escape(peopleSearch)+'"></label><label>Show<select data-people-filter><option value="all">All profiles</option><option value="missing">No agreement</option><option value="progress">Paperwork in progress</option><option value="bio">Missing bio</option><option value="headshot">Missing headshot</option><option value="tasks">Open tasks</option></select></label></div><p data-results></p>'+rows+'<h2>Browse film profiles <span class="count">'+people.length+'</span></h2>'+panel('Website profiles to link ('+available.length+')',directory)+'</div>'+
    '<div data-view="documents"><h2>Paperwork</h2><p>'+(s.test?'Signing is in test mode.':'Live signing is enabled.')+'</p>'+attention+uploadedDocuments+'<div class="document-list">'+s.members.map(m=>'<p><b>'+escape(m.name)+'</b> · '+escape(m.paperworkStatus)+' <button data-open-person="'+m.id+'">Open paperwork</button></p>').join('')+'</div><div data-tool-zone="documents"></div><div id="signing"></div></div>'+
    '<div data-view="messages"><h2>Messages & files</h2><div data-tool-zone="messages"></div>'+mailPanel+'<h2>Production board</h2>'+updates+'</div>'+
    '<div data-view="calendar"><h2>Production calendar</h2><p>Your connected Exchange calendar appears alongside this workspace. It shows the next 30 days in Eastern time. In Outlook, categorize a member event as Written in the Dark, Wherein Lies Continue, or both. Events without a film category stay in the admin calendar.</p></div>'+
@@ -485,12 +537,14 @@ listen('submit',async e=>{
   }
   if(a==='reviewProduction')data.decision=button.value;
   if(a==='enrollments'){data.productions=new FormData(f).getAll('production');data.roles=Object.fromEntries(data.productions.map(id=>[id,data['role_'+id]]));}
+  if(a==='savePendingPerson')data.productions=new FormData(f).getAll('pendingProduction');
   const targetParams=new URLSearchParams({title:data.title||''});
   if(data.audience){data.recipients=new FormData(f).getAll('recipient');if(data.audience==='selected'&&!data.recipients.length)throw Error('Select at least one recipient.');targetParams.set('audience',data.audience);for(const who of data.recipients)targetParams.append('recipient',who);}
   const result=await request(a,data.file||data,id,a==='offline'?'&'+new URLSearchParams({status:data.status}):a==='photo'?'&'+new URLSearchParams({filename:data.file.name}):data.title&&data.file?'&'+targetParams:'');
   delete f.dataset.dirty;
+  if(a==='savePendingPerson'&&!id)f.reset();
   if(office&&!data.preview)office.changed();
-  if(combined&&a==='enrollments')combined.refresh();
+  if(combined&&['enrollments','savePendingPerson','removePendingPerson','invite','resend'].includes(a))combined.refresh();
   if(a==='requestReset'){message.textContent=result.message;return;}
   if(a==='resetPassword'){history.replaceState(null,'',location.pathname);login();message.textContent='Password updated. Sign in with your new password.';return;}
   if(a==='photo'||a==='bio'){
@@ -505,14 +559,14 @@ listen('submit',async e=>{
    if(a==='bio')profileStatus(f,f.elements.bio.value===data.bio?'Saved':'Unsaved changes');
    message.textContent=(a==='photo'?'Headshot saved.':'Bio saved.')+' An admin reviews updates for each selected film.';
    const publicationInfo=await request('home');lastState=publicationInfo;
-   const member=publicationInfo.members.find(m=>m.id===id);
+   const member=[...publicationInfo.members,...(publicationInfo.unassignedProfiles||[])].find(m=>m.id===id);
    if(member)message.textContent+=' '+Object.entries(member.publication||{}).map(([pid,p])=>(publicationInfo.productions.find(x=>x.id===pid)?.name||pid)+': '+p.state).join(' · ');
    return;
   }
   if(a==='activate')history.replaceState(null,'',location.pathname);
   if(a==='agreement'&&data.preview){message.textContent='Preview ready. Credits saved for '+lastState.film+'.';const href=URL.createObjectURL(result);const link=document.createElement('a');link.href=href;link.download='Agreement-preview.pdf';link.click();setTimeout(()=>URL.revokeObjectURL(href),60000);return;}
   if(a==='prepareOfflineCountersign'){await load();message.textContent=result.created?(result.status==='Draft prepared'?'Heidi’s countersignature draft is prepared.':'SignWell is preparing Heidi’s countersignature draft.')+' Review its status under Documents → Uploaded agreements. No signing request has been sent.':'An existing preparation record was found. Review its status under Documents → Uploaded agreements.';return;}
-  await load();message.textContent=['invite','resend'].includes(a)?'Invitation queued for email delivery.':['login','passwordLogin','activate'].includes(a)?'':a==='logout'?'Signed out.':'Saved.';
+  await load();message.textContent=['invite','resend'].includes(a)?'Invitation queued for email delivery.':a==='savePendingPerson'?'Name saved. Add their email here when you have it.':a==='removePendingPerson'?'Removed from the setup list.':['login','passwordLogin','activate'].includes(a)?'':a==='logout'?'Signed out.':'Saved.';
  }catch(e){message.textContent=e.message;}finally{button.disabled=false;}
 });
 listen('click',async e=>{
@@ -629,10 +683,11 @@ function applyPeopleFilter(){
   const match=peopleFilter==='all'||peopleFilter==='missing'&&status==='No agreement on file'||peopleFilter==='progress'&&!['Complete','Document N/A','Not required','No agreement on file'].includes(status)||peopleFilter==='bio'&&gaps.includes('bio')||peopleFilter==='headshot'&&gaps.includes('headshot')||peopleFilter==='tasks'&&gaps.includes('tasks');
   card.hidden=!match||!card.dataset.search.includes(peopleSearch.toLowerCase());if(!card.hidden)shown++;
  }
- app.querySelector('[data-results]').textContent=shown+' portal account'+(shown===1?'':'s')+' shown';
+ app.querySelector('[data-results]').textContent=shown+' profile'+(shown===1?'':'s')+' shown';
 }
 listen('click',e=>{
  const tab=e.target.closest('[data-view-button]');if(tab){if(office)office.show(tab.dataset.viewButton);else{activeView=tab.dataset.viewButton;applyView();}if(tab.hasAttribute('data-review-jump')){const queue=app.querySelector('[data-review-list]');if(queue){queue.querySelector('details').open=true;queue.scrollIntoView({block:'start'});}}}
+ const setup=e.target.closest('[data-open-setup-profile]');if(setup&&!combined){activeView='people';applyView();const id=setup.dataset.openSetupProfile,card=app.querySelector('[data-person="'+id+'"],[data-unassigned-person="'+id+'"]');if(card){card.hidden=false;card.open=true;card.scrollIntoView({block:'start'});}return;}
  const open=e.target.closest('[data-open-person]');if(open){if(office){office.show('people');focusFilm={target:'person',profileId:open.dataset.openPerson};syncOffice();}activeView='people';peopleFilter='all';peopleSearch='';applyView();applyPeopleFilter();if(office)syncOffice();const card=app.querySelector('[data-person="'+open.dataset.openPerson+'"]');card.open=true;card.scrollIntoView({block:'start'});}
 });
 listen('input',e=>{if(e.target.matches('[data-people-search]')){peopleSearch=e.target.value;applyPeopleFilter();}});

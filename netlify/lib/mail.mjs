@@ -5,6 +5,7 @@ import {createHash} from 'node:crypto';
 export const mailReady=()=>Boolean(process.env.RESEND_API_KEY&&process.env.HMF_MAIL_FROM);
 export const portalUrl='https://heidimikacfilms.com/members/';
 export async function enqueue(store, member, event, subject, text, expires=0, options={}){
+ if(!member?.email)return;
  const key='outbox/'+createHash('sha256').update(member.id+'/'+event).digest('hex');
  if(event.startsWith('calendar/')&&(await store.getMetadata('mail-log/'+key.split('/')[1])||await store.getMetadata('failed-mail/'+key.split('/')[1])))return;
  await store.setJSON(key,{id:member.id,to:member.email,...(event.startsWith('calendar/')?{calendarEvent:event.slice(9)}:{}),subject,text,expires,...(options.agreementCycle?{agreementCycle:options.agreementCycle}:{}),...(options.requirementKey?{requirementKey:options.requirementKey}:{}),created:Date.now(),attempts:0,nextAttempt:0},{onlyIfNew:true});

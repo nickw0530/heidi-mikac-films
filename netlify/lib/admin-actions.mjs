@@ -17,6 +17,7 @@ export async function adminActions(store,production,refresh=false){
   const assignment=(m.productions??{'written-in-the-dark':{filmProfile:m.filmProfile}})[production];
   if(m.productionRequests?.[production])add('any','Review production request from '+m.name,'production-request/'+production+'/'+m.productionRequests[production],'settings');
   if(!assignment)continue;
+  if(!m.email){add('any','Add email and invite '+m.name,'portal-contact/'+m.id,'people',m.id);continue;}
   if(await readAgreementTracking(store,production,m.id))continue;
   const k=currentAgreementKey(production,m.id);
   const a=refresh?await refreshAgreement(store,k):await store.get(k,{type:'json'});

@@ -26,6 +26,7 @@ const allowPublicProfile=m=>requireThat(!practiceName(m.name),'Practice accounts
 const productions=[{id:'written-in-the-dark',name:'Written in the Dark'},{id:'wherein-lies-continue',name:'Wherein Lies Continue'}];
 const catalogs={'written-in-the-dark':darkCatalog,'wherein-lies-continue':whereinCatalog};
 const normalizeName=name=>name.trim().toLowerCase().replace(/[^a-z0-9]/g,'');
+const normalizePendingName=name=>name.normalize('NFKC').toLocaleLowerCase('en-US').replace(/[^\p{L}\p{N}]/gu,'');
 function publicCredit(profile) {
   if (typeof profile.role !== 'string' || !profile.role.includes(',')) return profile;
   const titles = profile.role.split(/[,·]/).map(title => title.trim()).filter(Boolean);
@@ -104,6 +105,17 @@ export default async function handle(req) {
   const get=k=>store.get(k,{type:'json'});
   const set=(k,v)=>store.setJSON(k,v);
   const list=async prefix=>Promise.all((await store.list({prefix})).blobs.map(b=>get(b.key)));
+  const globalRecords=async prefix=>{
+    const records=[];
+    for await(const page of rawStore.list({prefix,paginate:true}))for(const {key} of page.blobs){const record=await rawStore.get(key,{type:'json'});if(record)records.push(record);}
+    return records;
+  };
+  const pendingKey=id=>'portal-pending/'+id;
+  const pendingNameKey=name=>'portal-pending-names/'+hash(normalizePendingName(name));
+  async function releasePendingName(name,id){
+    const key=pendingNameKey(name),owner=await rawStore.get(key,{type:'json'}),current=await rawStore.get(pendingKey(id),{type:'json'});
+    if(owner?.id===id&&(!current||current.archived||normalizePendingName(current.name)!==normalizePendingName(name)))await rawStore.delete(key);
+  }
   const invalidate=()=>set('public-revision',token());
   const active=m=>m&&!m.revoked;
   const publicPhotoHeaders={'Cache-Control':'public, max-age=60','Access-Control-Allow-Origin':'*'};
@@ -162,7 +174,7 @@ export default async function handle(req) {
     return json({ok:true},{'Set-Cookie':cookie(secret,28800)});
   }
   async function notify(m,event,subject,text,agreementCycle){
-    if(production)await enqueue(store,m,event,subject,text+'\n\nOpen your dashboard: '+portalUrl+'?production='+productionId,0,agreementCycle?{agreementCycle,requirementKey:manualAgreementKey(productionId,m.id)}:{});
+    if(production&&m.email)await enqueue(store,m,event,subject,text+'\n\nOpen your dashboard: '+portalUrl+'?production='+productionId,0,agreementCycle?{agreementCycle,requirementKey:manualAgreementKey(productionId,m.id)}:{});
   }
   const recoveryAddress=id=>process.env['HMF_'+id.toUpperCase()+'_RECOVERY_EMAIL']||(id==='Nick'?'nick@heidimikacfilms.com':'heidi@heidimikacfilms.com');
   if(action==='requestReset'&&post){
@@ -320,17 +332,72 @@ export default async function handle(req) {
     await set('settings/welcome',{video:https(body.video),poster:https(body.poster),captions:https(body.captions)});return json({ok:true});
   }
   if(action==='welcomePlayed'&&post){await set('welcome-played/'+self,true);return json({ok:true});}
+  if(action==='savePendingPerson'&&post){
+    onlyAdmin();const name=string(body.name),normalized=normalizePendingName(name);
+    requireThat(normalized,'Enter the person’s name.');
+    const selections=body.productions??[];
+    requireThat(Array.isArray(selections)&&selections.every(id=>productions.some(p=>p.id===id)),'Choose valid productions.');
+    const id=uid||randomUUID();requireThat(uuid.test(id),'Invalid saved person.');
+    const key=pendingKey(id),record=await rawStore.getWithMetadata(key,{type:'json'}),prior=record?.data;
+    const memberKey='members/'+id,memberRecord=await rawStore.getWithMetadata(memberKey,{type:'json'}),member=memberRecord?.data;
+    if(uid)requireThat(prior&&(!prior.archived||active(member)&&member.pendingContact&&!member.email),'Saved person unavailable.',404);
+    requireThat(!(prior?.inviteLeaseUntil>Date.now()),'This person is being updated or invited. Refresh before editing.',409);
+    requireThat(!member?.email||name===prior.name,'This person already has an invitation. Keep the saved name unchanged.',409);
+    const accounts=await globalRecords('members/');
+    requireThat(!accounts.some(m=>active(m)&&m.id!==id&&normalizePendingName(m.name)===normalized),'A person profile already exists under this name. Open that profile instead.',409);
+    const index=pendingNameKey(name),owner=await rawStore.get(index,{type:'json'});
+    if(owner?.id!==id){
+      const reserved=await rawStore.setJSON(index,{id},{onlyIfNew:true});
+      requireThat(reserved.modified,'This name is already in Awaiting portal setup. Open the saved entry instead.',409);
+    }
+    const selected=[...new Set(selections)],lease=token();
+    const updated={...prior,id,name,productions:selected,created:prior?.created||Date.now(),updated:Date.now(),...(member?.email?{memberId:member.id,archived:false}:{}),inviteLeaseToken:lease,inviteLeaseUntil:Date.now()+120000};
+    let profileSaved=false;
+    try{
+      const saved=await rawStore.setJSON(key,updated,record?{onlyIfMatch:record.etag}:{onlyIfNew:true});
+      requireThat(saved.modified,'This saved person changed. Refresh before trying again.',409);
+      if(!member?.email){
+        const assignmentsNext=Object.fromEntries(selected.map(pid=>[pid,assignments(member||{productions:{}})[pid]||{role:'',filmProfile:''}]));
+        const profile={...member,id,name,pendingContact:true,pendingPersonId:id,generalInvite:true,productions:assignmentsNext};
+        const written=await rawStore.setJSON(memberKey,profile,memberRecord?{onlyIfMatch:memberRecord.etag}:{onlyIfNew:true});
+        requireThat(written.modified,'This person’s profile changed. Refresh before trying again.',409);
+      }
+      profileSaved=true;
+      const latest=await rawStore.getWithMetadata(key,{type:'json'});
+      requireThat(latest?.data?.inviteLeaseToken===lease,'This saved person changed. Refresh before trying again.',409);
+      const {inviteLeaseToken,inviteLeaseUntil,...complete}=latest.data;
+      requireThat((await rawStore.setJSON(key,complete,{onlyIfMatch:latest.etag})).modified,'This saved person changed. Refresh before trying again.',409);
+    }catch(error){
+      const latest=await rawStore.getWithMetadata(key,{type:'json'});
+      if(latest?.data?.inviteLeaseToken===lease){
+        if(profileSaved){const {inviteLeaseToken,inviteLeaseUntil,...complete}=latest.data;await rawStore.setJSON(key,complete,{onlyIfMatch:latest.etag});}
+        else if(prior)await rawStore.setJSON(key,prior,{onlyIfMatch:latest.etag});else await rawStore.delete(key);
+      }
+      await releasePendingName(name,id);throw error;
+    }
+    if(prior&&normalizePendingName(prior.name)!==normalized)await releasePendingName(prior.name,id);
+    return json({ok:true,id});
+  }
+  if(action==='removePendingPerson'&&post){
+    onlyAdmin();requireThat(uuid.test(uid),'Invalid saved person.');
+    const key=pendingKey(uid),record=await rawStore.getWithMetadata(key,{type:'json'}),person=record?.data;
+    requireThat(person&&!person.archived,'Saved person unavailable.',404);
+    requireThat(!(person.inviteLeaseUntil>Date.now()),'An invitation is being prepared. Refresh before removing this entry.',409);
+    const saved=await rawStore.setJSON(key,{...person,archived:true,archivedAt:Date.now(),archivedBy:self},{onlyIfMatch:record.etag});
+    requireThat(saved.modified,'This saved person changed. Refresh before trying again.',409);
+    await releasePendingName(person.name,uid);return json({ok:true});
+  }
   if(action==='home'){
     const allAccounts=(await list('members/')).filter(Boolean);
     const accounts=allAccounts.filter(active);
     const rosterCatalog=catalog.filter(x=>{const matches=allAccounts.filter(m=>(!m.generalInvite||assignments(m)[productionId]||m.approvedProfiles?.[productionId])&&findProfile(m,productionId)?.id===x.id);return !matches.length||matches.some(m=>assignments(m)[productionId]&&(!m.revoked||m.keepPublic));});
-    const members=admin?accounts.filter(m=>assignments(m)[productionId]):[account];
+    const members=admin?accounts.filter(m=>assignments(m)[productionId]||!Object.keys(assignments(m)).length):[account];
     const offlineRequests=new Map();
     const offlineFor=profileId=>{
       if(!offlineRequests.has(profileId))offlineRequests.set(profileId,rawStore.get(offlineSigningKey(profileId,productionId),{type:'json'}));
       return offlineRequests.get(profileId);
     };
-    const rows=await Promise.all(members.filter(Boolean).map(async m=>({...m,role:assignments(m)[productionId]?.role||'',filmProfile:findProfile(m,productionId)?.id||'',productions:assignments(m),profile:m.draftProfile?.bio!==undefined?{bio:m.draftProfile.bio}:await get('profiles/'+m.id),...(await (async()=>{const photo=await store.getMetadata(m.draftProfile?.imageVersion?'profile-images/'+m.id+'/'+m.draftProfile.imageVersion:'photos/'+m.id);return {hasPhoto:!!photo,photoName:photo?.metadata?.filename||''};})()),agreement:assignments(m)[productionId]?await refreshAgreement(store,'agreements/'+m.id):null,tasks:assignments(m)[productionId]?(await list('tasks/'+m.id+'/')).filter(Boolean):[],activated:!!await get('passwords/'+m.id)})));
+    const rows=await Promise.all(members.filter(Boolean).map(async m=>({...m,needsEmail:!m.email,role:assignments(m)[productionId]?.role||'',filmProfile:assignments(m)[productionId]?findProfile(m,productionId)?.id||'':'',productions:assignments(m),profile:m.draftProfile?.bio!==undefined?{bio:m.draftProfile.bio}:await get('profiles/'+m.id),...(await (async()=>{const photo=await store.getMetadata(m.draftProfile?.imageVersion?'profile-images/'+m.id+'/'+m.draftProfile.imageVersion:'photos/'+m.id);return {hasPhoto:!!photo,photoName:photo?.metadata?.filename||''};})()),agreement:assignments(m)[productionId]?await refreshAgreement(store,'agreements/'+m.id):null,tasks:assignments(m)[productionId]?(await list('tasks/'+m.id+'/')).filter(Boolean):[],activated:!!await get('passwords/'+m.id)})));
     for(const row of rows){
       const original=accounts.find(m=>m.id===row.id);
       const base=sharedBase(original);
@@ -382,29 +449,78 @@ export default async function handle(req) {
     })):[];
     const waiting=admin?(await adminActions(rawStore,productionId)).filter(a=>a.owner==='any'||a.owner===self):[];
     const productionReviews=admin?await Promise.all(accounts.filter(m=>m.productionRequests?.[productionId]).map(async m=>({id:m.id,name:m.name,role:assignments(m)[productionId]?.role||findProfile(m,productionId)?.role||'',credits:m.proposedCredits?.[productionId]||assignments(m)[productionId]||{},requestId:m.productionRequests[productionId],...await reviewProfile(m)}))):[];
-    return json({agreementCycle:AGREEMENT_CYCLE,unassigned:admin?await Promise.all(accounts.filter(m=>!Object.keys(assignments(m)).length).map(async m=>({id:m.id,name:m.name,activated:!!await get('passwords/'+m.id)}))):[],productionReviews,productionChoices:productions,waiting,productionId,productions:admin?productions:productions.filter(p=>memberProductions[p.id]),revokedAccounts:admin?allAccounts.filter(m=>m.revoked).map(m=>({id:m.id,name:m.name,keepPublic:m.keepPublic,productions:assignments(m),publication:m.publication||{}})):[],accounts:admin?accounts.map(m=>({id:m.id,name:m.name,productions:assignments(m)})):[],agreementReady:!!await store.getMetadata('contract/master'),agreementSupported:true,welcome:await get('settings/welcome'),welcomePlayed:!!await get('welcome-played/'+self),catalog:adminCatalog,admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),mailLog:admin?(await list('mail-log/')).filter(Boolean).sort((a,b)=>b.updated-a.updated).slice(0,30):[],mailQueue:admin?(await list('outbox/')).filter(Boolean).map(({to,subject,attempts,nextAttempt,lastError})=>({to,subject,attempts,nextAttempt,lastError})):[],members:rows.map(({ticket,...row})=>({...row,practice:practiceName(row.name)})),resources:(await list('resources/')).filter(canReadResource).map(r=>admin?r:({...r,audience:undefined})).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
+    const pendingPeople=admin?await Promise.all((await globalRecords('portal-pending/')).filter(p=>!p.archived).map(async p=>{
+      const member=allAccounts.find(m=>m.id===(p.memberId||p.id)),activated=!!member?.email&&!!await get('passwords/'+member.id);
+      return {id:p.id,name:member?.name||p.name,profileId:member?.id||p.id,productions:member?Object.keys(assignments(member)):p.productions||[],created:p.created,updated:p.updated,...(member?.email?{memberId:member.id,archived:false}:{}),activated,status:member?.email?(member.revoked?'Access revoked':activated?'Account created':'Invitation pending'):'Email needed'};
+    })):[];
+    return json({pendingPeople,unassignedProfiles:admin?rows.filter(row=>!Object.keys(assignments(row)).length).map(({ticket,...row})=>({...row,practice:practiceName(row.name)})):[],agreementCycle:AGREEMENT_CYCLE,unassigned:admin?await Promise.all(accounts.filter(m=>!Object.keys(assignments(m)).length).map(async m=>({id:m.id,name:m.name,needsEmail:!m.email,pendingPersonId:m.pendingPersonId,activated:!!m.email&&!!await get('passwords/'+m.id)}))):[],productionReviews,productionChoices:productions,waiting,productionId,productions:admin?productions:productions.filter(p=>memberProductions[p.id]),revokedAccounts:admin?allAccounts.filter(m=>m.revoked).map(m=>({id:m.id,name:m.name,keepPublic:m.keepPublic,productions:assignments(m),publication:m.publication||{}})):[],accounts:admin?accounts.map(m=>({id:m.id,name:m.name,needsEmail:!m.email,pendingPersonId:m.pendingPersonId,productions:assignments(m)})):[],agreementReady:!!await store.getMetadata('contract/master'),agreementSupported:true,welcome:await get('settings/welcome'),welcomePlayed:!!await get('welcome-played/'+self),catalog:adminCatalog,admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),mailLog:admin?(await list('mail-log/')).filter(Boolean).sort((a,b)=>b.updated-a.updated).slice(0,30):[],mailQueue:admin?(await list('outbox/')).filter(Boolean).map(({to,subject,attempts,nextAttempt,lastError})=>({to,subject,attempts,nextAttempt,lastError})):[],members:rows.filter(row=>!admin||assignments(row)[productionId]).map(({ticket,...row})=>({...row,practice:practiceName(row.name)})),resources:(await list('resources/')).filter(canReadResource).map(r=>admin?r:({...r,audience:undefined})).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
   }
   if((action==='invite'||action==='resend')&&post){
     onlyAdmin();requireThat(production&&mailReady(),'Invitation email is awaiting sender setup. No invitation was sent.',503);
-    let m;
-    if(action==='invite'){
-      const address=email(body.email);
-      requireThat(!(await list('members/')).some(m=>active(m)&&m.email===address),'This person already has an account. Use Manage production assignments to add another production.');
-      const hex=hash(address);
-      // A revoked account must receive a fresh identity on re-invitation.
-      const index='active-email/'+hex;
-      m={id:randomUUID(),email:address,name:string(body.name),role:'',generalInvite:true,productions:{}};
-      if(body.filmProfile){const base=entry(body.filmProfile);requireThat(base,'Unknown film profile.');m.profileLinks={[productionId]:base.id};}
-      const reserved=await store.setJSON(index,{id:m.id},{onlyIfNew:true});requireThat(reserved.modified,'An invitation already exists.');
-      try{await set('members/'+m.id,m);}catch(e){await store.delete(index);throw e;}
-    }else m=await target();
-    requireThat(!await get('passwords/'+m.id),'This person already has a password.');
-    const ticket=token(),expires=Date.now()+7*86400000;
-    await set('tickets/'+hash(ticket),{id:m.id,expires});
-    await set('members/'+m.id,{...m,ticket:hash(ticket)});await invalidate();
-    await enqueue(store,m,'invite/'+hash(ticket),'Heidi Mikac Films — your cast & crew invitation','Hi '+m.name+',\n\nCreate your cast and crew account, choose your productions, and add your biography, headshot and credits here:\n'+portalUrl+'#invite='+ticket+'\n\nThis invitation expires in seven days.',expires);
-    return json({ok:true});
+    let m,pending,invitationLease,contact;
+    try{
+      if(action==='invite'){
+        const address=email(body.email),accounts=await globalRecords('members/');
+        requireThat(!accounts.some(m=>active(m)&&m.email===address),'This person already has an account. Use Manage production assignments to add another production.',409);
+        if(body.pendingId){
+          requireThat(uuid.test(body.pendingId),'Invalid saved person.');
+          const key=pendingKey(body.pendingId),record=await rawStore.getWithMetadata(key,{type:'json'}),person=record?.data;
+          requireThat(person,'Saved person unavailable.',404);
+          contact=accounts.find(m=>m.id===person.id);
+          requireThat(!person.archived||active(contact)&&contact.pendingContact&&!contact.email,'Saved person unavailable.',404);
+          requireThat(!person.memberId&&!contact?.email,'An invitation already exists for this person. Refresh and use Resend invitation if needed.',409);
+          requireThat(!contact||contact.pendingContact&&!contact.revoked,'This saved person is unavailable for invitation.',409);
+          requireThat(!(person.inviteLeaseUntil>Date.now()),'An invitation is already being prepared for this person. Refresh before retrying.',409);
+          requireThat(!accounts.some(m=>active(m)&&m.id!==person.id&&normalizePendingName(m.name)===normalizePendingName(person.name)),'An active portal account already exists under this name. Open that person’s profile instead.',409);
+          invitationLease=token();
+          const reserved=await rawStore.setJSON(key,{...person,inviteLeaseToken:invitationLease,inviteLeaseUntil:Date.now()+120000},{onlyIfMatch:record.etag});
+          requireThat(reserved.modified,'This saved person changed or is already being invited. Refresh before trying again.',409);
+          pending=person;
+        }
+        const hex=hash(address),index='active-email/'+hex;
+        // A saved person keeps the same private identity when invited later.
+        m={...contact,id:pending?.id||randomUUID(),email:address,name:pending?.name||string(body.name),role:contact?.role||'',generalInvite:true,productions:contact?.productions||{},...(pending?{pendingContact:false,pendingPersonId:pending.id}:{})};
+        if(body.filmProfile&&!pending){const base=entry(body.filmProfile);requireThat(base,'Unknown film profile.');m.profileLinks={[productionId]:base.id};}
+        const reserved=await store.setJSON(index,{id:m.id},{onlyIfNew:true});
+        if(!reserved.modified){const owner=await get(index);requireThat(pending&&owner?.id===m.id,'An invitation already exists.',409);}
+        try{
+          const existing=await store.getWithMetadata('members/'+m.id,{type:'json'});
+          if(existing){
+            requireThat(pending&&existing.data.pendingContact&&!existing.data.email&&!existing.data.revoked,'An account already exists for this saved person. Refresh and use Resend invitation.',409);
+            m={...existing.data,email:address,name:pending.name,pendingContact:false,pendingPersonId:pending.id,generalInvite:true};
+          }
+          const saved=await store.setJSON('members/'+m.id,m,existing?{onlyIfMatch:existing.etag}:{onlyIfNew:true});
+          requireThat(saved.modified,'This person’s profile changed. Refresh before inviting them.',409);
+        }catch(error){if(!await get('members/'+m.id))await store.delete(index);throw error;}
+        if(pending){
+          const key=pendingKey(pending.id),record=await rawStore.getWithMetadata(key,{type:'json'});
+          requireThat(record?.data?.inviteLeaseToken===invitationLease,'This saved person changed. Refresh before continuing.',409);
+          const {inviteLeaseToken,inviteLeaseUntil,...person}=record.data;
+          const saved=await rawStore.setJSON(key,{...person,memberId:m.id,archived:false,updated:Date.now()},{onlyIfMatch:record.etag});
+          requireThat(saved.modified,'The invitation record changed. Refresh and use Resend invitation if needed.',409);
+        }
+      }else m=await target();
+      requireThat(m.email,'Add an email address before sending an invitation.',409);
+      requireThat(!await get('passwords/'+m.id),'This person already has a password.');
+      const ticket=token(),expires=Date.now()+7*86400000;
+      await set('tickets/'+hash(ticket),{id:m.id,expires});
+      const current=await store.getWithMetadata('members/'+m.id,{type:'json'});
+      requireThat(current?.data?.email===m.email,'This person’s profile changed. Refresh before inviting them.',409);
+      requireThat((await store.setJSON('members/'+m.id,{...current.data,ticket:hash(ticket)},{onlyIfMatch:current.etag})).modified,'This person’s profile changed. Refresh and use Resend invitation.',409);await invalidate();
+      await enqueue(store,m,'invite/'+hash(ticket),'Heidi Mikac Films — your cast & crew invitation','Hi '+m.name+',\n\nCreate your cast and crew account, choose your productions, and add your biography, headshot and credits here:\n'+portalUrl+'#invite='+ticket+'\n\nThis invitation expires in seven days.',expires);
+      return json({ok:true});
+    }catch(error){
+      if(pending&&invitationLease){
+        const key=pendingKey(pending.id),record=await rawStore.getWithMetadata(key,{type:'json'});
+        if(record?.data?.inviteLeaseToken===invitationLease){
+          const {inviteLeaseToken,inviteLeaseUntil,...person}=record.data,member=await get('members/'+pending.id);
+          await rawStore.setJSON(key,{...person,...(member?.email?{memberId:member.id,archived:false}:{}),updated:Date.now()},{onlyIfMatch:record.etag});
+        }
+      }
+      throw error;
+    }
   }
+
   async function reviewProfile(m){
     const [draft,image]=await Promise.all([get('profiles/'+m.id),store.getMetadata('photos/'+m.id)]);
     const fallback=sharedBase(m),bio=m.draftProfile?.bio??draft?.bio??fallback?.bio??'';
@@ -538,7 +654,7 @@ export default async function handle(req) {
     const key='tasks/'+uid+'/'+body.task,item=await get(key);requireThat(item,'Task unavailable.');
     await set(key,{...item,done:true});return json({ok:true});
   }
-  if(action==='revoke'&&post){onlyAdmin();const m=await target();await set('members/'+uid,{...m,revoked:true,revokedAt:Date.now(),keepPublic:body.keepPublic===true});await store.delete('active-email/'+hash(m.email));await invalidate();return json({ok:true});}
+  if(action==='revoke'&&post){onlyAdmin();const m=await target();await set('members/'+uid,{...m,revoked:true,revokedAt:Date.now(),keepPublic:body.keepPublic===true});if(m.email)await store.delete('active-email/'+hash(m.email));await invalidate();return json({ok:true});}
   if(action==='publication'&&post){onlyAdmin();const m=await target();if(body.visible)allowPublicProfile(m);await set('members/'+uid,{...m,...(m.revoked&&body.visible?{keepPublic:true}:{}),publication:{...m.publication,[productionId]:body.visible===true}});await invalidate();return json({ok:true});} 
   if(action==='bio'&&post){
     await target();requireThat(typeof body.bio==='string'&&body.bio.length<=5000,'Bio limit is 5,000 characters.');
@@ -565,6 +681,7 @@ export default async function handle(req) {
   if(action==='agreement'&&post){
 
     onlyAdmin();const m=await target(),t={};
+    requireThat(body.preview||m.email,'Add an email address and invite this person before sending a contract.',409);
     requireThat(active(m),'Member unavailable.',404);
     requireThat(body.preview||!await readAgreementTracking(rawStore,productionId,uid),'Reopen this agreement requirement before sending a contract.',409);
 
@@ -602,6 +719,7 @@ export default async function handle(req) {
   }
   if(action==='sendAgreement'&&post){
     onlyAdmin();const member=await target();requireThat(active(member),'Member unavailable.',404);
+    requireThat(member.email,'Add an email address and invite this person before sending a contract.',409);
     requireThat(!await readAgreementTracking(rawStore,productionId,uid),'Reopen this agreement requirement before sending a contract.',409);
     const key='agreements/'+uid,record=await store.getWithMetadata(key,{type:'json'}),agreement=record?.data;
     requireThat(agreement?.id&&agreement.cycle===AGREEMENT_CYCLE&&body.documentId===agreement.id,'This agreement changed. Reload the profile before sending.',409);
