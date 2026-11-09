@@ -85,6 +85,7 @@ const input=(name,label,type='text',value='')=>'<label>'+label+'<input required 
 const file=(label,accept)=>'<label>'+label+'<input required type="file" name="file" accept="'+accept+'"></label>';
 const form=(action,fields,button,id='')=>'<form data-action="'+action+'" data-id="'+id+'">'+fields+'<button>'+button+'</button></form>';
 const panel=(name,body)=>'<details><summary>'+name+'</summary>'+body+'</details>';
+const trackingLabel=reason=>['complete','hard-copy'].includes(reason)?'Complete':reason==='not-required'?'Document N/A':'';
 function profile(m){
  return panel('Headshot &amp; biography · '+((m.hasPhoto||m.referencePhoto)?'photo received':'photo needed')+' · '+(m.profile?.bio?'bio received':'bio needed'),form('bio','<label>Biography<textarea name="bio" rows="5" maxlength="5000">'+escape(m.profile?.bio)+'</textarea></label>','Save biography',m.id)+form('photo',file('Headshot · JPG or PNG, up to 4 MB','image/jpeg,image/png'),'Upload headshot',m.id)+(m.hasPhoto?'<button data-photo="'+m.id+'">View current headshot</button><div class="portrait"></div>':''));
 }
@@ -153,8 +154,8 @@ function combinedPeople(states){
  return [...people.values()].sort((a,b)=>a.name.localeCompare(b.name));
 }
 
-function productionAssignments(accounts,productions){
- return panel('Manage production assignments ('+accounts.length+' portal accounts)','<p>One account, one shared biography and headshot. Check each production this person belongs to. Review member submissions before publishing them. Named Test accounts stay private.</p>'+accounts.map(m=>panel(escape(m.name),'<form data-action="enrollments" data-id="'+m.id+'">'+productions.map(p=>{
+function productionAssignments(accounts,productions,label='Manage production assignments ('+accounts.length+' portal account'+(accounts.length===1?'':'s')+')'){
+ return panel(label,'<p>One account, one shared biography and headshot. Check each production this person belongs to. Review member submissions before publishing them. Named Test accounts stay private.</p>'+accounts.map(m=>panel(escape(m.name),'<form data-action="enrollments" data-id="'+m.id+'">'+productions.map(p=>{
   const assigned=m.productions[p.id];
   const role=assigned?.role||'';
   return '<fieldset><label><input style="width:auto;display:inline" type="checkbox" name="production" value="'+p.id+'" '+(assigned?'checked':'')+'> '+escape(p.name)+'</label><label>Character / crew title for this production<input name="role_'+p.id+'" value="'+escape(role)+'" '+(assigned?'':'disabled')+'></label></fieldset>';
@@ -255,7 +256,8 @@ async function load(initial){
   renderCombinedOffice(states,productionPicker);
   return;
  }
- const reviews=(s.productionReviews||[]).map(r=>panel(escape(r.name),'<p>'+escape(r.bio||'No biography submitted')+'</p>'+(r.photo?'<img alt="Headshot submitted for approval" style="width:8rem;max-width:100%" src="'+escape(r.photo==='uploaded'?url('photo',r.id)+'&v='+r.revision:r.photo)+'">':'<p>No headshot submitted</p>')+'<form data-action="reviewProduction" data-id="'+escape(r.id)+'"><input type="hidden" name="requestId" value="'+escape(r.requestId)+'"><input type="hidden" name="revision" value="'+escape(r.revision)+'">'+creditFields(r.credits)+(r.role?'<p>Current credit · '+escape(r.role)+'</p>':'')+'<button value="approve" >Approve for '+escape(s.film)+'</button> <button formnovalidate value="decline">Decline</button></form>')).join('');
+ const reviewCard=r=>panel(escape(r.name)+' · Approval needed','<p>'+escape(r.bio||'No biography submitted')+'</p>'+(r.photo?'<img alt="Headshot submitted for approval" style="width:8rem;max-width:100%" src="'+escape(r.photo==='uploaded'?url('photo',r.id)+'&v='+r.revision:r.photo)+'">':'<p>No headshot submitted</p>')+'<form data-action="reviewProduction" data-id="'+escape(r.id)+'"><input type="hidden" name="requestId" value="'+escape(r.requestId)+'"><input type="hidden" name="revision" value="'+escape(r.revision)+'">'+creditFields(r.credits)+(r.role?'<p>Current credit · '+escape(r.role)+'</p>':'')+'<button value="approve">Approve for '+escape(s.film)+'</button> <button formnovalidate value="decline">Decline</button></form>');
+ const reviews=(s.productionReviews||[]).map(reviewCard).join('');
  const assignmentsPanel=admin&&!office?productionAssignments(s.accounts,s.productions):'';
  const library=s.catalog||[];
  const available=library.filter(x=>!s.members.some(m=>m.filmProfile===x.id));
@@ -278,7 +280,7 @@ async function load(initial){
  const personal='<section class="audit" style="border:2px solid #a35c68;padding:1.25rem;margin-bottom:1.5rem" aria-labelledby="waiting-heading"><h2 id="waiting-heading">Waiting on you <span class="count">'+waiting.length+'</span></h2><p>'+escape(s.self)+' · '+escape(s.film)+'</p>'+(waiting.length?'<ul>'+waiting.map(a=>'<li><strong>'+escape(a.label)+'</strong> · '+(a.owner==='any'?'Any admin':'Assigned to you')+' '+(a.taskId?form('finishAdminTask','<input type="hidden" name="owner" value="'+escape(a.owner)+'"><input type="hidden" name="task" value="'+escape(a.taskId)+'">','Mark done'):a.member?'<button data-open-person="'+escape(a.member)+'">Open paperwork</button>':'<button data-view-button="'+escape(a.view)+'">'+(a.view==='settings'?'Review request':'Open documents')+'</button>')+'</li>').join('')+'</ul>':'<p>You’re caught up for this production.</p>')+panel('Assign an admin task',form('adminTask',input('title','Task','text')+'<label>Assigned to<select name="owner"><option value="any">Any admin</option><option>Nick</option><option>Heidi</option></select></label>','Assign task'))+'</section>';
  const audit=people.map(outstanding);
  const group=(label,items,detail)=>'<details class="audit-group"><summary>'+label+' <b>'+items.length+'</b></summary>'+(items.length?'<ul>'+items.map(x=>'<li><strong>'+escape(x.name)+'</strong><span>'+escape(detail(x))+'</span></li>').join('')+'</ul>':'<p>Nothing outstanding.</p>')+'</details>';
- const attention='<section class="audit"><p><strong>New contracts required for everyone.</strong> Earlier agreements have been moved to Previous agreements.</p><small>'+escape(s.film)+' · PRODUCTION OFFICE</small><h2>Needs attention</h2><p>Open a category to see who needs follow-up.</p>'+group('No agreement on file',audit.filter(x=>!x.exempt&&x.status==='No agreement on file'),x=>x.status)+group('Paperwork in progress',audit.filter(x=>(!x.exempt||/waiting on Heidi/i.test(x.status))&&!['Complete','Not required','No agreement on file'].includes(x.status)),x=>x.status)+group('Missing profile items or open tasks',audit.filter(x=>x.gaps.length),x=>x.gaps.join(' · '))+'</section>';
+ const attention='<section class="audit"><p><strong>New contracts are required unless an admin marks the requirement Complete or Document N/A.</strong> Earlier agreements remain in Previous agreements.</p><small>'+escape(s.film)+' · PRODUCTION OFFICE</small><h2>Needs attention</h2><p>Open a category to see who needs follow-up.</p>'+group('No agreement on file',audit.filter(x=>!x.exempt&&x.status==='No agreement on file'),x=>x.status)+group('Paperwork in progress',audit.filter(x=>(!x.exempt||/waiting on Heidi/i.test(x.status))&&!['Complete','Document N/A','Not required','No agreement on file'].includes(x.status)),x=>x.status)+group('Missing profile items or open tasks',audit.filter(x=>x.gaps.length),x=>x.gaps.join(' · '))+'</section>';
  const directory=admin?'<p>Profiles available to invite</p>'+available.map(x=>'<div data-catalog-profile="'+escape(x.id)+'">'+panel(escape(x.name)+' · '+escape(x.role),'<img loading="lazy" alt="Approved headshot" src="'+escape(x.photo)+'"><p style="white-space:pre-line">'+escape(x.bio)+'</p>'+offline(x)+(s.mailReady?form('invite',input('email','Invitation email','email')+['name','role','filmProfile'].map((k,i)=>'<input type="hidden" name="'+k+'" value="'+escape([x.name,x.role,x.id][i])+'">').join(''),'Invite '+escape(x.name)):'') )+'</div>').join(''):'';
  const linkControls=m=>m.practice?'':m.filmProfile?'<p>Approved biography and headshot appear on the assigned film websites.</p>':panel('Link an existing film profile',form('linkProfile','<label>Approved profile<select name="filmProfile" required><option value="">Select person</option>'+available.map(x=>'<option value="'+escape(x.id)+'" '+(x.name===m.name?'selected':'')+'>'+escape(x.name)+'</option>').join('')+'</select></label>','Confirm profile match',m.id));
  const audience='<fieldset><legend>Who should receive this?</legend><select name="audience" aria-label="Audience"><option value="all">Include all cast and crew</option><option value="selected">Select individuals</option></select><div data-recipients hidden>'+s.members.map(m=>'<label><input type="checkbox" style="width:auto;display:inline" name="recipient" value="'+escape(m.id)+'"> '+escape(m.name)+' · '+escape(m.role)+'</label>').join('')+'<small>Choose from the portal roster.</small></div></fieldset>';
@@ -301,9 +303,11 @@ async function load(initial){
    if(d.version)params.set('version',d.version);
    return download(url('memberDocument',m.id)+'&'+params,d.title);
   });
-  for(const file of s.resources.filter(r=>r.type==='PDF'))documents.push(download(url('resource',file.id),file.title));
+  for(const file of s.resources.filter(r=>r.type==='PDF'))documents.push(download(url('resource',file.id),file.title+(trackingLabel(m.documentTracking?.[file.id])?' · '+trackingLabel(m.documentTracking[file.id]):'')));
   let agreementControls='<p>A new agreement is required for '+escape(s.film)+'. Production will prepare your signing request.</p>';
-  if(m.agreement?.id){
+  if(m.paperworkTracking){
+   agreementControls='<p>'+escape(m.paperworkStatus)+' · Recorded by production.</p>';
+  }else if(m.agreement?.id){
    const status=m.agreement.status;
    agreementControls='<p>'+escape(status==='Waiting on Heidi'?'Your signature is saved. Waiting on Heidi.':status)+'</p>';
    if(status==='Waiting on actor')agreementControls+='<button data-status="'+escape(m.id)+'">Review my agreement</button>';
@@ -318,18 +322,28 @@ async function load(initial){
  }
  const publication=m=>'<div class="publication-status"><h4>Website publishing</h4>'+Object.entries(m.publication||{}).map(([pid,p])=>'<p>'+escape(s.productions.find(x=>x.id===pid)?.name||pid)+' · <strong>'+escape(p.state)+'</strong></p>').join('')+(m.practice?'':form('publication','<label><input type="checkbox" name="visible" '+(m.publication?.[s.productionId]?.visible?'checked':'')+'> Show on this production’s website</label>','Save website visibility',m.id))+'</div>';
  const recover=m=>m.agreement&&!m.agreement.id&&!m.agreement.cleared?panel('Recover interrupted signing request','<p>Check SignWell first. Link the existing document below, or confirm that no document was created. This action never sends a contract.</p>'+form('recoverAgreement','<label>Existing SignWell document ID (if found)<input name="documentId"></label><label><input type="checkbox" name="confirmAbsent"> I checked SignWell; no document exists</label>','Recover request',m.id)):'';
+ function documentControls(m,document,reason){
+  return '<form data-action="trackPaperwork" data-id="'+escape(m.id)+'"><input type="hidden" name="document" value="'+escape(document)+'"><button value="complete"'+(trackingLabel(reason)==='Complete'?' disabled':'')+'>Complete</button> <button value="not-required"'+(reason==='not-required'?' disabled':'')+'>Document N/A</button>'+(reason?' <button value="reopen">Reopen requirement</button>':'')+'</form>';
+ }
  function trackDocument(m,d){
   const done=m.documentTracking?.[d.id];
-  const controls='<input type="hidden" name="document" value="'+escape(d.id)+'">'+(done?'<input type="hidden" name="reason" value="reopen"><p>'+escape(done==='hard-copy'?'Hard copy on file':'Not required')+'</p>':'<label>Reason<select name="reason"><option value="hard-copy">Hard copy on file</option><option value="not-required">Not required</option></select></label>');
-  return panel(escape(d.title)+(done?' · Complete':''),form('trackPaperwork',controls,done?'Reopen document requirement':'Mark document complete',m.id));
+  return panel(escape(d.title)+(done?' · '+trackingLabel(done):''),'<p><a href="'+escape(url('resource',d.id))+'">Download PDF</a></p><p>'+(done?escape(trackingLabel(done))+' · Recorded by an admin.':'Pending document requirement.')+'</p>'+documentControls(m,d.id,done));
  }
+ function personPaperwork(m){
+  const tracked=m.paperworkTracking,actual=m.agreement?.status;
+  const downloads=(m.documents||[]).map(d=>'<li><a href="'+escape(url('memberDocument',m.id)+'&'+new URLSearchParams({kind:d.kind,...(d.version?{version:d.version}:{})}))+'">'+escape(d.title)+'</a></li>').join('');
+  const draft=m.agreement?.id&&actual==='Draft ready to send'&&!tracked?form('sendAgreement','<input type="hidden" name="documentId" value="'+escape(m.agreement.id)+'"><p>Send this prepared contract to '+escape(m.name)+'.</p>','Send pending contract',m.id):'';
+  return '<section class="member-paperwork"><h4>Documents &amp; agreements</h4><p><strong>'+escape(m.paperworkStatus)+'</strong>'+(tracked?' · Recorded by an admin.':'')+'</p>'+(tracked&&actual?'<p>Signing request status · <span data-signing-status>'+escape(actual)+'</span></p>':'')+'<p>Use Complete for paperwork handled outside the portal, or Document N/A when it is not needed. An existing SignWell request stays active.</p>'+documentControls(m,'agreement',tracked?.reason)+(tracked?'<p>Reopen the requirement to prepare or send a new contract.</p>':'')+(m.agreement?.id?'<button data-status="'+escape(m.id)+'">'+(!tracked&&actual==='Waiting on Heidi'?'Open for Heidi’s signature':'Check signing request status')+'</button>':'')+draft+(!tracked&&s.agreementReady&&(!m.agreement||m.agreement.cleared)?agreement(m):'')+recover(m)+(m.agreement?.syncError?'<p>'+escape(m.agreement.syncError)+'</p>':'')+(downloads?'<h5>Saved agreements</h5><ul>'+downloads+'</ul>':'')+s.resources.filter(d=>d.type==='PDF'&&(!d.audience||d.audience.includes(m.id))).map(d=>trackDocument(m,d)).join('')+'<div data-signing></div></section>';
+ }
+ const personalReview=m=>(s.productionReviews||[]).filter(r=>r.id===m.id).map(reviewCard).join('');
+ const personalMessage=m=>panel('Send a message',form('notice','<p>For '+escape(m.name)+' · '+escape(s.film)+'</p><input type="hidden" name="audience" value="selected"><input type="hidden" name="recipient" value="'+escape(m.id)+'">'+input('title','Subject')+'<label>Message<textarea required name="text"></textarea></label>','Send to '+escape(m.name),m.id));
  const rows=s.members.map(m=>'<details class="person-card" data-person="'+m.id+'" data-search="'+escape((m.name+' '+m.role+' '+m.email).toLowerCase())+'" data-gaps="'+escape(outstanding(m).gaps.join(' ').toLowerCase())+'" data-paperwork="'+escape(m.paperworkStatus)+'"><summary><img loading="lazy" alt="" src="'+escape(m.hasPhoto?url('photo',m.id):m.referencePhoto||'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 80%22%3E%3Crect width=%2264%22 height=%2280%22 fill=%22%2353434a%22/%3E%3Ccircle cx=%2232%22 cy=%2226%22 r=%2213%22 fill=%22%23cbb9be%22/%3E%3Cellipse cx=%2232%22 cy=%2269%22 rx=%2226%22 ry=%2223%22 fill=%22%23cbb9be%22/%3E%3C/svg%3E')+'"><span><b>'+escape(m.name)+'</b><span>'+escape(m.role)+'</span></span><span class="status-pill">'+escape(m.paperworkStatus)+'</span><span class="open-profile">Open profile</span></summary><section><h3>'+escape(admin?m.name:'My dashboard')+'</h3><p>'+escape(m.role)+' · '+escape(m.email)+'</p>'+
  (admin?'<strong>'+escape(m.paperworkStatus)+'</strong>':'')+
- (m.agreement?.id?'<button data-status="'+m.id+'">'+(admin?(m.agreement.status==='Waiting on Heidi'?'Open for Heidi’s signature':'Check agreement status'):'Review my agreement')+'</button>':'')+
+ (!admin&&m.agreement?.id?'<button data-status="'+m.id+'">Review my agreement</button>':'')+
  ((m.referencePhoto||m.hasPhoto)?'<img data-headshot src="'+escape(m.hasPhoto?url('photo',m.id):m.referencePhoto)+'" alt="Saved headshot">':'')+(admin?profile(m):(m.hasPhoto?'<img data-headshot alt="Your saved headshot" src="'+escape(url('photo',m.id))+'">':'')+form('photo',file(m.hasPhoto?'Replace your headshot':'Upload your headshot · JPG or PNG, up to 4 MB','image/jpeg,image/png'),'Save headshot',m.id)+form('bio','<label>Import biography (.txt)<input type="file" accept=".txt,text/plain" data-bio-file></label><label>My bio<textarea name="bio" rows="4" maxlength="5000" placeholder="Tell us a little about yourself.">'+escape(m.profile?.bio)+'</textarea></label>','Save bio',m.id))+
  (admin?panel('Send a document',form('resource','<p>For '+escape(m.name)+' · '+escape(s.film)+'</p><input type="hidden" name="audience" value="selected"><input type="hidden" name="recipient" value="'+escape(m.id)+'">'+input('title','Document title')+file('PDF · up to 4 MB','application/pdf'),'Send to '+escape(m.name),m.id)):'')+
- (admin?s.resources.filter(d=>d.type==='PDF'&&(!d.audience||d.audience.includes(m.id))).map(d=>trackDocument(m,d)).join(''):'')+tasks(m)+(admin&&m.filmProfile&&library.find(x=>x.id===m.filmProfile)?offline(library.find(x=>x.id===m.filmProfile)):'')+(admin?linkControls(m):'')+(admin?panel('Assign a task',form('task',input('title','What needs to be done?'),'Assign task',m.id)):'')+
- (admin&&s.agreementReady&&(!m.agreement||m.agreement.cleared)?agreement(m):'')+(admin?publication(m)+recover(m)+(m.agreement?.syncError?'<p>'+escape(m.agreement.syncError)+'</p>':''):'')+(admin?panel('Manage access',(!m.activated&&s.mailReady?form('resend','','Resend invitation',m.id):'')+form('revoke','<label><input type="checkbox" name="keepPublic" checked> Keep public film credits and profile visible</label><p>Uncheck to also remove this account’s public profiles. Access is revoked immediately.</p>','Revoke portal access',m.id)):'')+'</section></details>').join('');
+ (admin?personPaperwork(m)+personalMessage(m)+personalReview(m)+productionAssignments([m],s.productions,'Manage production assignments'):'')+tasks(m)+(admin&&m.filmProfile&&library.find(x=>x.id===m.filmProfile)?offline(library.find(x=>x.id===m.filmProfile)):'')+(admin?linkControls(m):'')+(admin?panel('Assign a task',form('task',input('title','What needs to be done?'),'Assign task',m.id)):'')+
+ (admin?publication(m):'')+(admin?panel('Manage access',(!m.activated&&s.mailReady?form('resend','','Resend invitation',m.id):'')+form('revoke','<label><input type="checkbox" name="keepPublic" checked> Keep public film credits and profile visible</label><p>Uncheck to also remove this account’s public profiles. Access is revoked immediately.</p>','Revoke portal access',m.id)):'')+'</section></details>').join('');
  const account=s.passwordSet?'':'<section><h2>Set your password</h2><p>Your sign-in name is <strong>'+escape(admin?s.self:s.members[0].email)+'</strong>.</p>'+form('choosePassword',newPassword,'Save my password')+'</section>';
  const updates=s.resources.map(r=>'<section><small>'+escape(new Date(r.created).toLocaleDateString())+' · '+escape(r.type)+'</small><h3>'+escape(r.title)+'</h3>'+(r.type==='PDF'?'<a href="'+escape(url('resource',r.id))+'">Download PDF</a>':'<p>'+escape(r.text)+'</p>')+'</section>').join('');
  const counts='<div class="metrics"><div><b>'+people.length+'</b><span>Production roster</span></div><div><b>'+s.members.length+'</b><span>Portal accounts</span></div><div><b>'+s.members.filter(m=>m.activated).length+'</b><span>Activated accounts</span></div><div><b>'+s.members.filter(m=>!outstanding(m).gaps.some(x=>['Bio','Headshot'].includes(x))).length+'</b><span>Complete account profiles</span></div></div>';
@@ -447,7 +461,7 @@ listen('change',e=>{
 listen('submit',async e=>{
  e.preventDefault();const f=e.target,a=f.dataset.action,id=f.dataset.id,data=Object.fromEntries(new FormData(f));const button=e.submitter;
  if(a==='publishProfile'&&!confirm('Publish this member’s saved biography and headshot on the public Written in the Dark website?'))return;
- if((a==='revoke'||(a==='agreement'&&button.value==='send'))&&!confirm(a==='revoke'?'Revoke this member’s access immediately?':'Create a signing request for this actor and Heidi?'))return;
+ if((a==='revoke'||a==='sendAgreement'||(a==='agreement'&&button.value==='send'))&&!confirm(a==='revoke'?'Revoke this member’s access immediately?':a==='sendAgreement'?'Send this pending contract to its recipients?':'Create a signing request for this actor and Heidi?'))return;
  button.disabled=true;message.textContent='';
  try{
   if(a==='logout'){
@@ -459,6 +473,7 @@ listen('submit',async e=>{
   }
   if(data.file&&data.file.size>4*1024*1024)throw Error('Choose a file up to 4 MB.');
   if(a==='agreement')data.preview=button.value==='preview';
+  if(a==='trackPaperwork')data.reason=button.value;
   if(a==='activate')data.ticket=ticket;
   if(a==='resetPassword')data.ticket=resetTicket;
   if(a==='revoke')data.keepPublic=f.elements.keepPublic.checked;
@@ -506,12 +521,13 @@ listen('click',async e=>{
  try{if(b.dataset.photo){const blob=await request('photo',undefined,b.dataset.photo);const img=new Image();img.alt='Submitted headshot';const src=URL.createObjectURL(blob);img.onload=()=>URL.revokeObjectURL(src);img.src=src;b.nextElementSibling.replaceChildren(img);return;}
  const paperwork=b.closest('.member-paperwork');
  const status=paperwork?.querySelector('strong')||(b.previousElementSibling?.tagName==='STRONG'?b.previousElementSibling:null);
- const container=paperwork?.querySelector('#signing')||app.querySelector('#signing');
+ const container=paperwork?.querySelector('[data-signing],#signing')||app.querySelector('#signing');
  const review=paperwork?.querySelector('button[data-status]');
  clearSigning();attempt=signingRequest;b.disabled=true;message.textContent='Checking agreement status…';
  const r=await request('status',undefined,b.dataset.status);if(attempt!==signingRequest||!container?.isConnected)return;
  if(paperwork&&r.status==='Waiting on Heidi'&&review)review.hidden=true;
- if(status)status.textContent=r.status;message.textContent=r.status;
+ if(status)status.textContent=r.paperworkStatus||r.status;const actualStatus=paperwork?.querySelector('[data-signing-status]');if(actualStatus)actualStatus.textContent=r.status;message.textContent=r.paperworkStatus&&r.paperworkStatus!==r.status?r.paperworkStatus+' · Signing request: '+r.status:r.status;
+ if(!r.url&&['Draft ready to send','Complete'].includes(r.status)){await load();message.textContent=r.paperworkStatus||r.status;return;}
  if(!container)return;
  const view=container.closest('[data-view]');if(view&&r.url){activeView=view.dataset.view;applyView();}
  if(r.url)await showSigning(r.url,b.dataset.status,container,attempt);
@@ -610,7 +626,7 @@ function applyPeopleFilter(){
  search.value=peopleSearch;filter.value=peopleFilter;let shown=0;
  for(const card of app.querySelectorAll('[data-person]')){
   const status=card.dataset.paperwork,gaps=card.dataset.gaps;
-  const match=peopleFilter==='all'||peopleFilter==='missing'&&status==='No agreement on file'||peopleFilter==='progress'&&!['Complete','Not required','No agreement on file'].includes(status)||peopleFilter==='bio'&&gaps.includes('bio')||peopleFilter==='headshot'&&gaps.includes('headshot')||peopleFilter==='tasks'&&gaps.includes('tasks');
+  const match=peopleFilter==='all'||peopleFilter==='missing'&&status==='No agreement on file'||peopleFilter==='progress'&&!['Complete','Document N/A','Not required','No agreement on file'].includes(status)||peopleFilter==='bio'&&gaps.includes('bio')||peopleFilter==='headshot'&&gaps.includes('headshot')||peopleFilter==='tasks'&&gaps.includes('tasks');
   card.hidden=!match||!card.dataset.search.includes(peopleSearch.toLowerCase());if(!card.hidden)shown++;
  }
  app.querySelector('[data-results]').textContent=shown+' portal account'+(shown===1?'':'s')+' shown';

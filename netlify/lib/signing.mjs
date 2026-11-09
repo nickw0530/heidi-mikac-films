@@ -13,6 +13,7 @@ export function documentStatus(d){
  const status=String(d.status||'').trim().toLowerCase();
  if(status==='completed')return 'Complete';
  if(['declined','canceled','cancelled','expired','bounced','error'].includes(status))return status;
+ if(['created','draft'].includes(status))return 'Draft ready to send';
  const recipients=d.recipients||[];
  const actor=recipients.find(r=>String(r.id)==='1');
  const producer=recipients.find(r=>String(r.id)==='2');
@@ -24,7 +25,7 @@ export async function refreshAgreement(store,key,force=false){
  if(!a?.id||a.status==='Complete'||(!force&&Date.now()-(a.checkedAt||0)<300000))return a;
  try{
   const d=await signwell('documents/'+encodeURIComponent(a.id)+'/');
-  const next={...a,status:documentStatus(d),checkedAt:Date.now(),syncError:null};
+  const next={...a,status:documentStatus(d),providerStatus:String(d.status||'').toLowerCase(),...(typeof d.test_mode==='boolean'?{testMode:d.test_mode}:{}),checkedAt:Date.now(),syncError:null};
   await store.setJSON(key,next,{onlyIfMatch:record.etag});return next;
  }catch{const next={...a,checkedAt:Date.now(),syncError:'Status could not be refreshed. Last known status shown.'};await store.setJSON(key,next,{onlyIfMatch:record.etag});return next;}
 }

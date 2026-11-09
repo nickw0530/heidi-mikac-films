@@ -1,4 +1,5 @@
-import {AGREEMENT_CYCLE} from '../lib/agreement-cycle.mjs';
+import {AGREEMENT_CYCLE,currentAgreementKey} from '../lib/agreement-cycle.mjs';
+import {manualAgreementKey,resourceTrackingKey,normalizePaperworkReason,manualPaperworkStatus,readAgreementTracking} from '../lib/paperwork.mjs';
 import {COUNTERSIGN_EMAIL} from '../lib/signing.mjs';
 import {adminActions} from '../lib/admin-actions.mjs';
 import {begin as beginCalendar,events as calendarEvents} from './calendar-callback.mjs';
@@ -161,7 +162,7 @@ export default async function handle(req) {
     return json({ok:true},{'Set-Cookie':cookie(secret,28800)});
   }
   async function notify(m,event,subject,text,agreementCycle){
-    if(production)await enqueue(store,m,event,subject,text+'\n\nOpen your dashboard: '+portalUrl+'?production='+productionId,0,agreementCycle?{agreementCycle}:{});
+    if(production)await enqueue(store,m,event,subject,text+'\n\nOpen your dashboard: '+portalUrl+'?production='+productionId,0,agreementCycle?{agreementCycle,requirementKey:manualAgreementKey(productionId,m.id)}:{});
   }
   const recoveryAddress=id=>process.env['HMF_'+id.toUpperCase()+'_RECOVERY_EMAIL']||(id==='Nick'?'nick@heidimikacfilms.com':'heidi@heidimikacfilms.com');
   if(action==='requestReset'&&post){
@@ -339,7 +340,7 @@ export default async function handle(req) {
       row.offlineStatus=null;
       const previous=await rawStore.get(legacyScoped('agreements/'+row.id),{type:'json'});
       row.previousAgreement=previous?.id?{status:previous.status,completed:previous.status==='Complete'}:null;
-      if(!admin){
+      {
         const profile=await ownedProfile(original,accounts);
         row.documents=[];
         if(row.agreement?.id&&row.agreement.status==='Complete')row.documents.push({kind:'signed',title:'Signed agreement and audit record'});
@@ -358,10 +359,12 @@ export default async function handle(req) {
       row.referencePhoto=published?.photo||base?.photo;
       row.profile??={bio:published?.bio??base?.bio??''};
       const memberPaperwork=row.agreement&&!row.agreement.cleared?row.agreement.status:'No agreement on file';
-      row.tracking=null;
-      if(admin)row.documentTracking=Object.fromEntries((await list('document-tracking/'+productionId+'/'+row.id+'/')).filter(Boolean).map(item=>[item.document,item.reason]));
-      row.paperworkStatus=memberPaperwork;
-      row.memberPaperworkStatus=memberPaperwork;
+      const tracking=await readAgreementTracking(rawStore,productionId,row.id);
+      row.paperworkTracking=tracking?{reason:tracking.reason,at:tracking.at,...(admin?{by:tracking.by}:{})}:null;
+      row.tracking=row.paperworkTracking;
+      row.documentTracking=Object.fromEntries((await list('document-tracking/'+productionId+'/'+row.id+'/')).filter(item=>item&&uuid.test(item.document)&&normalizePaperworkReason(item.reason)).map(item=>[item.document,normalizePaperworkReason(item.reason)]));
+      row.paperworkStatus=manualPaperworkStatus(tracking)||memberPaperwork;
+      row.memberPaperworkStatus=row.paperworkStatus;
       row.publication=Object.fromEntries(await Promise.all(Object.keys(assignments(original)).map(async pid=>{
         const id=findProfile(original,pid)?.id||'member-'+row.id;
         const ready=!!original.approvedProfiles?.[pid]||!!row.profile.bio?.trim()&&!!(row.hasPhoto||row.referencePhoto);
@@ -503,15 +506,31 @@ export default async function handle(req) {
     await set(key,{...t,done:true});return json({ok:true});
   }
   if(action==='trackPaperwork'&&post){
-    onlyAdmin();await target();requireThat(body.document,'Everyone requires a new signed agreement. Agreement completion is recorded after both signatures.',409);let key='paperwork/'+productionId+'/'+uid;
-    if(body.document){
-      requireThat(uuid.test(body.document),'Invalid document.');
-      const resource=await get('resources/'+body.document);
+    onlyAdmin();const member=await target();requireThat(active(member),'Member unavailable.',404);
+    const document=body.document||'agreement';
+    let key=manualAgreementKey(productionId,uid);
+    if(document!=='agreement'){
+      requireThat(uuid.test(document),'Invalid document.');
+      const resource=await get('resources/'+document);
       requireThat(resource?.type==='PDF'&&(!resource.audience||resource.audience.includes(uid)),'Document unavailable for this member.',404);
-      key='document-tracking/'+productionId+'/'+uid+'/'+body.document;
+      key=resourceTrackingKey(productionId,uid,document);
     }
-    requireThat(['hard-copy','not-required','reopen'].includes(body.reason),'Choose a paperwork status.');
-    if(body.reason==='reopen')await store.delete(key);else await set(key,{document:body.document||'agreement',reason:body.reason,by:self,at:Date.now()});
+    const reason=normalizePaperworkReason(body.reason);
+    requireThat(body.reason==='reopen'||reason,'Choose Complete, Document N/A, or Reopen.');
+    if(body.reason==='reopen')await rawStore.delete(key);else await rawStore.setJSON(key,{document,reason,by:self,at:Date.now(),...(document==='agreement'?{agreementCycle:AGREEMENT_CYCLE}:{})});
+    if(document==='agreement'&&reason){
+      // Suppress exact, already queued portal notices from the earlier build.
+      // SignWell's independent request and signed bytes remain untouched.
+      const agreement=await get('agreements/'+uid),agreementKey=currentAgreementKey(productionId,uid);
+      const events=[agreementKey+'/prepare/initial',agreementKey+'/prepare/'+(agreement?.created||'initial')];
+      if(agreement){events.push(agreementKey+'/'+(agreement.id||agreement.created)+'/review');if(agreement.id)events.push(agreementKey+'/countersign/'+agreement.id,agreementKey+'/countersign/'+agreement.id+'/'+COUNTERSIGN_EMAIL,agreementKey+'/send/'+agreement.id);}
+      const notices=[...['Nick','Heidi'].flatMap(id=>events.map(event=>[id,event]))];
+      if(agreement?.id)notices.push([uid,agreement.id],['Heidi','countersign-'+agreement.id]);
+      for(const [id,event] of notices){
+        const noticeKey='outbox/'+hash(id+'/'+event),notice=await rawStore.get(noticeKey,{type:'json'});
+        if(notice?.agreementCycle===AGREEMENT_CYCLE&&['Waiting on you · Heidi Mikac Films','Document ready for signature','Agreement ready for your signature'].includes(notice.subject))await rawStore.delete(noticeKey);
+      }
+    }
     return json({ok:true});
   }
   if(action==='finishTask'&&post){
@@ -546,6 +565,8 @@ export default async function handle(req) {
   if(action==='agreement'&&post){
 
     onlyAdmin();const m=await target(),t={};
+    requireThat(active(m),'Member unavailable.',404);
+    requireThat(body.preview||!await readAgreementTracking(rawStore,productionId,uid),'Reopen this agreement requirement before sending a contract.',409);
 
     const fields=credits(body);t.character=creditLine(fields);
     requireThat(t.character&&t.character.length<=120,'Enter a character or crew title for this agreement (120 characters total).');
@@ -576,7 +597,47 @@ export default async function handle(req) {
 
       d=await signwell('documents/',{test_mode:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes'),name:film+' — '+t.legal+' · '+AGREEMENT_CYCLE,files:[{name:'Actor Agreement.pdf',file_base64:bytes.toString('base64')}],recipients:[{id:'1',name:t.legal,email:m.email},{id:'2',name:'Heidi Mikac',email:heidi,send_email:true}],apply_signing_order:true,embedded_signing:true,text_tags:true});
     }catch(e){await set(key,{cycle:AGREEMENT_CYCLE,status:'Needs recovery — check SignWell',created:Date.now(),recipientEmail:heidi,name:film+' — '+t.legal+' · '+AGREEMENT_CYCLE});throw e;}
-    await set(key,{id:d.id,cycle:AGREEMENT_CYCLE,status:'Waiting on actor',created:Date.now(),checkedAt:Date.now()});await notify(m,d.id,'Document ready for signature','Your new agreement is ready to review and sign.',AGREEMENT_CYCLE);return json({ok:true});
+    await set(key,{id:d.id,cycle:AGREEMENT_CYCLE,status:documentStatus(d),providerStatus:String(d.status||'').toLowerCase(),testMode:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes'),name:film+' — '+t.legal+' · '+AGREEMENT_CYCLE,recipientEmail:heidi,created:Date.now(),checkedAt:Date.now()});
+    if(documentStatus(d)!=='Draft ready to send')await notify(m,d.id,'Document ready for signature','Your new agreement is ready to review and sign.',AGREEMENT_CYCLE);return json({ok:true});
+  }
+  if(action==='sendAgreement'&&post){
+    onlyAdmin();const member=await target();requireThat(active(member),'Member unavailable.',404);
+    requireThat(!await readAgreementTracking(rawStore,productionId,uid),'Reopen this agreement requirement before sending a contract.',409);
+    const key='agreements/'+uid,record=await store.getWithMetadata(key,{type:'json'}),agreement=record?.data;
+    requireThat(agreement?.id&&agreement.cycle===AGREEMENT_CYCLE&&body.documentId===agreement.id,'This agreement changed. Reload the profile before sending.',409);
+    requireThat(!(agreement.sendLeaseUntil>Date.now()),'This agreement is already being sent. Refresh its status before retrying.',409);
+    const draft=await signwell('documents/'+encodeURIComponent(agreement.id)+'/');
+    const providerStatus=String(draft.status||'').trim().toLowerCase();
+    requireThat(['created','draft'].includes(providerStatus),'This agreement has already been sent or is no longer a draft. Refresh its status.',409);
+    const recipients=draft.recipients||[],recipientEmail=agreement.recipientEmail||COUNTERSIGN_EMAIL;
+    requireThat(draft.name?.startsWith(film+' — ')&&draft.name.endsWith(' · '+AGREEMENT_CYCLE)&&(!agreement.name||draft.name===agreement.name)&&recipients.length===2&&recipients.some(r=>String(r.id)==='1'&&r.email?.toLowerCase()===member.email.toLowerCase())&&recipients.some(r=>String(r.id)==='2'&&r.email?.toLowerCase()===recipientEmail.toLowerCase()),'The draft does not match this person and production.',409);
+    requireThat(!recipients.some(r=>r.signed_at||['signed','completed'].includes(String(r.status||'').toLowerCase())),'A signed document cannot be sent as a new draft.',409);
+    const testMode=!(production&&process.env.HMF_SIGNWELL_LIVE==='yes');
+    requireThat((typeof draft.test_mode!=='boolean'||draft.test_mode===testMode)&&(typeof agreement.testMode!=='boolean'||agreement.testMode===testMode),'This draft uses a different signing mode. Review it in SignWell before sending.',409);
+    const sendLeaseUntil=Date.now()+120000;
+    const lease=await store.setJSON(key,{...agreement,sendLeaseUntil},{onlyIfMatch:record.etag});
+    requireThat(lease.modified,'The agreement changed or is already being sent. Refresh before retrying.',409);
+    if(await readAgreementTracking(rawStore,productionId,uid)){
+      const latest=await store.getWithMetadata(key,{type:'json'});
+      if(latest?.data?.id===agreement.id&&latest.data.sendLeaseUntil===sendLeaseUntil)await store.setJSON(key,{...latest.data,sendLeaseUntil:0},{onlyIfMatch:latest.etag});
+      requireThat(false,'Reopen this agreement requirement before sending a contract.',409);
+    }
+    let sent;
+    try{
+      sent=await signwell('documents/'+encodeURIComponent(agreement.id)+'/send',{test_mode:testMode,apply_signing_order:true,embedded_signing:true});
+    }catch(error){
+      const latest=await store.getWithMetadata(key,{type:'json'});
+      if(latest?.data?.id===agreement.id)await store.setJSON(key,{...latest.data,status:'Send status unknown — check SignWell',providerStatus:null,syncError:'Refresh the agreement status before attempting another send.'},{onlyIfMatch:latest.etag});
+      throw error;
+    }
+    requireThat(!sent.id||sent.id===agreement.id,'SignWell returned a different document. Review its status before continuing.',502);
+    const latest=await store.getWithMetadata(key,{type:'json'});
+    requireThat(latest?.data?.id===agreement.id,'The agreement changed. Reload its status.',409);
+    const status=documentStatus(sent);
+    const saved=await store.setJSON(key,{...latest.data,status,providerStatus:String(sent.status||'sent').toLowerCase(),testMode,checkedAt:Date.now(),sendLeaseUntil:0,syncError:null},{onlyIfMatch:latest.etag});
+    requireThat(saved.modified,'The request was sent. Refresh the profile to see its latest status.',409);
+    if(status!=='Draft ready to send')await notify(member,agreement.id,'Document ready for signature','Your new agreement is ready to review and sign.',AGREEMENT_CYCLE);
+    return json({ok:true,status});
   }
   if(action==='recoverAgreement'&&post){
     onlyAdmin();const m=await target(),key='agreements/'+uid,rec=await store.getWithMetadata(key,{type:'json'});
@@ -591,7 +652,7 @@ export default async function handle(req) {
       requireThat(id!==previous?.id&&id!==legacy?.id,'Choose the new agreement, not a previous signing request.',409);
       requireThat(d.name===rec.data.name&&d.name.endsWith(' · '+AGREEMENT_CYCLE),'The recovery document must belong to the new agreement round.',409);
       requireThat(d.name?.startsWith(film+' — ')&&d.recipients?.some(r=>String(r.id)==='1'&&r.email?.toLowerCase()===m.email)&&d.recipients?.some(r=>String(r.id)==='2'&&r.email?.toLowerCase()===(rec.data.recipientEmail||process.env.HMF_HEIDI_SIGNING_EMAIL||'heidi@heidimikacfilms.com').toLowerCase()),'Document does not match this person and production.');
-      requireThat((await store.setJSON(key,{id,cycle:AGREEMENT_CYCLE,created:rec.data.created,status:documentStatus(d),checkedAt:Date.now()},{onlyIfMatch:rec.etag})).modified,'Record changed; reload.');
+      requireThat((await store.setJSON(key,{id,cycle:AGREEMENT_CYCLE,name:d.name,recipientEmail:rec.data.recipientEmail||COUNTERSIGN_EMAIL,...(typeof d.test_mode==='boolean'?{testMode:d.test_mode}:{}),created:rec.data.created,status:documentStatus(d),providerStatus:String(d.status||'').toLowerCase(),checkedAt:Date.now()},{onlyIfMatch:rec.etag})).modified,'Record changed; reload.');
     }else{
       requireThat(body.confirmAbsent===true,'Check SignWell and confirm no document exists first.');
       requireThat(Date.now()-(rec.data.created||0)>600000,'Wait ten minutes after the interrupted request before clearing it.');
@@ -602,17 +663,19 @@ export default async function handle(req) {
   }
   if(action==='status'){
     await target();
+    const tracking=await readAgreementTracking(rawStore,productionId,uid);
     const key='agreements/'+uid,record=await store.getWithMetadata(key,{type:'json'}),a=record?.data;
     requireThat(a?.id,'No new signing request has been prepared yet.');
     requireThat(url.searchParams.get('document')===a.id,'This agreement changed. Reload the portal before opening it.',409);
-    if(a.status==='Complete')return json({status:'Complete',url:null});
+    if(a.status==='Complete')return json({status:'Complete',paperworkStatus:manualPaperworkStatus(tracking)||'Complete',url:null});
     const d=await signwell('documents/'+encodeURIComponent(a.id)+'/');
     const [actor,producer]=['1','2'].map(id=>d.recipients?.find(r=>String(r.id)===id));
     const status=documentStatus(d);
-    const saved=await store.setJSON(key,{...a,status,checkedAt:Date.now(),syncError:null},{onlyIfMatch:record.etag});
-    if(!saved.modified)return json({status:(await get(key))?.status||status,url:null});
+    const saved=await store.setJSON(key,{...a,status,providerStatus:String(d.status||'').toLowerCase(),...(typeof d.test_mode==='boolean'?{testMode:d.test_mode}:{}),checkedAt:Date.now(),syncError:null},{onlyIfMatch:record.etag});
+    if(!saved.modified){const latestStatus=(await get(key))?.status||status,latestTracking=await readAgreementTracking(rawStore,productionId,uid);return json({status:latestStatus,paperworkStatus:manualPaperworkStatus(latestTracking)||latestStatus,url:null});}
     const signer=admin?(status==='Waiting on Heidi'?producer:null):(status==='Waiting on actor'?actor:null);
-    return json({status,url:signer?.embedded_signing_url||null});
+    const latestTracking=await readAgreementTracking(rawStore,productionId,uid);
+    return json({status,paperworkStatus:manualPaperworkStatus(latestTracking)||status,url:latestTracking?null:signer?.embedded_signing_url||null});
   }
   return json({error:'Unknown action.'});
  }catch(e){return Response.json({error:e.status?e.message:'The request could not be completed.'},{status:e.status||500,headers});}
