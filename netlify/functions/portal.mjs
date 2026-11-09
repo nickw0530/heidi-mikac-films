@@ -47,6 +47,9 @@ const findProfile=(m,productionId)=>{
 const sharedBase=m=>darkCatalog.find(x=>x.id===m.filmProfile)||Object.keys(assignments(m)).map(id=>findProfile(m,id)).find(Boolean);
 
 const uuid = /^[a-f0-9-]{36}$/;
+// A signature made from SignWell's own email never passes through the portal, so an
+// open dashboard re-checks agreements still in progress after this many milliseconds.
+const AGREEMENT_STATUS_MAX_AGE=30000;
 const LOGIN_ATTEMPTS=20,LOGIN_ATTEMPTS_PER_ACCOUNT=200;
 function requireThat(ok, message, status=400) {
   if (!ok) throw Object.assign(new Error(message), {status});
@@ -359,7 +362,7 @@ export default async function handle(req, context) {
       requireThat(agreement?.id&&agreement.status==='Complete','No previous completed agreement available.',404);
       bytes=await completedAgreementPdf(agreement.id);label='previous-signed-agreement';
     }else if(kind==='signed'){
-      const agreement=await refreshAgreement(store,'agreements/'+member.id);
+      const agreement=await refreshAgreement(store,'agreements/'+member.id,true);
       requireThat(agreement?.id&&agreement.status==='Complete','No completed agreement available.',404);
       bytes=await completedAgreementPdf(agreement.id);label='signed-agreement';
     }else{
@@ -467,7 +470,7 @@ export default async function handle(req, context) {
       if(!offlineRequests.has(profileId))offlineRequests.set(profileId,rawStore.get(offlineSigningKey(profileId,productionId),{type:'json'}));
       return offlineRequests.get(profileId);
     };
-    const rows=await Promise.all(members.filter(Boolean).map(async m=>({...m,needsEmail:!m.email,role:assignments(m)[productionId]?.role||'',filmProfile:assignments(m)[productionId]?findProfile(m,productionId)?.id||'':'',productions:assignments(m),profile:m.draftProfile?.bio!==undefined?{bio:m.draftProfile.bio}:await get('profiles/'+m.id),...(await (async()=>{const photo=await store.getMetadata(m.draftProfile?.imageVersion?'profile-images/'+m.id+'/'+m.draftProfile.imageVersion:'photos/'+m.id);return {hasPhoto:!!photo,photoName:photo?.metadata?.filename||''};})()),agreement:assignments(m)[productionId]?await refreshAgreement(store,'agreements/'+m.id):null,tasks:assignments(m)[productionId]?(await list('tasks/'+m.id+'/')).filter(Boolean):[],activated:!!await get('passwords/'+m.id)})));
+    const rows=await Promise.all(members.filter(Boolean).map(async m=>({...m,needsEmail:!m.email,role:assignments(m)[productionId]?.role||'',filmProfile:assignments(m)[productionId]?findProfile(m,productionId)?.id||'':'',productions:assignments(m),profile:m.draftProfile?.bio!==undefined?{bio:m.draftProfile.bio}:await get('profiles/'+m.id),...(await (async()=>{const photo=await store.getMetadata(m.draftProfile?.imageVersion?'profile-images/'+m.id+'/'+m.draftProfile.imageVersion:'photos/'+m.id);return {hasPhoto:!!photo,photoName:photo?.metadata?.filename||''};})()),agreement:assignments(m)[productionId]?await refreshAgreement(store,'agreements/'+m.id,false,AGREEMENT_STATUS_MAX_AGE):null,tasks:assignments(m)[productionId]?(await list('tasks/'+m.id+'/')).filter(Boolean):[],activated:!!await get('passwords/'+m.id)})));
     for(const row of rows){
       const original=accounts.find(m=>m.id===row.id);
       const base=sharedBase(original);
@@ -798,7 +801,7 @@ export default async function handle(req, context) {
     let d;try{
       // The cycle-specific reservation allows one current request per person and film.
 
-      d=await signwell('documents/',{test_mode:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes'),name:film+' — '+t.legal+' · '+AGREEMENT_CYCLE,files:[{name:'Actor Agreement.pdf',file_base64:bytes.toString('base64')}],recipients:[{id:'1',name:t.legal,email:m.email},{id:'2',name:'Heidi Mikac',email:heidi,send_email:true}],apply_signing_order:true,embedded_signing:true,text_tags:true});
+      d=await signwell('documents/',{test_mode:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes'),name:film+' — '+t.legal+' · '+AGREEMENT_CYCLE,files:[{name:'Actor Agreement.pdf',file_base64:bytes.toString('base64')}],recipients:[{id:'1',name:t.legal,email:m.email,send_email:true},{id:'2',name:'Heidi Mikac',email:heidi,send_email:true}],apply_signing_order:true,embedded_signing:true,text_tags:true});
     }catch(e){await set(key,{cycle:AGREEMENT_CYCLE,status:'Needs recovery — check SignWell',created:Date.now(),recipientEmail:heidi,name:film+' — '+t.legal+' · '+AGREEMENT_CYCLE});throw e;}
     await set(key,{id:d.id,cycle:AGREEMENT_CYCLE,status:documentStatus(d),providerStatus:String(d.status||'').toLowerCase(),testMode:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes'),name:film+' — '+t.legal+' · '+AGREEMENT_CYCLE,recipientEmail:heidi,created:Date.now(),checkedAt:Date.now()});
     if(documentStatus(d)!=='Draft ready to send')await notify(m,d.id,'Document ready for signature','Your new agreement is ready to review and sign.',AGREEMENT_CYCLE);return json({ok:true});

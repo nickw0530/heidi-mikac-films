@@ -598,6 +598,22 @@ listen('submit',async e=>{
   await load();message.textContent=['invite','resend'].includes(a)?'Invitation queued for email delivery.':a==='savePendingPerson'?'Name saved. Add their email here when you have it.':a==='removePendingPerson'?'Removed from the setup list.':a==='removeResource'?'Removed from the production board.':['login','passwordLogin','activate'].includes(a)?'':a==='logout'?'Signed out.':'Saved.';
  }catch(e){message.textContent=e.message;}finally{button.disabled=false;}
 });
+// Documents download in place, so a failure shows a readable message instead of a raw error page.
+listen('click',async e=>{
+ const link=e.target.closest('a[href]');
+ if(!link||!/[?&]action=(memberDocument|resource|offline)(&|$)/.test(link.getAttribute('href'))||link.dataset.busy)return;
+ e.preventDefault();link.dataset.busy='true';message.textContent='Preparing '+link.textContent.trim()+'…';
+ try{
+  const response=await fetch(link.href,{cache:'no-store'});
+  if(!response.ok){const failure=await response.json().catch(()=>({}));throw Error(failure.error||'This document could not be downloaded. Please try again.');}
+  const header=response.headers.get('content-disposition')||'',encoded=header.match(/filename\*=UTF-8''([^;]+)/i)?.[1],plain=header.match(/filename="([^"]+)"/i)?.[1];
+  let name=plain||'document.pdf';try{if(encoded)name=decodeURIComponent(encoded);}catch{}
+  const href=URL.createObjectURL(await response.blob()),save=document.createElement('a');
+  save.href=href;save.download=name;document.body.append(save);save.click();save.remove();setTimeout(()=>URL.revokeObjectURL(href),60000);
+  message.textContent='Downloaded '+name+'.';
+ }catch(error){message.textContent=error.message;}
+ finally{delete link.dataset.busy;}
+});
 listen('click',async e=>{
  const b=e.target;if(!b.dataset.status&&!b.dataset.photo)return;
  let attempt;

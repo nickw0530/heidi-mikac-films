@@ -300,3 +300,28 @@ test('downloads use the posted title and administrators can remove a posted file
  assert.equal((await call('removeResource',{body:{},id:noteId})).status,404,'Removing twice reports that it is already gone.');
  assert.ok(await context.store.get('members/'+actor),'Removing a board item leaves people untouched.');
 });
+
+test('a countersignature made from SignWell’s email shows as complete on the next dashboard load',async()=>{
+ const context=await fixture();await setAgreement(context,{status:'Waiting on Heidi'});
+ const key=currentAgreementKey(dark,actor),document=context.documents.get('active-doc');
+ document.status='completed';for(const recipient of document.recipients)recipient.status='completed';
+ await context.store.setJSON(key,{...(await context.store.get(key)),checkedAt:Date.now()-5000});
+ assert.equal((await row(dark,'member')).paperworkStatus,'Waiting on Heidi','A status checked seconds ago is not re-fetched on every load.');
+ await context.store.setJSON(key,{...(await context.store.get(key)),checkedAt:Date.now()-60000});
+ const member=await row(dark,'member');
+ assert.equal(member.paperworkStatus,'Complete');
+ assert.ok(member.documents.some(item=>item.kind==='signed'),'The signed copy is offered as soon as the status is known.');
+ await context.store.setJSON(key,{...(await context.store.get(key)),status:'Waiting on Heidi',checkedAt:Date.now()});
+ assert.equal((await call('memberDocument',{who:'member',params:{kind:'signed'}})).status,200,'Opening the signed copy always checks SignWell first.');
+});
+
+test('a signed copy SignWell no longer holds is reported plainly',async()=>{
+ const context=await fixture(),provider=globalThis.fetch;
+ await context.store.setJSON('agreements/'+actor,{id:'historical-doc',status:'Complete'});
+ globalThis.fetch=async(input,options)=>new URL(input).pathname.endsWith('/completed_pdf')?new Response('{}',{status:404}):provider(input,options);
+ let result=await call('memberDocument',{who:'member',params:{kind:'previous-signed'}});
+ assert.equal(result.status,404);assert.match(result.data.error,/no longer holds this agreement/);
+ globalThis.fetch=async(input,options)=>new URL(input).pathname.endsWith('/completed_pdf')?new Response('{}',{status:500}):provider(input,options);
+ result=await call('memberDocument',{who:'member',params:{kind:'previous-signed'}});
+ assert.equal(result.status,503);assert.match(result.data.error,/SignWell returned 500/);
+});

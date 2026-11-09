@@ -20,9 +20,11 @@ export function documentStatus(d){
  if(!['created','draft'].includes(status)&&hasSigned(actor)&&hasSigned(producer)&&recipients.every(hasSigned))return 'Complete';
  return hasSigned(actor)?'Waiting on Heidi':'Waiting on actor';
 }
-export async function refreshAgreement(store,key,force=false){
+// maxAge is how long a stored status is trusted before asking SignWell again.
+// Pages people are looking at pass a short one; unattended jobs keep five minutes.
+export async function refreshAgreement(store,key,force=false,maxAge=300000){
  const record=await store.getWithMetadata(key,{type:'json'}),a=record?.data;
- if(!a?.id||a.status==='Complete'||(!force&&Date.now()-(a.checkedAt||0)<300000))return a;
+ if(!a?.id||a.status==='Complete'||(!force&&Date.now()-(a.checkedAt||0)<maxAge))return a;
  try{
   const d=await signwell('documents/'+encodeURIComponent(a.id)+'/');
   const next={...a,status:documentStatus(d),providerStatus:String(d.status||'').toLowerCase(),...(typeof d.test_mode==='boolean'?{testMode:d.test_mode}:{}),checkedAt:Date.now(),syncError:null};
@@ -35,7 +37,8 @@ export async function completedAgreementPdf(id){
  const response=await fetch('https://www.signwell.com/api/v1/documents/'+encodeURIComponent(id)+'/completed_pdf?audit_page=true&url_only=false',{
   headers:{'X-Api-Key':process.env.SIGNWELL_API_KEY,Accept:'application/pdf'},signal:AbortSignal.timeout(20000)
  });
- if(!response.ok)throw Object.assign(Error('The signed PDF is unavailable from SignWell. Please try again shortly.'),{status:503});
+ if(response.status===404||response.status===410)throw Object.assign(Error('SignWell no longer holds this agreement, so it cannot be downloaded here. Ask production for a copy.'),{status:404});
+ if(!response.ok)throw Object.assign(Error('The signed PDF is unavailable from SignWell right now (SignWell returned '+response.status+'). Please try again shortly.'),{status:503});
  const bytes=new Uint8Array(await response.arrayBuffer());
  if(String.fromCharCode(...bytes.subarray(0,5))!=='%PDF-')throw Object.assign(Error('The signed PDF is still being prepared. Please try again shortly.'),{status:503});
  return bytes;
