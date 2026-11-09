@@ -62,6 +62,13 @@ function email(value) {
 const headers={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'};
 const cookie=(key,age)=>'__Host-hmf='+key+'; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age='+age;
 const json=(value,extra={})=>Response.json(value,{headers:{...headers,...extra}});
+// Downloads carry the title production gave them, made safe for any filesystem.
+function attachment(title,fallback='production-document'){
+  const clean=String(title||'').normalize('NFKC').replace(/[\u0000-\u001f\u007f]/g,' ').replace(/[\\/:*?"<>|]/g,'-').replace(/\s+/g,' ').replace(/^[\s.-]+|[\s.-]+$/g,'').slice(0,120).trim()||fallback;
+  const name=/\.pdf$/i.test(clean)?clean:clean+'.pdf';
+  const ascii=name.replace(/[·–—]/g,'-').replace(/[^\x20-\x7e]/g,'_');
+  return 'attachment; filename="'+ascii+'"; filename*=UTF-8\'\''+encodeURIComponent(name).replace(/['()*]/g,c=>'%'+c.charCodeAt(0).toString(16).toUpperCase());
+}
 
 async function packet(bytes, terms) {
   const doc=await PDFDocument.load(bytes), pages=doc.getPages(), form=doc.getForm();
@@ -146,7 +153,12 @@ export default async function handle(req) {
   requireThat(post||req.method==='GET','Unsupported method.',405);
   if(post) requireThat(req.headers.get('origin')===url.origin,'Origin rejected.',403);
   const entry=id=>catalog.find(item=>item.id===id);
-  if(!post&&action==='published')return json((await publicItems()).map(publicCredit),{'Access-Control-Allow-Origin':'*','Cache-Control':'public, max-age=30'});
+  if(!post&&action==='published'){
+    // Hidden entries exist only to suppress a card already printed on a film website.
+    // People without such a card are left out, so hiding someone never names them here.
+    const items=(await publicItems()).filter(x=>!x.hidden||entry(x.id)).map(x=>x.hidden?{id:x.id,name:entry(x.id).name,hidden:true}:publicCredit(x));
+    return json(items,{'Access-Control-Allow-Origin':'*','Cache-Control':'public, max-age=30'});
+  }
   if(!post&&action==='memberPhoto'){
     const id=url.searchParams.get('id');requireThat(uuid.test(id),'Invalid image.');
     const m=await get('members/'+id);
@@ -715,11 +727,26 @@ export default async function handle(req) {
     return json({ok:true});
   }
   if(action==='notice'&&post){onlyAdmin();const group=await recipients(body.audience,body.recipients);const id=randomUUID();await set('resources/'+id,{id,title:string(body.title),text:string(body.text,5000),audience:group.audience,type:'Update',created:Date.now()});await Promise.all(group.recipients.map(m=>notify(m,id,'New production message','You have a new message from production.')));return json({ok:true});}
+  if(action==='removeResource'&&post){
+    onlyAdmin();requireThat(uuid.test(uid),'Invalid message or file.');
+    const resource=await get('resources/'+uid);requireThat(resource,'This message or file was already removed.',404);
+    // The board entry goes first so nobody can open the file while the rest is cleared.
+    await store.delete('resources/'+uid);
+    if(resource.type==='PDF')await store.delete('files/'+uid);
+    const accounts=(await list('members/')).filter(Boolean);
+    await Promise.all(accounts.flatMap(m=>[
+      // Unsent notices about it are withdrawn; delivered email cannot be recalled.
+      rawStore.delete('outbox/'+hash(m.id+'/'+uid)),
+      rawStore.delete(resourceTrackingKey(productionId,m.id,uid))
+    ]));
+    return json({ok:true,removed:resource.type});
+  }
   if(action==='photo'||action==='resource'){
-    if(action==='photo')await target();else requireThat(uuid.test(uid)&&canReadResource(await get('resources/'+uid)),'File unavailable.',404);
+    let resource=null;
+    if(action==='photo')await target();else{resource=uuid.test(uid)?await get('resources/'+uid):null;requireThat(canReadResource(resource)&&resource.type==='PDF','File unavailable.',404);}
     const version=action==='photo'?(await get('members/'+uid))?.draftProfile?.imageVersion:null;
     const r=await store.getWithMetadata(version?'profile-images/'+uid+'/'+version:(action==='photo'?'photos/':'files/')+uid,{type:'arrayBuffer'});
-    requireThat(r,'File unavailable.',404);return new Response(r.data,{headers:{...headers,'Content-Type':r.metadata?.mime||'application/pdf','Content-Disposition':action==='photo'?'inline':'attachment; filename="production-document.pdf"'}});
+    requireThat(r,'File unavailable.',404);return new Response(r.data,{headers:{...headers,'Content-Type':r.metadata?.mime||'application/pdf','Content-Disposition':action==='photo'?'inline':attachment(resource.title)}});
   }
   if(action==='agreement'&&post){
 
@@ -834,7 +861,8 @@ export default async function handle(req) {
     const status=documentStatus(d);
     const saved=await store.setJSON(key,{...a,status,providerStatus:String(d.status||'').toLowerCase(),...(typeof d.test_mode==='boolean'?{testMode:d.test_mode}:{}),checkedAt:Date.now(),syncError:null},{onlyIfMatch:record.etag});
     if(!saved.modified){const latestStatus=(await get(key))?.status||status,latestTracking=await readAgreementTracking(rawStore,productionId,uid);return json({status:latestStatus,paperworkStatus:manualPaperworkStatus(latestTracking)||latestStatus,url:null});}
-    const signer=admin?(status==='Waiting on Heidi'?producer:null):(status==='Waiting on actor'?actor:null);
+    // The countersignature is Heidi's alone: no other session, admin or not, receives her signing link.
+    const signer=admin?(self==='Heidi'&&status==='Waiting on Heidi'?producer:null):(status==='Waiting on actor'?actor:null);
     const latestTracking=await readAgreementTracking(rawStore,productionId,uid);
     return json({status,paperworkStatus:manualPaperworkStatus(latestTracking)||status,url:latestTracking?null:signer?.embedded_signing_url||null});
   }
