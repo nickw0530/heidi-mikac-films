@@ -47,6 +47,7 @@ const findProfile=(m,productionId)=>{
 const sharedBase=m=>darkCatalog.find(x=>x.id===m.filmProfile)||Object.keys(assignments(m)).map(id=>findProfile(m,id)).find(Boolean);
 
 const uuid = /^[a-f0-9-]{36}$/;
+const LOGIN_ATTEMPTS=20,LOGIN_ATTEMPTS_PER_ACCOUNT=200;
 function requireThat(ok, message, status=400) {
   if (!ok) throw Object.assign(new Error(message), {status});
 }
@@ -97,8 +98,10 @@ async function packet(bytes, terms) {
   }
   return Buffer.from(await doc.save());
 }
-export default async function handle(req) {
+export default async function handle(req, context) {
  try {
+  // Netlify supplies the visitor address; a client cannot set either source.
+  const clientAddress=context?.ip||req.headers.get('x-nf-client-connection-ip')||'unknown';
   const url=new URL(req.url), action=url.searchParams.get('action')||'home';
   const production=['heidimikacfilms.com','www.heidimikacfilms.com'].includes(url.hostname);
   let productionId=url.searchParams.get('production')||'written-in-the-dark';
@@ -239,13 +242,25 @@ export default async function handle(req) {
     const id=admin?.[0]||members.find(m=>active(m)&&m.email===who)?.id;
     const pass=id&&await get('passwords/'+id);
     requireThat(pass&&(!admin||pass.adminDigest===admin[1]),'Invalid login.',401);
-    const bucket='attempts/'+hash(who)+'/'+Math.floor(Date.now()/600000);
-    const previous=await store.getWithMetadata(bucket,{type:'json'});
-    requireThat((previous?.data||0)<20,'Too many attempts. Try again in ten minutes.',429);
-    const increment=await store.setJSON(bucket,(previous?.data||0)+1,previous?{onlyIfMatch:previous.etag}:{onlyIfNew:true});
-    requireThat(increment.modified,'Please try again.',429);
+    // Failed guesses are counted per account and visitor address, so someone
+    // hammering a known sign-in name locks out only themselves. A much higher
+    // ceiling per account still slows guessing spread across many addresses.
+    const window=Math.floor(Date.now()/600000);
+    const mine='attempts/'+hash(id+'|'+clientAddress)+'/'+window,everyone='attempts/'+hash(id)+'/'+window;
+    const count=async key=>(await store.get(key,{type:'json'}))||0;
+    const bump=async(key,delta)=>{
+      for(let attempt=0;attempt<5;attempt++){
+        const record=await store.getWithMetadata(key,{type:'json'}),next=Math.max(0,(record?.data||0)+delta);
+        if((await store.setJSON(key,next,record?{onlyIfMatch:record.etag}:{onlyIfNew:true})).modified)return;
+      }
+    };
+    requireThat(await count(mine)<LOGIN_ATTEMPTS&&await count(everyone)<LOGIN_ATTEMPTS_PER_ACCOUNT,'Too many attempts. Try again in ten minutes.',429);
+    // Reserve the attempt before the slow password check so parallel guesses cannot slip past the limit.
+    await Promise.all([bump(mine,1),bump(everyone,1)]);
     const attempt=await derive(body.password,pass.salt,64);
     requireThat(timingSafeEqual(attempt,Buffer.from(pass.digest,'hex')),'Invalid login.',401);
+    // A correct password is not a failed guess.
+    await Promise.all([store.delete(mine),bump(everyone,-1)]);
     return signedIn(id,admin?.[1]);
   }
   if(action==='login'&&post){

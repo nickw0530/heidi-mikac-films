@@ -1,3 +1,21 @@
 [functions]
   node_bundler = "esbuild"
   external_node_modules = ["sharp"]
+
+# Browser protections for every page.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "SAMEORIGIN"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+
+# The cast and crew portal runs only its own scripts plus SignWell's signing
+# window, and can never be framed by anyone (frame-ancestors overrides the
+# site-wide framing header). Headshots already published
+# on the film websites and the welcome video are the only outside media.
+[[headers]]
+  for = "/members/*"
+  [headers.values]
+    Content-Security-Policy = "default-src 'self'; script-src 'self' https://static.signwell.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://heidimikacfilms.com https://writteninthedarkfilm.com https://whereinliescontinue.net; media-src 'self' https:; connect-src 'self' https://*.signwell.com; frame-src https://signwell.com https://*.signwell.com; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
