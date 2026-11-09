@@ -151,11 +151,33 @@ function combinedPeople(states){
  return [...people.values()].sort((a,b)=>a.name.localeCompare(b.name));
 }
 
+function productionAssignments(accounts,productions){
+ return panel('Manage production assignments ('+accounts.length+' portal accounts)','<p>One account, one shared biography and headshot. Check each production this person belongs to. Review member submissions before publishing them. Named Test accounts stay private.</p>'+accounts.map(m=>panel(escape(m.name),'<form data-action="enrollments" data-id="'+m.id+'">'+productions.map(p=>{
+  const assigned=m.productions[p.id];
+  const role=assigned?.role||'';
+  return '<fieldset><label><input style="width:auto;display:inline" type="checkbox" name="production" value="'+p.id+'" '+(assigned?'checked':'')+'> '+escape(p.name)+'</label><label>Character / crew title for this production<input name="role_'+p.id+'" value="'+escape(role)+'" '+(assigned?'':'disabled')+'></label></fieldset>';
+ }).join('')+'<button>Save productions</button></form>')).join(''));
+}
+
 function renderCombinedOffice(states,picker){
  const offices=new Map();
  const snapshots=new Map(states.map(state=>[state.productionId,state]));
  const nav=officeTabs.map(([id,label])=>'<button type="button" data-main-tab="'+id+'">'+label+'</button>').join('');
- app.innerHTML='<div class="office-header">'+picker+form('logout','','Sign out')+'</div><nav class="office-nav" aria-label="Production office">'+nav+'</nav><div data-main-reviews></div><div data-main-people><h2>People &amp; profiles <span class="count" data-total></span></h2><label>Search name or role<input type="search" data-roster-search></label><div data-accounts></div><details data-combined-directory><summary></summary><div data-catalog></div></details></div><div data-offices></div>';
+ app.innerHTML='<div class="office-header">'+picker+form('logout','','Sign out')+'</div><nav class="office-nav" aria-label="Production office">'+nav+'</nav><div data-main-reviews></div><section data-shared-settings hidden><h2>All productions · account settings</h2><div data-shared-assignments></div></section><div data-main-people><h2>People &amp; profiles <span class="count" data-total></span></h2><label>Search name or role<input type="search" data-roster-search></label><div data-accounts></div><details data-combined-directory><summary></summary><div data-catalog></div></details></div><div data-offices></div>';
+ function renderAssignments(state){
+  const host=app.querySelector('[data-shared-assignments]');
+  const expanded=[...host.querySelectorAll('details[open] > summary')].map(node=>node.textContent);
+  const open=host.firstElementChild?.open;
+  const drafts=[...host.querySelectorAll('form')].filter(form=>form.hasAttribute('data-dirty')||form.querySelector('button:disabled'));
+  const accounts=[...new Map(state.accounts.map(account=>[account.id,account])).values()];
+  host.innerHTML=productionAssignments(accounts,state.productions);
+  for(const draft of drafts){
+   const replacement=[...host.querySelectorAll('form')].find(form=>form.dataset.id===draft.dataset.id);
+   if(replacement)replacement.replaceWith(draft);
+  }
+  for(const details of host.querySelectorAll('details'))if(expanded.includes(details.firstElementChild.textContent))details.open=true;
+  host.firstElementChild.open=!!open;
+ }
  let people=[];
  const roster=()=>{
   const alerts=[...snapshots.values()].filter(s=>s.productionReviews?.length);
@@ -175,16 +197,17 @@ function renderCombinedOffice(states,picker){
  function show(view){
   activeView=view;
   app.querySelector('[data-main-people]').hidden=view!=='people';
+  app.querySelector('[data-shared-settings]').hidden=view!=='settings';
   app.querySelectorAll('[data-main-tab]').forEach(b=>b.setAttribute('aria-current',b.dataset.mainTab===view?'page':'false'));
   for(const child of offices.values())child.show(view);
  }
- combined={show,busy:()=>[...offices.values()].some(child=>child.busy())};
+ combined={show,busy:()=>[...offices.values()].some(child=>child.busy()),refresh(){for(const child of offices.values())child.refresh();}};
  for(const state of states){
   const section=document.createElement('section');
   section.innerHTML='<h2>'+escape(state.film)+'</h2><div></div>';
   app.querySelector('[data-offices]').append(section);
   const child=startPortal(section.lastElementChild,{id:state.productionId,state,section,first:state===states[0],show,
-   update(next){snapshots.set(next.productionId,next);roster();},
+   update(next){snapshots.set(next.productionId,next);roster();renderAssignments(next);},
    changed(){for(const [id,other] of offices)if(id!==state.productionId)other.refresh();}});
   offices.set(state.productionId,child);
  }
@@ -198,7 +221,7 @@ function renderCombinedOffice(states,picker){
   show('people');
   films.forEach((film,i)=>offices.get(film.id).open(film,i===0));
  });
- roster();show(activeView);
+ roster();renderAssignments(states[0]);show(activeView);
 }
 
 async function load(initial){
@@ -231,11 +254,7 @@ async function load(initial){
   return;
  }
  const reviews=(s.productionReviews||[]).map(r=>panel(escape(r.name),'<p>'+escape(r.bio||'No biography submitted')+'</p>'+(r.photo?'<img alt="Headshot submitted for approval" style="width:8rem;max-width:100%" src="'+escape(r.photo==='uploaded'?url('photo',r.id)+'&v='+r.revision:r.photo)+'">':'<p>No headshot submitted</p>')+'<form data-action="reviewProduction" data-id="'+escape(r.id)+'"><input type="hidden" name="requestId" value="'+escape(r.requestId)+'"><input type="hidden" name="revision" value="'+escape(r.revision)+'">'+creditFields(r.credits)+(r.role?'<p>Current credit · '+escape(r.role)+'</p>':'')+'<button value="approve" >Approve for '+escape(s.film)+'</button> <button formnovalidate value="decline">Decline</button></form>')).join('');
- const assignmentsPanel=admin?panel('Manage production assignments ('+s.accounts.length+')','<p>One account, one shared biography and headshot. Check each production this person belongs to. Review member submissions before publishing them. Named Test accounts stay private.</p>'+s.accounts.map(m=>panel(escape(m.name),'<form data-action="enrollments" data-id="'+m.id+'">'+s.productions.map(p=>{
-  const assigned=m.productions[p.id];
-  const role=assigned?.role||'';
-  return '<fieldset><label><input style="width:auto;display:inline" type="checkbox" name="production" value="'+p.id+'" '+(assigned?'checked':'')+'> '+escape(p.name)+'</label><label>Character / crew title for this production<input name="role_'+p.id+'" value="'+escape(role)+'" '+(assigned?'':'disabled')+'></label></fieldset>';
- }).join('')+'<button>Save productions</button></form>')).join('')):'';
+ const assignmentsPanel=admin&&!office?productionAssignments(s.accounts,s.productions):'';
  const library=s.catalog||[];
  const available=library.filter(x=>!s.members.some(m=>m.filmProfile===x.id));
  const offline=x=>{
@@ -467,6 +486,7 @@ listen('submit',async e=>{
   const result=await request(a,data.file||data,id,a==='offline'?'&'+new URLSearchParams({status:data.status}):a==='photo'?'&'+new URLSearchParams({filename:data.file.name}):data.title&&data.file?'&'+targetParams:'');
   delete f.dataset.dirty;
   if(office&&!data.preview)office.changed();
+  if(combined&&a==='enrollments')combined.refresh();
   if(a==='requestReset'){message.textContent=result.message;return;}
   if(a==='resetPassword'){history.replaceState(null,'',location.pathname);login();message.textContent='Password updated. Sign in with your new password.';return;}
   if(a==='photo'||a==='bio'){
