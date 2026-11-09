@@ -80,7 +80,8 @@ async function packet(bytes, terms) {
   write(pages[0],208.8,156.8,103,terms.legal,gray);
   write(pages[0],51,526.6,489,"This Agreement covers Actor's services already performed for the Picture and any future services mutually agreed.",white);
   write(pages[1],51,270.8,131,terms.credit,white);
-  write(pages[1],310,383.3,150,terms.legal,white);
+  // Clear the master placeholder; SignWell fills the separate printed-name line.
+  write(pages[1],310,383.3,150,'',white);
   for(const [x,signer] of [[310,1],[52,2]]) {
     pages[1].drawText('{{s:'+signer+':y          }}',{x,y:pages[1].getHeight()-414,size:12,font,color:white});
     pages[1].drawText('{{af_n:'+signer+':y          }}',{x,y:pages[1].getHeight()-457,size:12,font,color:white});
