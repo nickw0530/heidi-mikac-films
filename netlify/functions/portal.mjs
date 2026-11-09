@@ -209,6 +209,15 @@ export default async function handle(req, context) {
         const ticket=token(),expires=Date.now()+3600000;
         await set('resets/'+hash(ticket),{id:m.id,expires,passwordDigest:old.digest,adminDigest:adm?.[1]||null});
         await enqueue(store,m,'reset/'+hash(ticket),'Reset your portal password','Use this link within one hour to choose a new password. If you did not request this, ignore this message.\n\n'+portalUrl+'#reset='+ticket,expires);
+      }else if(!adm&&m&&!old){
+        // Invited but never set a password: there is nothing to reset, so send a fresh invitation instead of silence.
+        const record=await store.getWithMetadata('members/'+m.id,{type:'json'});
+        if(active(record?.data)&&record.data.email===who){
+          const ticket=token(),expires=Date.now()+7*86400000;
+          await set('tickets/'+hash(ticket),{id:m.id,expires});
+          if((await store.setJSON('members/'+m.id,{...record.data,ticket:hash(ticket)},{onlyIfMatch:record.etag})).modified)
+            await enqueue(store,m,'invite/'+hash(ticket),'Heidi Mikac Films — finish setting up your account','Hi '+m.name+',\n\nYour cast and crew account has no password yet. Choose one here to open your dashboard:\n'+portalUrl+'#invite='+ticket+'\n\nThis link expires in seven days. If you did not ask for it, ignore this message.',expires);
+        }
       }
     }
     return json({ok:true,message:'If that account is eligible, a password reset email will arrive shortly. Check spam too.'});
@@ -780,7 +789,7 @@ export default async function handle(req, context) {
     requireThat(/^\d{1,5}(\.\d{1,2})?$/.test(t.rate),'Enter a daily rate.');
     requireThat(/^\d{4}-\d{2}-\d{2}$/.test(t.date)&&!Number.isNaN(Date.parse(t.date))&&new Date(t.date).toISOString().slice(0,10)===t.date,'Enter a valid agreement date.');
     const heidi=COUNTERSIGN_EMAIL;
-    requireThat(heidi!==m.email,'Actor and countersigner need separate addresses.');
+    requireThat(heidi!==m.email,'The signer and the countersigner need separate email addresses.');
     const master=await store.get('contract/master',{type:'arrayBuffer'});requireThat(master,'Upload the private agreement master first.');
     const bytes=await packet(master,t);
     const memberKey='members/'+uid,record=await store.getWithMetadata(memberKey,{type:'json'}),current=record?.data;
@@ -801,7 +810,7 @@ export default async function handle(req, context) {
     let d;try{
       // The cycle-specific reservation allows one current request per person and film.
 
-      d=await signwell('documents/',{test_mode:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes'),name:film+' — '+t.legal+' · '+AGREEMENT_CYCLE,files:[{name:'Actor Agreement.pdf',file_base64:bytes.toString('base64')}],recipients:[{id:'1',name:t.legal,email:m.email,send_email:true},{id:'2',name:'Heidi Mikac',email:heidi,send_email:true}],apply_signing_order:true,embedded_signing:true,text_tags:true});
+      d=await signwell('documents/',{test_mode:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes'),name:film+' — '+t.legal+' · '+AGREEMENT_CYCLE,files:[{name:'Agreement.pdf',file_base64:bytes.toString('base64')}],recipients:[{id:'1',name:t.legal,email:m.email,send_email:true},{id:'2',name:'Heidi Mikac',email:heidi,send_email:true}],apply_signing_order:true,embedded_signing:true,text_tags:true});
     }catch(e){await set(key,{cycle:AGREEMENT_CYCLE,status:'Needs recovery — check SignWell',created:Date.now(),recipientEmail:heidi,name:film+' — '+t.legal+' · '+AGREEMENT_CYCLE});throw e;}
     await set(key,{id:d.id,cycle:AGREEMENT_CYCLE,status:documentStatus(d),providerStatus:String(d.status||'').toLowerCase(),testMode:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes'),name:film+' — '+t.legal+' · '+AGREEMENT_CYCLE,recipientEmail:heidi,created:Date.now(),checkedAt:Date.now()});
     if(documentStatus(d)!=='Draft ready to send')await notify(m,d.id,'Document ready for signature','Your new agreement is ready to review and sign.',AGREEMENT_CYCLE);return json({ok:true});

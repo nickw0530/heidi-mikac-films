@@ -29,12 +29,29 @@ async function exchange(fields){
  return response.json();
 }
 async function graph(path,token){
- const response=await fetch('https://graph.microsoft.com/v1.0/'+path,{signal:AbortSignal.timeout(15000),headers:{Authorization:'Bearer '+token}});
+ // Every time is requested in UTC so stored and displayed times never depend on how an event was created.
+ const response=await fetch('https://graph.microsoft.com/v1.0/'+path,{signal:AbortSignal.timeout(15000),headers:{Authorization:'Bearer '+token,Prefer:'outlook.timezone="UTC"'}});
  if(!response.ok)throw Object.assign(new Error('Calendar unavailable'),{status:response.status});
  return response.json();
 }
-const fields='id,subject,start,end,isAllDay,isCancelled,sensitivity,categories';
-const display=e=>({key:digest(e.id),title:e.subject,start:e.start.dateTime,end:e.end.dateTime,allDay:e.isAllDay});
+const fields='id,subject,start,end,isAllDay,isCancelled,sensitivity,categories,location';
+const display=e=>({key:digest(e.id),title:e.subject,start:e.start.dateTime,end:e.end.dateTime,allDay:e.isAllDay,location:String(e.location?.displayName||'').trim().slice(0,200)});
+const zone='America/Indiana/Indianapolis';
+// "Sat, Nov 14 · 2:00 PM – 5:00 PM Eastern", for the notification email.
+export function eventWhen(event){
+ const day=value=>new Intl.DateTimeFormat('en-US',{timeZone:event.isAllDay?'UTC':zone,weekday:'short',month:'short',day:'numeric'}).format(value);
+ const time=value=>new Intl.DateTimeFormat('en-US',{timeZone:zone,hour:'numeric',minute:'2-digit'}).format(value);
+ const start=new Date(event.start.dateTime.slice(0,19)+'Z'),end=new Date(event.end.dateTime.slice(0,19)+'Z');
+ if(Number.isNaN(start.getTime()))return '';
+ if(event.isAllDay){const last=new Date(end.getTime()-86400000);return day(start)+(last>start?' – '+day(last):'')+' · All day';}
+ if(Number.isNaN(end.getTime())||end<=start)return day(start)+' · '+time(start)+' Eastern';
+ return day(start)+' · '+time(start)+' – '+(day(end)===day(start)?'':day(end)+' ')+time(end)+' Eastern';
+}
+export function eventNotice(event,link){
+ const where=String(event.location?.displayName||'').trim().slice(0,200);
+ const when=eventWhen(event);
+ return [String(event.subject||'Production event').slice(0,200),(event.recurrence&&when?'Repeats. First: ':'')+when,where].filter(Boolean).join('\n')+'\n\nYour dashboard always has the current time and place, in case this changes.\n\n'+link;
+}
 async function* pages(path,token){
  while(path){
   const data=await graph(path,token);
@@ -107,7 +124,7 @@ export async function notifyNewEvents(store,enqueue,portalUrl){
    }
    await store.set('calendar/event-links/'+key,event.id,{onlyIfNew:true});
    for(const member of members.filter(m=>includesMember(audience,m))){
-    await enqueue(store,member,'calendar/'+key,'New event on the production calendar','An event has been added to the Heidi Mikac Films calendar. Sign in to see the event and its scheduled time.\n\n'+portalUrl+'?event='+key);
+    await enqueue(store,member,'calendar/'+key,'New event on the production calendar',eventNotice(event,portalUrl+'?event='+key));
    }
   }
  }

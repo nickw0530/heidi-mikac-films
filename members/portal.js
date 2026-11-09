@@ -105,7 +105,7 @@ const panel=(name,body)=>'<details><summary>'+name+'</summary>'+body+'</details>
 const detailKey=details=>details.matches('[data-availability-panel]')?'availability/'+(details.dataset.availabilityPerson||'self'):details.dataset.person||details.querySelector(':scope > summary')?.textContent;
 const trackingLabel=reason=>['complete','hard-copy'].includes(reason)?'Complete':reason==='not-required'?'Document N/A':'';
 function profile(m){
- return panel('Headshot &amp; biography · '+((m.hasPhoto||m.referencePhoto)?'photo received':'photo needed')+' · '+(m.profile?.bio?'bio received':'bio needed'),form('bio','<label>Biography<textarea name="bio" rows="5" maxlength="5000">'+escape(m.profile?.bio)+'</textarea></label>','Save biography',m.id)+form('photo',file('Headshot · JPG or PNG, up to 4 MB','image/jpeg,image/png'),'Upload headshot',m.id)+(m.hasPhoto?'<button data-photo="'+m.id+'">View current headshot</button><div class="portrait"></div>':''));
+ return panel('Headshot &amp; biography · '+((m.hasPhoto||m.referencePhoto)?'photo received':'photo needed')+' · '+(m.profile?.bio?'bio received':'bio needed'),form('bio','<label>Biography<textarea name="bio" rows="5" maxlength="5000">'+escape(m.profile?.bio)+'</textarea></label>','Save biography',m.id)+form('photo',file('Headshot · JPG or PNG. Large photos are resized for you.','image/jpeg,image/png'),'Upload headshot',m.id)+(m.hasPhoto?'<button data-photo="'+m.id+'">View current headshot</button><div class="portrait"></div>':''));
 }
 function creditFields(value={},suffix=''){
  const field=(key,label)=>'<label>'+label+'<input maxlength="120" name="'+key+suffix+'" value="'+escape(value[key]||'')+'"></label>';
@@ -117,6 +117,26 @@ function agreement(m){
 }
 const ticket=new URLSearchParams(location.hash.slice(1)).get('invite');
 const resetTicket=new URLSearchParams(location.hash.slice(1)).get('reset');
+// Photographer files are often far larger than an upload may be. Anything too big,
+// or not already a JPG or PNG, is redrawn in the browser at a size that still
+// prints well on the film websites, so nobody has to shrink a photo by hand.
+const HEADSHOT_LIMIT=3.5*1024*1024,HEADSHOT_EDGE=2400;
+async function prepareHeadshot(file){
+ if(file.size<=HEADSHOT_LIMIT&&['image/jpeg','image/png'].includes(file.type))return file;
+ let picture;
+ try{picture=await createImageBitmap(file,{imageOrientation:'from-image'});}
+ catch{throw Error('This photo could not be read. Choose a JPG or PNG.');}
+ try{
+  for(const [edge,quality] of [[HEADSHOT_EDGE,.9],[HEADSHOT_EDGE,.8],[1800,.8],[1400,.75]]){
+   const scale=Math.min(1,edge/Math.max(picture.width,picture.height));
+   const canvas=document.createElement('canvas');canvas.width=Math.round(picture.width*scale);canvas.height=Math.round(picture.height*scale);
+   const context=canvas.getContext('2d');context.fillStyle='#fff';context.fillRect(0,0,canvas.width,canvas.height);context.drawImage(picture,0,0,canvas.width,canvas.height);
+   const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',quality));
+   if(blob&&blob.size<=HEADSHOT_LIMIT)return new File([blob],file.name.replace(/\.[^.]*$/,'')+'.jpg',{type:'image/jpeg'});
+  }
+ }finally{picture.close?.();}
+ throw Error('This photo is too large to prepare here. Choose a smaller JPG or PNG.');
+}
 const newPassword='<label>Choose a password (12 or more characters)<input name="password" type="password" required minlength="12" maxlength="128" autocomplete="new-password"></label>';
 function profileStatus(f,text){
  let note=f.querySelector('output');
@@ -381,7 +401,9 @@ async function load(initial){
   });
   for(const file of s.resources.filter(r=>r.type==='PDF'))documents.push(download(url('resource',file.id),file.title+(trackingLabel(m.documentTracking?.[file.id])?' · '+trackingLabel(m.documentTracking[file.id]):'')));
   let agreementControls='<p>A new agreement is required for '+escape(s.film)+'. Production will prepare your signing request.</p>';
-  if(m.paperworkTracking){
+  if(!m.productions[s.productionId]){
+   agreementControls='<p>You are not on a production yet. Choose your productions under My profile; once production confirms, your agreement and documents appear here.</p>';
+  }else if(m.paperworkTracking){
    agreementControls='<p>'+escape(m.paperworkStatus)+' · Recorded by production.</p>';
   }else if(m.agreement?.id){
    const status=m.agreement.status;
@@ -395,7 +417,7 @@ async function load(initial){
   return '<section class="member-panel member-tasks"><h2>My tasks</h2><p>'+(items.length?(count?count+' to complete':'All tasks completed.'):'No tasks assigned yet.')+'</p>'+taskList+'</section>'+
    '<section class="member-panel member-paperwork"><h2>My documents</h2>'+agreementControls+(documents.length?'<ul>'+documents.join('')+'</ul>':(agreementControls?'':'<p>No documents assigned yet.</p>'))+'<div id="signing"></div></section>'+
    (m.productions[s.productionId]?'<section class="member-panel"><h2>Availability</h2><p>Share your earliest arrival on set and latest departure with the cast and crew of '+escape(s.film)+'. All times are Eastern.</p><details data-availability-panel><summary>Open availability calendar</summary><div data-availability-slot></div></details></section>':'')+
-   '<section class="member-panel member-profile"><h2>My profile</h2><p>Your biography and headshot are shared across your approved productions.</p>'+choices+'<p>'+escape(m.name)+' · '+escape(m.role)+'</p>'+(photo?'<img data-headshot src="'+escape(photo)+'" alt="Your headshot">':'')+form('photo',file(m.hasPhoto?'Replace your headshot':'Upload your headshot · JPG or PNG, up to 4 MB','image/jpeg,image/png'),'Save headshot',m.id)+form('bio','<label>Import biography (.txt)<input type="file" accept=".txt,text/plain" data-bio-file></label><label>My bio<textarea name="bio" rows="5" maxlength="5000">'+escape(m.profile?.bio)+'</textarea></label>','Save bio',m.id)+'</section>';
+   '<section class="member-panel member-profile"><h2>My profile</h2><p>Your biography and headshot are shared across your approved productions.</p>'+choices+'<p>'+escape(m.name)+' · '+escape(m.role)+'</p>'+(photo?'<img data-headshot src="'+escape(photo)+'" alt="Your headshot">':'')+form('photo',file(m.hasPhoto?'Replace your headshot':'Upload your headshot · JPG or PNG. Large photos are resized for you.','image/jpeg,image/png'),'Save headshot',m.id)+form('bio','<label>Import biography (.txt)<input type="file" accept=".txt,text/plain" data-bio-file></label><label>My bio<textarea name="bio" rows="5" maxlength="5000">'+escape(m.profile?.bio)+'</textarea></label>','Save bio',m.id)+'</section>';
  }
  const publication=m=>'<div class="publication-status"><h4>Website publishing</h4>'+Object.entries(m.publication||{}).map(([pid,p])=>'<p>'+escape(s.productions.find(x=>x.id===pid)?.name||pid)+' · <strong>'+escape(p.state)+'</strong></p>').join('')+(m.practice?'':form('publication','<label><input type="checkbox" name="visible" '+(m.publication?.[s.productionId]?.visible?'checked':'')+'> Show on this production’s website</label>','Save website visibility',m.id))+'</div>';
  const recover=m=>m.agreement&&!m.agreement.id&&!m.agreement.cleared?panel('Recover interrupted signing request','<p>Check SignWell first. Link the existing document below, or confirm that no document was created. This action never sends a contract.</p>'+form('recoverAgreement','<label>Existing SignWell document ID (if found)<input name="documentId"></label><label><input type="checkbox" name="confirmAbsent"> I checked SignWell; no document exists</label>','Recover request',m.id)):'';
@@ -417,7 +439,7 @@ async function load(initial){
  const rows=s.members.map(m=>'<details class="person-card" data-person="'+m.id+'" data-search="'+escape((m.name+' '+m.role+' '+(m.email||'')).toLowerCase())+'" data-gaps="'+escape(outstanding(m).gaps.join(' ').toLowerCase())+'" data-paperwork="'+escape(m.paperworkStatus)+'"><summary><img loading="lazy" alt="" src="'+escape(m.hasPhoto?url('photo',m.id):m.referencePhoto||'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 80%22%3E%3Crect width=%2264%22 height=%2280%22 fill=%22%2353434a%22/%3E%3Ccircle cx=%2232%22 cy=%2226%22 r=%2213%22 fill=%22%23cbb9be%22/%3E%3Cellipse cx=%2232%22 cy=%2269%22 rx=%2226%22 ry=%2223%22 fill=%22%23cbb9be%22/%3E%3C/svg%3E')+'"><span><b>'+escape(m.name)+'</b><span>'+escape(m.role)+'</span></span><span class="status-pill">'+escape(m.paperworkStatus)+'</span><span class="open-profile">Open profile</span></summary><section><h3>'+escape(admin?m.name:'My dashboard')+'</h3><p>'+escape(admin?m.role:[m.role,m.needsEmail?'Email needed':m.email].filter(Boolean).join(' · '))+'</p>'+
  (admin?accountEmail(m)+'<strong>'+escape(m.paperworkStatus)+'</strong>'+contactName(m)+contactEmail(m):'')+
  (!admin&&m.agreement?.id?'<button data-status="'+m.id+'">Review my agreement</button>':'')+
- ((m.referencePhoto||m.hasPhoto)?'<img data-headshot src="'+escape(m.hasPhoto?url('photo',m.id):m.referencePhoto)+'" alt="Saved headshot">':'')+(admin?profile(m):(m.hasPhoto?'<img data-headshot alt="Your saved headshot" src="'+escape(url('photo',m.id))+'">':'')+form('photo',file(m.hasPhoto?'Replace your headshot':'Upload your headshot · JPG or PNG, up to 4 MB','image/jpeg,image/png'),'Save headshot',m.id)+form('bio','<label>Import biography (.txt)<input type="file" accept=".txt,text/plain" data-bio-file></label><label>My bio<textarea name="bio" rows="4" maxlength="5000" placeholder="Tell us a little about yourself.">'+escape(m.profile?.bio)+'</textarea></label>','Save bio',m.id))+
+ ((m.referencePhoto||m.hasPhoto)?'<img data-headshot src="'+escape(m.hasPhoto?url('photo',m.id):m.referencePhoto)+'" alt="Saved headshot">':'')+(admin?profile(m):(m.hasPhoto?'<img data-headshot alt="Your saved headshot" src="'+escape(url('photo',m.id))+'">':'')+form('photo',file(m.hasPhoto?'Replace your headshot':'Upload your headshot · JPG or PNG. Large photos are resized for you.','image/jpeg,image/png'),'Save headshot',m.id)+form('bio','<label>Import biography (.txt)<input type="file" accept=".txt,text/plain" data-bio-file></label><label>My bio<textarea name="bio" rows="4" maxlength="5000" placeholder="Tell us a little about yourself.">'+escape(m.profile?.bio)+'</textarea></label>','Save bio',m.id))+
  (admin?'<details data-availability-panel data-availability-person="'+escape(m.id)+'"><summary>Availability calendar</summary><div data-availability-slot></div></details>'+panel(m.needsEmail?'Save a document for this person':'Send a document',form('resource','<p>For '+escape(m.name)+' · '+escape(s.film)+'</p><input type="hidden" name="audience" value="selected"><input type="hidden" name="recipient" value="'+escape(m.id)+'">'+input('title','Document title')+file('PDF · up to 4 MB','application/pdf'),m.needsEmail?'Save document':'Send to '+escape(m.name),m.id)):'')+
  (admin?personPaperwork(m)+personalMessage(m)+personalReview(m)+productionAssignments([m],s.productions,'Manage production assignments'):'')+tasks(m)+(admin&&m.filmProfile&&library.find(x=>x.id===m.filmProfile)?offline(library.find(x=>x.id===m.filmProfile)):'')+(admin?linkControls(m):'')+(admin?panel('Assign a task',form('task',input('title','What needs to be done?'),'Assign task',m.id)):'')+
  (admin?publication(m):'')+(admin?panel('Manage access',(!m.needsEmail&&!m.activated&&s.mailReady?form('resend','','Resend invitation',m.id):'')+form('revoke','<label><input type="checkbox" name="keepPublic" checked> Keep public film credits and profile visible</label><p>Uncheck to also remove this account’s public profiles. Access is revoked immediately.</p>','Revoke portal access',m.id)):'')+'</section></details>').join('');
@@ -542,7 +564,7 @@ listen('submit',async e=>{
  e.preventDefault();const f=e.target,a=f.dataset.action,id=f.dataset.id,data=Object.fromEntries(new FormData(f));const button=e.submitter;
  if(a==='publishProfile'&&!confirm('Publish this member’s saved biography and headshot on the public Written in the Dark website?'))return;
  if(a==='removeResource'&&!confirm('Remove this from the production board for everyone? Email already delivered about it cannot be recalled.'))return;
- if((a==='revoke'||a==='sendAgreement'||(a==='agreement'&&button.value==='send'))&&!confirm(a==='revoke'?'Revoke this member’s access immediately?':a==='sendAgreement'?'Send this pending contract to its recipients?':'Create a signing request for this actor and Heidi?'))return;
+ if((a==='revoke'||a==='sendAgreement'||(a==='agreement'&&button.value==='send'))&&!confirm(a==='revoke'?'Revoke this member’s access immediately?':a==='sendAgreement'?'Send this pending contract to its recipients?':'Create a signing request for this person and Heidi?'))return;
  button.disabled=true;message.textContent='';
  try{
   if(a==='logout'){
@@ -552,6 +574,8 @@ listen('submit',async e=>{
    location.replace(location.pathname);
    return;
   }
+  const chosen=data.file;
+  if(a==='photo'&&chosen){message.textContent='Preparing your photo…';data.file=await prepareHeadshot(chosen);message.textContent='';}
   if(data.file&&data.file.size>4*1024*1024)throw Error('Choose a file up to 4 MB.');
   if(a==='agreement')data.preview=button.value==='preview';
   if(a==='trackPaperwork')data.reason=button.value;
@@ -569,7 +593,7 @@ listen('submit',async e=>{
   if(a==='savePendingPerson')data.productions=new FormData(f).getAll('pendingProduction');
   const targetParams=new URLSearchParams({title:data.title||''});
   if(data.audience){data.recipients=new FormData(f).getAll('recipient');if(data.audience==='selected'&&!data.recipients.length)throw Error('Select at least one recipient.');targetParams.set('audience',data.audience);for(const who of data.recipients)targetParams.append('recipient',who);}
-  const result=await request(a,data.file||data,id,a==='offline'?'&'+new URLSearchParams({status:data.status}):a==='photo'?'&'+new URLSearchParams({filename:data.file.name}):data.title&&data.file?'&'+targetParams:'');
+  const result=await request(a,data.file||data,id,a==='offline'?'&'+new URLSearchParams({status:data.status}):a==='photo'?'&'+new URLSearchParams({filename:chosen.name}):data.title&&data.file?'&'+targetParams:'');
   delete f.dataset.dirty;
   if(a==='savePendingPerson'&&!id)f.reset();
   if(office&&!data.preview)office.changed();
@@ -584,7 +608,7 @@ listen('submit',async e=>{
     img.src=url('photo',id)+'&updated='+Date.now();
    }
    if(details){const summary=details.querySelector('summary');summary.textContent=summary.textContent.replace(a==='photo'?'photo needed':'bio needed',a==='photo'?'photo received':data.bio.trim()?'bio received':'bio needed');}
-   if(a==='photo'&&f.elements.file.files[0]===data.file)profileStatus(f,'Saved · '+data.file.name);
+   if(a==='photo'&&f.elements.file.files[0]===chosen)profileStatus(f,'Saved · '+chosen.name);
    if(a==='bio')profileStatus(f,f.elements.bio.value===data.bio?'Saved':'Unsaved changes');
    message.textContent=(a==='photo'?'Headshot saved.':'Bio saved.')+' An admin reviews updates for each selected film.';
    const publicationInfo=await request('home');lastState=publicationInfo;
@@ -607,7 +631,9 @@ listen('click',async e=>{
   const response=await fetch(link.href,{cache:'no-store'});
   if(!response.ok){const failure=await response.json().catch(()=>({}));throw Error(failure.error||'This document could not be downloaded. Please try again.');}
   const header=response.headers.get('content-disposition')||'',encoded=header.match(/filename\*=UTF-8''([^;]+)/i)?.[1],plain=header.match(/filename="([^"]+)"/i)?.[1];
-  let name=plain||'document.pdf';try{if(encoded)name=decodeURIComponent(encoded);}catch{}
+  // The plain-letters name is used: some browsers discard a saved name containing symbols such as “·”.
+  let name=plain;try{if(!name&&encoded)name=decodeURIComponent(encoded);}catch{}
+  name=name||'document.pdf';
   const href=URL.createObjectURL(await response.blob()),save=document.createElement('a');
   save.href=href;save.download=name;document.body.append(save);save.click();save.remove();setTimeout(()=>URL.revokeObjectURL(href),60000);
   message.textContent='Downloaded '+name+'.';
@@ -693,10 +719,15 @@ async function mountCalendar(admin=true){
     const rows=result.selected?[result.selected,...result.items.filter(e=>e.key!==eventKey)]:result.items;
     for(const event of rows){
      const item=document.createElement('li');
-     const date=new Date(event.start+'Z');
-     const when=event.allDay?event.start.slice(0,10)+' · All day':date.toLocaleString('en-US',{timeZone:'America/Indiana/Indianapolis',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
-     item.textContent=when+' — '+event.title;
-     if(event.key===eventKey&&result.selected){const label=document.createElement('strong');label.textContent='Selected event · ';item.prepend(label);}
+     const zone='America/Indiana/Indianapolis',date=new Date(event.start.slice(0,19)+'Z'),finish=new Date(String(event.end||'').slice(0,19)+'Z');
+     const day=(value,timeZone=zone)=>value.toLocaleDateString('en-US',{timeZone,weekday:'short',month:'short',day:'numeric'}),time=value=>value.toLocaleTimeString('en-US',{timeZone:zone,hour:'numeric',minute:'2-digit'});
+     let when;
+     if(event.allDay){const last=new Date(finish.getTime()-86400000);when=day(date,'UTC')+(last>date?' – '+day(last,'UTC'):'')+' · All day';}
+     else when=day(date)+' · '+time(date)+(finish>date?' – '+(day(finish)===day(date)?'':day(finish)+' ')+time(finish):'');
+     const title=document.createElement('strong');title.textContent=event.title||'Production event';
+     item.append(title,document.createElement('br'),when);
+     if(event.location){const place=document.createElement('span');place.textContent=event.location;item.append(document.createElement('br'),place);}
+     if(event.key===eventKey&&result.selected){const label=document.createElement('em');label.textContent='Selected event · ';item.prepend(label);}
      list.append(item);
     }
     const heading=document.createElement('h2');heading.textContent='Production calendar';
