@@ -14,7 +14,7 @@ for(const [before,after] of [
  ["import {enqueue, mailReady, portalUrl} from '../lib/mail.mjs';",'const enqueue=async(...args)=>{globalThis.__pendingPeopleFixture.notifications.push(args);},mailReady=()=>true,portalUrl="https://heidimikacfilms.com/members/";']
 ]){assert.ok(source.includes(before),'Mocks must match the current route imports.');source=source.replace(before,after);}
 const packetStart=source.indexOf('async function packet(bytes, terms) {');
-const handlerStart=source.indexOf('export default async function handle(req)');
+const handlerStart=source.indexOf('export default async function handle(req');
 assert.ok(packetStart>=0&&handlerStart>packetStart);
 source=source.slice(0,packetStart)+"async function packet(bytes,terms){globalThis.__pendingPeopleFixture.packets.push(structuredClone(terms));return Buffer.from('%PDF-private-preview');}\n"+source.slice(handlerStart);
 source=source.replace(/from (['"])(\.\.?\/[^'"]+)\1/g,(_match,_quote,path)=>'from '+JSON.stringify(new URL(path,portalFile).href));

@@ -29,7 +29,7 @@ source=source.replace("import {begin as beginCalendar,events as calendarEvents} 
  .replace("import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';",'const PDFDocument={},StandardFonts={},rgb=()=>{};')
  .replace("import {enqueue, mailReady, portalUrl} from '../lib/mail.mjs';","const enqueue=async(...args)=>{globalThis.__contractCycleEnqueued.push(args);},mailReady=()=>true,portalUrl='https://heidimikacfilms.com/members/';");
 const packetStart=source.indexOf('async function packet(bytes, terms) {');
-const handlerStart=source.indexOf('export default async function handle(req)');
+const handlerStart=source.indexOf('export default async function handle(req');
 assert.ok(packetStart>=0&&handlerStart>packetStart,'Packet stub must replace only the PDF rendering helper.');
 source=source.slice(0,packetStart)+"async function packet(bytes,terms){globalThis.__contractCyclePackets.push(structuredClone(terms));return Buffer.from('%PDF-current');}\n"+source.slice(handlerStart);
 source=source.replace(/from (['"])(\.\.?\/[^'"]+)\1/g,(_match,_quote,path)=>'from '+JSON.stringify(new URL(path,portalUrl).href));

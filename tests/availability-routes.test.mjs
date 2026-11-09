@@ -14,7 +14,7 @@ for(const [before,after] of [
  ["import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';",'const PDFDocument={},StandardFonts={},rgb=()=>{};'],
  ["import {enqueue, mailReady, portalUrl} from '../lib/mail.mjs';",'const enqueue=async(...args)=>{globalThis.__availabilityFixture.notifications.push(args);},mailReady=()=>true,portalUrl="https://heidimikacfilms.com/members/";']
 ]){assert.ok(source.includes(before),'Route mocks must match the current portal.');source=source.replace(before,after);}
-const packetStart=source.indexOf('async function packet(bytes, terms) {'),handlerStart=source.indexOf('export default async function handle(req)');
+const packetStart=source.indexOf('async function packet(bytes, terms) {'),handlerStart=source.indexOf('export default async function handle(req');
 assert.ok(packetStart>=0&&handlerStart>packetStart);
 source=source.slice(0,packetStart)+"async function packet(){throw Error('Unexpected contract generation');}\n"+source.slice(handlerStart);
 source=source.replace(/from (['"])(\.\.?\/[^'"]+)\1/g,(_match,_quote,path)=>'from '+JSON.stringify(new URL(path,portalFile).href));
