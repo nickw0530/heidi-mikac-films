@@ -17,6 +17,8 @@ let selectedProduction=office?.id||new URLSearchParams(location.search).get('pro
 const url=(action,id='',production=selectedProduction)=>endpoint+'?'+new URLSearchParams({action,id,...(production?{production}:{})});
 async function request(action,body,id='',suffix='',production=selectedProduction){
  const raw=body instanceof File;
+ const documentId=action==='status'?lastState?.members.find(member=>member.id===id)?.agreement?.id:null;
+ if(documentId)suffix+='&'+new URLSearchParams({document:documentId});
  const r=await fetch(url(action,id,production)+suffix,{method:body===undefined?'GET':'POST',headers:raw?{}:{'Content-Type':'application/json'},body:raw?body:JSON.stringify(body),cache:'no-store'});
  if(!r.ok){let failure=await r.json().catch(()=>({}));throw Object.assign(new Error(failure.error||'Request failed.'),{status:r.status});}
  return r.headers.get('content-type')?.includes('application/json')?r.json():r.blob();
@@ -257,23 +259,10 @@ async function load(initial){
  const assignmentsPanel=admin&&!office?productionAssignments(s.accounts,s.productions):'';
  const library=s.catalog||[];
  const available=library.filter(x=>!s.members.some(m=>m.filmProfile===x.id));
- const offline=x=>{
-  if(!x.offline)return panel('File a signed paper agreement',form('offline',file('Returned agreement PDF','application/pdf')+'<label>Paperwork status<select name="status"><option>Waiting on Heidi</option><option>Missing page 1 · waiting on Heidi</option><option>Complete</option></select></label>','File privately',x.id));
-  const signing=x.offlineSigning;
-  let controls='';
-  if(signing){
-   controls='<p><strong>'+escape(signing.status)+'</strong>'+(signing.testMode?' · Test draft':'')+'</p>';
-   if(signing.sourceChanged)controls+='<p>The uploaded file has changed. Review the existing request before proceeding.</p>';
-   if(signing.syncError)controls+='<p>'+escape(signing.syncError)+'</p>';
-   if(signing.id)controls+='<button type="button" data-offline-status="'+escape(x.id)+'">'+(signing.status==='Draft prepared'?'Review countersignature draft':'Check countersignature status')+'</button>';
-   else controls+='<p>Check SignWell before preparing another request.</p>';
-  }else if(x.offline==='Waiting on Heidi'){
-   controls=form('prepareOfflineCountersign','<p>Prepare an unsent draft for Heidi using this uploaded agreement. Existing signatures stay intact; Heidi receives a separate signature page.</p>','Prepare Heidi countersignature draft',x.id);
-  }else if(/missing/i.test(x.offline))controls='<p>Upload the complete agreement before preparing Heidi’s signature request.</p>';
-  return '<div data-offline-profile="'+escape(x.id)+'"><p><b>Signed offline</b> · '+escape(x.offlineSigning?.status||x.offline)+' · <a href="'+escape(url('offline',x.id))+'">Download original agreement</a></p>'+controls+'<div data-offline-links></div></div>';
- };
- const uploaded=library.filter(x=>x.offline),eligibleUploads=uploaded.filter(x=>x.offline==='Waiting on Heidi'&&!x.offlineSigning);
- const uploadedDocuments=admin?'<section><h2>Uploaded agreements</h2><p>Prepare Heidi-only drafts from the signed files already on record. Drafts are not sent automatically.</p>'+(eligibleUploads.length?'<button type="button" data-prepare-offline>Prepare all eligible drafts ('+eligibleUploads.length+')</button>':'')+(uploaded.length?uploaded.map(x=>panel(escape(x.name)+' · '+escape(x.offlineSigning?.status||x.offline),offline(x))).join(''):'<p>No signed agreements have been uploaded for this production.</p>')+'</section>':'';
+ const offline=x=>x.previousOffline?panel('Previous paper agreement · replaced','<p>A new electronic agreement is required.</p><a href="'+escape(url('offline',x.id))+'">Download previous paper agreement</a>'):'';
+ const uploaded=library.filter(x=>x.previousOffline);
+ const previousOnline=s.members.filter(m=>m.previousAgreement?.completed);
+ const uploadedDocuments=admin&&(uploaded.length||previousOnline.length)?'<section><h2>Previous agreements</h2><p>These records have been replaced for portal tracking. Everyone requires a new signed agreement.</p>'+uploaded.map(x=>panel(escape(x.name),offline(x))).join('')+previousOnline.map(m=>'<p>'+escape(m.name)+' · <a href="'+escape(url('memberDocument',m.id)+'&kind=previous-signed')+'">Download previous signed agreement and audit record</a></p>').join('')+'</section>':'';
  const people=[...available,...s.members];
  function outstanding(person){
   const source=library.find(x=>x.id===(person.filmProfile||person.id));
@@ -282,14 +271,14 @@ async function load(initial){
   if(!(person.profile?.bio??source?.bio)?.trim())gaps.push('Bio');
   if(!(person.hasPhoto||person.referencePhoto||source?.photo))gaps.push('Headshot');
   if(person.tasks?.some(t=>!t.done))gaps.push('Open tasks');
-  const exempt=/^(?:nick williams|nicholas williams|heidi mikac)$/i.test(person.name.trim().replace(/\s+/g,' '));
+  const exempt=false;
   return {name:person.name,status,gaps,exempt};
  }
  const waiting=s.waiting||[];
  const personal='<section class="audit" style="border:2px solid #a35c68;padding:1.25rem;margin-bottom:1.5rem" aria-labelledby="waiting-heading"><h2 id="waiting-heading">Waiting on you <span class="count">'+waiting.length+'</span></h2><p>'+escape(s.self)+' · '+escape(s.film)+'</p>'+(waiting.length?'<ul>'+waiting.map(a=>'<li><strong>'+escape(a.label)+'</strong> · '+(a.owner==='any'?'Any admin':'Assigned to you')+' '+(a.taskId?form('finishAdminTask','<input type="hidden" name="owner" value="'+escape(a.owner)+'"><input type="hidden" name="task" value="'+escape(a.taskId)+'">','Mark done'):a.member?'<button data-open-person="'+escape(a.member)+'">Open paperwork</button>':'<button data-view-button="'+escape(a.view)+'">'+(a.view==='settings'?'Review request':'Open documents')+'</button>')+'</li>').join('')+'</ul>':'<p>You’re caught up for this production.</p>')+panel('Assign an admin task',form('adminTask',input('title','Task','text')+'<label>Assigned to<select name="owner"><option value="any">Any admin</option><option>Nick</option><option>Heidi</option></select></label>','Assign task'))+'</section>';
  const audit=people.map(outstanding);
  const group=(label,items,detail)=>'<details class="audit-group"><summary>'+label+' <b>'+items.length+'</b></summary>'+(items.length?'<ul>'+items.map(x=>'<li><strong>'+escape(x.name)+'</strong><span>'+escape(detail(x))+'</span></li>').join('')+'</ul>':'<p>Nothing outstanding.</p>')+'</details>';
- const attention='<section class="audit"><small>'+escape(s.film)+' · PRODUCTION OFFICE</small><h2>Needs attention</h2><p>Open a category to see who needs follow-up.</p>'+group('No agreement on file',audit.filter(x=>!x.exempt&&x.status==='No agreement on file'),x=>x.status)+group('Paperwork in progress',audit.filter(x=>(!x.exempt||/waiting on Heidi/i.test(x.status))&&!['Complete','Not required','No agreement on file'].includes(x.status)),x=>x.status)+group('Missing profile items or open tasks',audit.filter(x=>x.gaps.length),x=>x.gaps.join(' · '))+'</section>';
+ const attention='<section class="audit"><p><strong>New contracts required for everyone.</strong> Earlier agreements have been moved to Previous agreements.</p><small>'+escape(s.film)+' · PRODUCTION OFFICE</small><h2>Needs attention</h2><p>Open a category to see who needs follow-up.</p>'+group('No agreement on file',audit.filter(x=>!x.exempt&&x.status==='No agreement on file'),x=>x.status)+group('Paperwork in progress',audit.filter(x=>(!x.exempt||/waiting on Heidi/i.test(x.status))&&!['Complete','Not required','No agreement on file'].includes(x.status)),x=>x.status)+group('Missing profile items or open tasks',audit.filter(x=>x.gaps.length),x=>x.gaps.join(' · '))+'</section>';
  const directory=admin?'<p>Profiles available to invite</p>'+available.map(x=>'<div data-catalog-profile="'+escape(x.id)+'">'+panel(escape(x.name)+' · '+escape(x.role),'<img loading="lazy" alt="Approved headshot" src="'+escape(x.photo)+'"><p style="white-space:pre-line">'+escape(x.bio)+'</p>'+offline(x)+(s.mailReady?form('invite',input('email','Invitation email','email')+['name','role','filmProfile'].map((k,i)=>'<input type="hidden" name="'+k+'" value="'+escape([x.name,x.role,x.id][i])+'">').join(''),'Invite '+escape(x.name)):'') )+'</div>').join(''):'';
  const linkControls=m=>m.practice?'':m.filmProfile?'<p>Approved biography and headshot appear on the assigned film websites.</p>':panel('Link an existing film profile',form('linkProfile','<label>Approved profile<select name="filmProfile" required><option value="">Select person</option>'+available.map(x=>'<option value="'+escape(x.id)+'" '+(x.name===m.name?'selected':'')+'>'+escape(x.name)+'</option>').join('')+'</select></label>','Confirm profile match',m.id));
  const audience='<fieldset><legend>Who should receive this?</legend><select name="audience" aria-label="Audience"><option value="all">Include all cast and crew</option><option value="selected">Select individuals</option></select><div data-recipients hidden>'+s.members.map(m=>'<label><input type="checkbox" style="width:auto;display:inline" name="recipient" value="'+escape(m.id)+'"> '+escape(m.name)+' · '+escape(m.role)+'</label>').join('')+'<small>Choose from the portal roster.</small></div></fieldset>';
@@ -313,7 +302,7 @@ async function load(initial){
    return download(url('memberDocument',m.id)+'&'+params,d.title);
   });
   for(const file of s.resources.filter(r=>r.type==='PDF'))documents.push(download(url('resource',file.id),file.title));
-  let agreementControls='';
+  let agreementControls='<p>A new agreement is required for '+escape(s.film)+'. Production will prepare your signing request.</p>';
   if(m.agreement?.id){
    const status=m.agreement.status;
    agreementControls='<p>'+escape(status==='Waiting on Heidi'?'Your signature is saved. Waiting on Heidi.':status)+'</p>';
@@ -335,7 +324,7 @@ async function load(initial){
   return panel(escape(d.title)+(done?' · Complete':''),form('trackPaperwork',controls,done?'Reopen document requirement':'Mark document complete',m.id));
  }
  const rows=s.members.map(m=>'<details class="person-card" data-person="'+m.id+'" data-search="'+escape((m.name+' '+m.role+' '+m.email).toLowerCase())+'" data-gaps="'+escape(outstanding(m).gaps.join(' ').toLowerCase())+'" data-paperwork="'+escape(m.paperworkStatus)+'"><summary><img loading="lazy" alt="" src="'+escape(m.hasPhoto?url('photo',m.id):m.referencePhoto||'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 80%22%3E%3Crect width=%2264%22 height=%2280%22 fill=%22%2353434a%22/%3E%3Ccircle cx=%2232%22 cy=%2226%22 r=%2213%22 fill=%22%23cbb9be%22/%3E%3Cellipse cx=%2232%22 cy=%2269%22 rx=%2226%22 ry=%2223%22 fill=%22%23cbb9be%22/%3E%3C/svg%3E')+'"><span><b>'+escape(m.name)+'</b><span>'+escape(m.role)+'</span></span><span class="status-pill">'+escape(m.paperworkStatus)+'</span><span class="open-profile">Open profile</span></summary><section><h3>'+escape(admin?m.name:'My dashboard')+'</h3><p>'+escape(m.role)+' · '+escape(m.email)+'</p>'+
- (admin?'<strong>'+escape(m.paperworkStatus)+'</strong>'+form('trackPaperwork',m.tracking?'<p>'+escape(m.tracking.reason==='hard-copy'?'Hard copy on file':'Not required')+'</p><input type="hidden" name="reason" value="reopen">':'<label>Agreement tracking<select name="reason"><option value="hard-copy">Hard copy on file</option><option value="not-required">Not required</option></select></label>',m.tracking?'Reopen agreement requirement':'Mark agreement requirement complete',m.id):'')+
+ (admin?'<strong>'+escape(m.paperworkStatus)+'</strong>':'')+
  (m.agreement?.id?'<button data-status="'+m.id+'">'+(admin?(m.agreement.status==='Waiting on Heidi'?'Open for Heidi’s signature':'Check agreement status'):'Review my agreement')+'</button>':'')+
  ((m.referencePhoto||m.hasPhoto)?'<img data-headshot src="'+escape(m.hasPhoto?url('photo',m.id):m.referencePhoto)+'" alt="Saved headshot">':'')+(admin?profile(m):(m.hasPhoto?'<img data-headshot alt="Your saved headshot" src="'+escape(url('photo',m.id))+'">':'')+form('photo',file(m.hasPhoto?'Replace your headshot':'Upload your headshot · JPG or PNG, up to 4 MB','image/jpeg,image/png'),'Save headshot',m.id)+form('bio','<label>Import biography (.txt)<input type="file" accept=".txt,text/plain" data-bio-file></label><label>My bio<textarea name="bio" rows="4" maxlength="5000" placeholder="Tell us a little about yourself.">'+escape(m.profile?.bio)+'</textarea></label>','Save bio',m.id))+
  (admin?panel('Send a document',form('resource','<p>For '+escape(m.name)+' · '+escape(s.film)+'</p><input type="hidden" name="audience" value="selected"><input type="hidden" name="recipient" value="'+escape(m.id)+'">'+input('title','Document title')+file('PDF · up to 4 MB','application/pdf'),'Send to '+escape(m.name),m.id)):'')+
@@ -521,7 +510,7 @@ listen('click',async e=>{
  const review=paperwork?.querySelector('button[data-status]');
  clearSigning();attempt=signingRequest;b.disabled=true;message.textContent='Checking agreement status…';
  const r=await request('status',undefined,b.dataset.status);if(attempt!==signingRequest||!container?.isConnected)return;
- if(paperwork&&r.status==='Waiting on Heidi'){r.status='Complete';if(review)review.hidden=true;}
+ if(paperwork&&r.status==='Waiting on Heidi'&&review)review.hidden=true;
  if(status)status.textContent=r.status;message.textContent=r.status;
  if(!container)return;
  const view=container.closest('[data-view]');if(view&&r.url){activeView=view.dataset.view;applyView();}

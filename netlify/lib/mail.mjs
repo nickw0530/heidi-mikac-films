@@ -1,11 +1,12 @@
+import {supersededContractNotice} from './agreement-cycle.mjs';
 import {includesMember} from './calendar-audience.mjs';
 import {createHash} from 'node:crypto';
 export const mailReady=()=>Boolean(process.env.RESEND_API_KEY&&process.env.HMF_MAIL_FROM);
 export const portalUrl='https://heidimikacfilms.com/members/';
-export async function enqueue(store, member, event, subject, text, expires=0){
+export async function enqueue(store, member, event, subject, text, expires=0, options={}){
  const key='outbox/'+createHash('sha256').update(member.id+'/'+event).digest('hex');
  if(event.startsWith('calendar/')&&(await store.getMetadata('mail-log/'+key.split('/')[1])||await store.getMetadata('failed-mail/'+key.split('/')[1])))return;
- await store.setJSON(key,{id:member.id,to:member.email,...(event.startsWith('calendar/')?{calendarEvent:event.slice(9)}:{}),subject,text,expires,created:Date.now(),attempts:0,nextAttempt:0},{onlyIfNew:true});
+ await store.setJSON(key,{id:member.id,to:member.email,...(event.startsWith('calendar/')?{calendarEvent:event.slice(9)}:{}),subject,text,expires,...(options.agreementCycle?{agreementCycle:options.agreementCycle}:{}),created:Date.now(),attempts:0,nextAttempt:0},{onlyIfNew:true});
 }
 
 const escapeHtml=value=>String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -32,6 +33,7 @@ export async function deliver(store){
   const member=['Nick','Heidi'].includes(msg.id)?{id:msg.id}:await store.get('members/'+msg.id,{type:'json'});
   const logKey='mail-log/'+key.split('/')[1];
   const log=async(status,extra={})=>store.setJSON(logKey,{to:msg.to,subject:msg.subject,updated:Date.now(),status,...extra});
+  if(supersededContractNotice(msg)){await log('Not sent — replaced agreement');await store.delete(key);continue;}
   if((msg.expires&&msg.expires<Date.now())||!member||member.revoked){await log('Not sent — expired or access revoked');await store.delete(key);continue;}
   if(msg.calendarEvent||msg.subject==='New event on the production calendar'){
    const audience=msg.calendarEvent&&await store.get('calendar/audiences/'+msg.calendarEvent,{type:'json'});

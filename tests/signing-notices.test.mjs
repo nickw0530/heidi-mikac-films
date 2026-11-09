@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {currentAgreementKey} from '../netlify/lib/agreement-cycle.mjs';
 import {countersignatureNotice,checkSigningNotices} from '../netlify/lib/signing-notices.mjs';
 
 const data=new Map();let revision=0;
@@ -18,10 +19,10 @@ assert.equal(results.filter(Boolean).length,1);
 let queued=[...data].filter(([key])=>key.startsWith('outbox/'));
 assert.equal(queued.length,1);assert(queued[0][1].value.text.includes('?production=wherein-lies-continue'));
 data.delete(queued[0][0]);assert.equal(await countersignatureNotice(store,agreement,member,production),false,'Already delivered notices must not be requeued');
-await store.setJSON('productions/wherein-lies-continue/agreements/person',{id:'doc2',status:'Waiting on actor'});
+await store.setJSON(currentAgreementKey('wherein-lies-continue','person'),{id:'doc2',status:'Waiting on actor'});
 await store.setJSON('members/person',member);
 globalThis.fetch=async()=>Response.json({status:'sent',recipients:[{id:'1',status:'signed'}]});
 await checkSigningNotices(store);
-assert.equal((await store.get('productions/wherein-lies-continue/agreements/person')).status,'Waiting on Heidi');
+assert.equal((await store.get(currentAgreementKey('wherein-lies-continue','person'))).status,'Waiting on Heidi');
 queued=[...data].filter(([key])=>key.startsWith('outbox/'));assert.equal(queued.length,1);assert(queued[0][1].value.text.includes('Example Actor'));
 console.log('PASS: actor-first notifications, failure protection, concurrent/repeated delivery deduplication and unattended production status checks. No external requests.');

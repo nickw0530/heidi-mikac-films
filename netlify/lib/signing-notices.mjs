@@ -1,9 +1,10 @@
+import {AGREEMENT_CYCLE,currentAgreementPrefix} from './agreement-cycle.mjs';
 import {enqueue,portalUrl} from './mail.mjs';
 import {COUNTERSIGN_EMAIL,refreshAgreement} from './signing.mjs';
 
 const productions=[
- {id:'written-in-the-dark',name:'Written in the Dark',prefix:'agreements/'},
- {id:'wherein-lies-continue',name:'Wherein Lies Continue',prefix:'productions/wherein-lies-continue/agreements/'}
+ {id:'written-in-the-dark',name:'Written in the Dark',prefix:currentAgreementPrefix('written-in-the-dark')},
+ {id:'wherein-lies-continue',name:'Wherein Lies Continue',prefix:currentAgreementPrefix('wherein-lies-continue')}
 ];
 
 // A separate durable receipt prevents repeat notices after the mail worker
@@ -17,7 +18,7 @@ export async function countersignatureNotice(store,agreement,member,production){
  const lease=await store.setJSON(key,{leaseUntil:Date.now()+120000},receipt?{onlyIfMatch:receipt.etag}:{onlyIfNew:true});
  if(!lease.modified)return false;
  await enqueue(store,{id:'Heidi',email},'countersign-'+agreement.id,'Agreement ready for your signature',
-  (member?.name||'A cast or crew member')+' has signed the agreement for '+production.name+'. Please review and add your signature.\n\nOpen your dashboard: '+portalUrl+'?production='+production.id);
+  (member?.name||'A cast or crew member')+' has signed the agreement for '+production.name+'. Please review and add your signature.\n\nOpen your dashboard: '+portalUrl+'?production='+production.id,0,{agreementCycle:AGREEMENT_CYCLE});
  await store.setJSON(key,{queued:true,queuedAt:Date.now()});
  return true;
 }
