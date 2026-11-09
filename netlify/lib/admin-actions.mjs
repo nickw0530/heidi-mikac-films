@@ -32,14 +32,47 @@ export async function adminActions(store,production,refresh=false){
  return result;
 }
 
-export async function notifyAdmins(store,production,actions){
- for(const a of actions)for(const id of a.owner==='any'?['Nick','Heidi']:[a.owner]){
-  const email=id==='Heidi'?(a.signature?COUNTERSIGN_EMAIL:'heidi@heidimikacfilms.com'):'nick@heidimikacfilms.com';
-  const event=a.signature&&id==='Heidi'?a.key+'/'+COUNTERSIGN_EMAIL:a.key;
-  const hash=createHash('sha256').update(id+'/'+event).digest('hex');
-  const receipt='admin-notices/'+hash;
-  if(await store.getMetadata(receipt)||await store.getMetadata('mail-log/'+hash))continue;
-  await enqueue(store,{id,email},event,'Waiting on you · Heidi Mikac Films',a.label+'\n\n'+portalUrl+'?production='+production,0,a.agreementCycle?{agreementCycle:a.agreementCycle,requirementKey:a.requirementKey}:{});
-  await store.setJSON(receipt,{queued:Date.now()});
+const DIGEST_INTERVAL=20*3600000;
+const address=id=>id==='Heidi'?'heidi@heidimikacfilms.com':'nick@heidimikacfilms.com';
+
+// One email per administrator, at most about once a day, listing what is newly
+// waiting on them across every production. Two things are not held for the
+// digest: Heidi's countersignature, which keeps its own immediate notice to the
+// signing inbox, and a task assigned to one administrator by name, which sends
+// that administrator's digest straight away.
+export async function notifyAdmins(store,groups,now=Date.now()){
+ for(const id of ['Nick','Heidi']){
+  const fresh=[];let open=0,urgent=false;
+  for(const {production,name,actions} of groups){
+   for(const a of actions){
+    if(a.owner!=='any'&&a.owner!==id)continue;
+    if(a.signature){
+     const event=a.key+'/'+COUNTERSIGN_EMAIL,hash=createHash('sha256').update(id+'/'+event).digest('hex');
+     if(await store.getMetadata('admin-notices/'+hash)||await store.getMetadata('mail-log/'+hash))continue;
+     await enqueue(store,{id,email:COUNTERSIGN_EMAIL},event,'Waiting on you · Heidi Mikac Films',a.label+'\n\n'+portalUrl+'?production='+production,0,a.agreementCycle?{agreementCycle:a.agreementCycle,requirementKey:a.requirementKey}:{});
+     await store.setJSON('admin-notices/'+hash,{queued:now});
+     continue;
+    }
+    open++;
+    const receipt='admin-notices/'+createHash('sha256').update(id+'/'+a.key).digest('hex');
+    if(await store.getMetadata(receipt)||await store.getMetadata('mail-log/'+receipt.split('/')[1]))continue;
+    fresh.push({production,name,label:a.label,receipt});
+    if(a.taskId&&a.owner===id)urgent=true;
+   }
+  }
+  if(!fresh.length)continue;
+  const stateKey='admin-digest/'+id,state=await store.getWithMetadata(stateKey,{type:'json'});
+  if(!urgent&&now-(state?.data?.sent||0)<DIGEST_INTERVAL)continue;
+  // The claim keeps overlapping scheduled runs from sending the same digest twice.
+  const claim=await store.setJSON(stateKey,{sent:now,items:fresh.length},state?{onlyIfMatch:state.etag}:{onlyIfNew:true});
+  if(!claim.modified)continue;
+  const sections=groups.map(({production,name})=>{
+   const lines=fresh.filter(item=>item.production===production).map(item=>'• '+item.label);
+   return lines.length?name+'\n'+lines.join('\n'):'';
+  }).filter(Boolean);
+  const count=fresh.length+' new item'+(fresh.length===1?'':'s');
+  const text=count+' waiting on you'+(open>fresh.length?', '+open+' open in total':'')+'.\n\n'+sections.join('\n\n')+'\n\n'+portalUrl;
+  await enqueue(store,{id,email:address(id)},'digest/'+now,'Waiting on you · '+count+' · Heidi Mikac Films',text);
+  for(const item of fresh)await store.setJSON(item.receipt,{queued:now,digest:true});
  }
 }

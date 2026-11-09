@@ -1,0 +1,81 @@
+import assert from 'node:assert/strict';
+import {test} from 'node:test';
+import {notifyAdmins} from '../netlify/lib/admin-actions.mjs';
+import {deliver,emailHtml,TRACKING_KEY} from '../netlify/lib/mail.mjs';
+
+// Isolated storage and a mocked provider: nothing here sends email.
+function fixture(){
+ const data=new Map();let revision=0;
+ const store={data,
+  async get(k){return data.get(k)?.value??null;},
+  async getMetadata(k){const r=data.get(k);return r?{etag:r.etag,metadata:{}}:null;},
+  async getWithMetadata(k){const r=data.get(k);return r?{data:structuredClone(r.value),etag:r.etag}:null;},
+  async setJSON(k,v,options={}){const old=data.get(k);if(options.onlyIfNew&&old||options.onlyIfMatch&&old?.etag!==options.onlyIfMatch)return {modified:false};data.set(k,{value:structuredClone(v),etag:String(++revision)});return {modified:true};},
+  async delete(k){data.delete(k);},
+  async list({prefix}){return {blobs:[...data.keys()].filter(k=>k.startsWith(prefix)).map(key=>({key}))};}
+ };
+ return store;
+}
+const outbox=store=>[...store.data].filter(([key])=>key.startsWith('outbox/')).map(([,record])=>record.value);
+const action=(label,key,extra={})=>({owner:'any',label,key,view:'people',member:null,signature:false,...extra});
+const groups=(dark,lies=[])=>[{production:'written-in-the-dark',name:'Written in the Dark',actions:dark},{production:'wherein-lies-continue',name:'Wherein Lies Continue',actions:lies}];
+const hour=3600000;
+
+test('new items arrive as one email per administrator, about once a day',async()=>{
+ const store=fixture(),start=Date.UTC(2026,10,10,15);
+ const first=[action('Prepare a new agreement for Ada','k/ada'),action('Prepare a new agreement for Ben','k/ben')],other=[action('Add email and invite Cy','k/cy')];
+ await notifyAdmins(store,groups(first,other),start);
+ let mail=outbox(store);
+ assert.equal(mail.length,2,'One digest each, not one email per item.');
+ assert.deepEqual(mail.map(m=>m.to).sort(),['heidi@heidimikacfilms.com','nick@heidimikacfilms.com']);
+ const nick=mail.find(m=>m.id==='Nick');
+ assert.equal(nick.subject,'Waiting on you · 3 new items · Heidi Mikac Films');
+ for(const expected of ['Written in the Dark\n• Prepare a new agreement for Ada\n• Prepare a new agreement for Ben','Wherein Lies Continue\n• Add email and invite Cy'])assert.ok(nick.text.includes(expected),nick.text);
+ assert.ok(emailHtml(nick).includes('>Open your dashboard</a>'));
+
+ await notifyAdmins(store,groups(first,other),start+5*60000);
+ assert.equal(outbox(store).length,2,'Items already reported are never repeated.');
+ const later=[...first,action('Prepare a new agreement for Dee','k/dee')];
+ await notifyAdmins(store,groups(later,other),start+2*hour);
+ assert.equal(outbox(store).length,2,'A new routine item waits for the next daily digest.');
+ await notifyAdmins(store,groups(later,other),start+21*hour);
+ mail=outbox(store);assert.equal(mail.length,4);
+ const next=mail.filter(m=>m.id==='Nick').find(m=>m.subject.includes('1 new item'));
+ assert.ok(next.text.startsWith('1 new item waiting on you, 4 open in total.')&&next.text.includes('• Prepare a new agreement for Dee')&&!next.text.includes('Ada'),next.text);
+});
+
+test('a task assigned by name goes out at once and only to that administrator',async()=>{
+ const store=fixture(),start=Date.UTC(2026,10,10,15);
+ await notifyAdmins(store,groups([action('Prepare a new agreement for Ada','k/ada')]),start);
+ const task=action('Call the location owner','tasks/Nick/1',{owner:'Nick',taskId:'1',view:'overview'});
+ await notifyAdmins(store,groups([action('Prepare a new agreement for Ada','k/ada'),action('Prepare a new agreement for Eve','k/eve'),task]),start+hour);
+ const mail=outbox(store);
+ assert.equal(mail.filter(m=>m.id==='Nick').length,2);assert.equal(mail.filter(m=>m.id==='Heidi').length,1,'Heidi’s routine item still waits.');
+ const sent=mail.filter(m=>m.id==='Nick')[1];
+ assert.ok(sent.text.includes('Call the location owner')&&sent.text.includes('Eve'),'An immediate digest carries everything new.');
+});
+
+test('Heidi’s countersignature keeps its own immediate notice to the signing inbox',async()=>{
+ const store=fixture(),start=Date.UTC(2026,10,10,15);
+ const sign=action('Open for Heidi’s signature · Ada','k/ada/countersign/doc',{owner:'Heidi',signature:true,member:'m1'});
+ await notifyAdmins(store,groups([sign]),start);await notifyAdmins(store,groups([sign]),start+hour);
+ const mail=outbox(store);
+ assert.equal(mail.length,1);assert.equal(mail[0].to,'hello@heidimikacfilms.com');assert.equal(mail[0].id,'Heidi');
+ assert.ok(mail[0].text.startsWith('Open for Heidi’s signature · Ada'));
+});
+
+test('a send-only provider key is reported once instead of on every row',async()=>{
+ const store=fixture();process.env.RESEND_API_KEY='test-only';process.env.HMF_MAIL_FROM='Production <test@example.invalid>';
+ for(const n of [1,2,3])await store.setJSON('mail-log/'+n,{to:'a@example.invalid',subject:'s',status:'Accepted by email provider',providerId:'p'+n,updated:Date.now()});
+ let calls=0,status=401;
+ globalThis.fetch=async()=>{calls++;return status===200?Response.json({last_event:'delivered'}):new Response('{}',{status});};
+ await deliver(store);
+ assert.equal(calls,1,'One refusal is enough; the rest would fail the same way.');
+ assert.deepEqual({...(await store.get(TRACKING_KEY)),at:0},{blocked:true,status:401,at:0});
+ for(const n of [1,2,3])assert.equal((await store.get('mail-log/'+n)).error,undefined);
+ await deliver(store);assert.equal(calls,1,'Lookups pause while the key is refused.');
+ await store.setJSON(TRACKING_KEY,{blocked:true,status:401,at:Date.now()-7*hour});status=200;
+ await deliver(store);
+ assert.equal(await store.get(TRACKING_KEY),null,'A working key clears the notice.');
+ assert.equal((await store.get('mail-log/1')).status,'delivered');
+});

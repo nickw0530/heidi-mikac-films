@@ -4,6 +4,8 @@ import {includesMember} from './calendar-audience.mjs';
 import {createHash} from 'node:crypto';
 export const mailReady=()=>Boolean(process.env.RESEND_API_KEY&&process.env.HMF_MAIL_FROM);
 export const portalUrl='https://heidimikacfilms.com/members/';
+export const TRACKING_KEY='mail-status/tracking';
+const TRACKING_PAUSE=6*3600000;
 export async function enqueue(store, member, event, subject, text, expires=0, options={}){
  if(!member?.email)return;
  const key='outbox/'+createHash('sha256').update(member.id+'/'+event).digest('hex');
@@ -54,9 +56,19 @@ export async function deliver(store){
   else{await store.setJSON(key,{...msg,attempts,lastError:error,nextAttempt:Date.now()+Math.min(3600000,60000*2**attempts)});await log('Retry scheduled',{error});}
  }
  // Check recent provider acceptances for delivered/bounced/complained status.
+ let tracking=await store.get(TRACKING_KEY,{type:'json'});
+ if(tracking?.blocked&&Date.now()-tracking.at<TRACKING_PAUSE)return;
  const logs=await Promise.all((await store.list({prefix:'mail-log/'})).blobs.map(async b=>({key:b.key,value:await store.get(b.key,{type:'json'})})));
  for(const {key,value:v} of logs.filter(x=>x.value?.providerId&&['Accepted by email provider','delivery_delayed'].includes(x.value.status)&&Date.now()-x.value.updated<7*86400000).sort((a,b)=>(a.value.lastProviderCheck||0)-(b.value.lastProviderCheck||0)).slice(0,10)){
   if(Date.now()>deadline-5000)break;
-  try{await pace();const r=await fetch('https://api.resend.com/emails/'+encodeURIComponent(v.providerId),{signal:AbortSignal.timeout(5000),headers:{Authorization:'Bearer '+process.env.RESEND_API_KEY}});if(!r.ok){await store.setJSON(key,{...v,lastProviderCheck:Date.now(),error:'Delivery status unavailable; check Resend.'});continue;}const data=await r.json();const status=['delivered','bounced','complained','failed','suppressed','delivery_delayed'].includes(data.last_event)?data.last_event:v.status;await store.setJSON(key,{...v,status,error:null,lastProviderCheck:Date.now(),updated:status===v.status?v.updated:Date.now()});}catch{}
+  try{await pace();const r=await fetch('https://api.resend.com/emails/'+encodeURIComponent(v.providerId),{signal:AbortSignal.timeout(5000),headers:{Authorization:'Bearer '+process.env.RESEND_API_KEY}});
+   if(r.status===401||r.status===403){
+    // The key may send but not read. Every lookup would fail the same way, so
+    // record it once for the admin page and stop asking until the pause ends.
+    await store.setJSON(TRACKING_KEY,{blocked:true,status:r.status,at:Date.now()});break;
+   }
+   if(!r.ok){await store.setJSON(key,{...v,lastProviderCheck:Date.now(),error:'Delivery status unavailable (Resend returned '+r.status+').'});continue;}
+   if(tracking?.blocked){await store.delete(TRACKING_KEY);tracking=null;}
+   const data=await r.json();const status=['delivered','bounced','complained','failed','suppressed','delivery_delayed'].includes(data.last_event)?data.last_event:v.status;await store.setJSON(key,{...v,status,error:null,lastProviderCheck:Date.now(),updated:status===v.status?v.updated:Date.now()});}catch{}
  }
 }
