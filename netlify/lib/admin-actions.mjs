@@ -12,10 +12,18 @@ export async function adminActions(store,production,refresh=false){
  function add(owner,label,key,view='documents',member=null,signature=false){
   result.push({owner,label,key,view,member,signature});
  }
+ const trackedMembers=new Set((await records('paperwork/'+production+'/')).map(row=>row.key.split('/').pop()));
+ const trackedProfiles=new Set();
+ for(const id of trackedMembers){
+  const member=await store.get('members/'+id,{type:'json'});
+  if(!member||member.revoked)continue;
+  const profile=member.productions?.[production]?.filmProfile||member.profileLinks?.[production]||(prefix?'':member.filmProfile)||catalog.find(p=>p.name.toLowerCase()===member.name.toLowerCase())?.id;
+  if(profile)trackedProfiles.add(profile);
+ }
  const offline=new Set();
  for(const {key} of await records(prefix+'offline/')){
   const id=key.split('/').pop(),meta=await store.getMetadata(key);
-  offline.add(id);
+  offline.add(id);if(trackedProfiles.has(id))continue;
   const rec=refresh?await refreshOfflineCountersign({store,profileId:id,productionId:production}):await store.get(prefix+'offline-signing/'+id,{type:'json'});
   const status=rec?.status||meta?.metadata?.status;
   const name=rec?.name||catalog.find(x=>x.id===id)?.name||id;
@@ -31,7 +39,7 @@ export async function adminActions(store,production,refresh=false){
   if(!m||m.revoked||/^test(?:\s|$)/i.test(m.name))continue;
   const assignment=(m.productions??{'written-in-the-dark':{filmProfile:m.filmProfile}})[production];
   if(m.productionRequests?.[production])add('any','Review production request from '+m.name,'production-request/'+production+'/'+m.productionRequests[production],'settings');
-  if(!assignment)continue;
+  if(!assignment||trackedMembers.has(m.id))continue;
   const k=prefix+'agreements/'+m.id;
   const a=refresh?await refreshAgreement(store,k):await store.get(k,{type:'json'});
   if(a?.status==='Waiting on Heidi'&&!a.syncError)add('any','Open for Heidi’s signature · '+m.name,'countersign-'+a.id,'people',m.id,true);

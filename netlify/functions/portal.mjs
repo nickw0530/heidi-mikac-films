@@ -29,6 +29,11 @@ function publicCredit(profile) {
   const titles = profile.role.split(/[,·]/).map(title => title.trim()).filter(Boolean);
   return {...profile, role: titles.join(' · ')};
 }
+function credits(value={}){
+ const field=k=>{const v=value[k]??'';requireThat(typeof v==='string'&&v.trim().length<=120,'Keep each character or crew title within 120 characters.');return v.trim();};
+ return {character:field('character'),crewTitle:field('crewTitle')};
+}
+const creditLine=c=>[c.character,c.crewTitle].filter(Boolean).join(' · ');
 const assignments=m=>m.productions??{'written-in-the-dark':{role:m.role,filmProfile:m.filmProfile||''}};
 const findProfile=(m,productionId)=>{
  const assigned=assignments(m)[productionId];
@@ -109,13 +114,15 @@ export default async function handle(req) {
     for(const m of (await list('members/')).filter(Boolean).sort((a,b)=>Number(!!b.revoked)-Number(!!a.revoked))){
       if(practiceName(m.name))continue;
       const membership=assignments(m)[pid],base=findProfile(m,pid),id=base?.id||'member-'+m.id;
+      if(m.generalInvite&&!m.approvedProfiles?.[pid])continue;
       const index=items.findIndex(x=>x.id===id);if(index>=0)items.splice(index,1);
       if(practiceName(m.name)||!membership||m.publication?.[pid]===false||(m.revoked&&!m.keepPublic)){
         if(base||membership)items.push({id,name:m.name,hidden:true});continue;
       }
       const [profile,photo]=await Promise.all([get('profiles/'+m.id),store.getMetadata('photos/'+m.id)]),fallback=sharedBase(m);
       const bio=profile?.bio??fallback?.bio??'',image=photo?'https://heidimikacfilms.com/.netlify/functions/portal?action=memberPhoto&id='+m.id+'&v='+(photo.metadata?.version||'original'):fallback?.photo;
-      if(bio.trim()&&image)items.push({id,name:m.name,role:membership.role||base?.role||'',bio,photo:image});
+      const approved=m.approvedProfiles?.[pid];
+      if(approved||bio.trim()&&image)items.push({id,name:m.name,role:membership.role??base?.role??'',bio:approved?.bio??bio,photo:approved?.photo??image});
     }
     // Revision-keyed snapshots cannot overwrite a later profile edit.
     if((await get('public-revision')||'initial')===revision)await set(key,{revision,items,updated:Date.now()});
@@ -130,7 +137,9 @@ export default async function handle(req) {
     const id=url.searchParams.get('id');requireThat(uuid.test(id),'Invalid image.');
     const m=await get('members/'+id);
     requireThat(m&&(!m.revoked||m.keepPublic)&&!practiceName(m.name)&&Object.keys(assignments(m)).some(id=>m.publication?.[id]!==false),'Image unavailable.',404);
-    const file=await store.getWithMetadata('photos/'+id,{type:'arrayBuffer'});requireThat(file,'Image unavailable.',404);
+    const versionRequested=url.searchParams.get('v');
+    const approvedImage=Object.keys(assignments(m)).some(pid=>m.publication?.[pid]!==false&&m.approvedProfiles?.[pid]?.imageVersion===versionRequested&&!!versionRequested);
+    const file=await store.getWithMetadata(approvedImage?'profile-images/'+id+'/'+versionRequested:'photos/'+id,{type:'arrayBuffer'});requireThat(file,'Image unavailable.',404);
     const version=file.metadata?.version||hash(Buffer.from(file.data)),key='web-photos/'+id+'/'+version;
     let web=await store.get(key,{type:'arrayBuffer'});
     if(!web){web=await sharp(Buffer.from(file.data),{limitInputPixels:40000000}).rotate().resize(720,900,{fit:'inside',withoutEnlargement:true}).webp({quality:82}).toBuffer();await store.set(key,web);}
@@ -347,14 +356,14 @@ export default async function handle(req) {
   if(action==='home'){
     const allAccounts=(await list('members/')).filter(Boolean);
     const accounts=allAccounts.filter(active);
-    const rosterCatalog=catalog.filter(x=>{const matches=allAccounts.filter(m=>findProfile(m,productionId)?.id===x.id);return !matches.length||matches.some(m=>assignments(m)[productionId]&&(!m.revoked||m.keepPublic));});
+    const rosterCatalog=catalog.filter(x=>{const matches=allAccounts.filter(m=>(!m.generalInvite||assignments(m)[productionId]||m.approvedProfiles?.[productionId])&&findProfile(m,productionId)?.id===x.id);return !matches.length||matches.some(m=>assignments(m)[productionId]&&(!m.revoked||m.keepPublic));});
     const members=admin?accounts.filter(m=>assignments(m)[productionId]):[account];
     const offlineRequests=new Map();
     const offlineFor=profileId=>{
       if(!offlineRequests.has(profileId))offlineRequests.set(profileId,refreshOfflineCountersign({store:rawStore,profileId,productionId}));
       return offlineRequests.get(profileId);
     };
-    const rows=await Promise.all(members.filter(Boolean).map(async m=>({...m,role:assignments(m)[productionId]?.role||'',filmProfile:findProfile(m,productionId)?.id||'',productions:assignments(m),profile:await get('profiles/'+m.id),...(await (async()=>{const photo=await store.getMetadata('photos/'+m.id);return {hasPhoto:!!photo,photoName:photo?.metadata?.filename||''};})()),agreement:assignments(m)[productionId]?await refreshAgreement(store,'agreements/'+m.id):null,tasks:assignments(m)[productionId]?(await list('tasks/'+m.id+'/')).filter(Boolean):[],activated:!!await get('passwords/'+m.id)})));
+    const rows=await Promise.all(members.filter(Boolean).map(async m=>({...m,role:assignments(m)[productionId]?.role||'',filmProfile:findProfile(m,productionId)?.id||'',productions:assignments(m),profile:m.draftProfile?.bio!==undefined?{bio:m.draftProfile.bio}:await get('profiles/'+m.id),...(await (async()=>{const photo=await store.getMetadata(m.draftProfile?.imageVersion?'profile-images/'+m.id+'/'+m.draftProfile.imageVersion:'photos/'+m.id);return {hasPhoto:!!photo,photoName:photo?.metadata?.filename||''};})()),agreement:assignments(m)[productionId]?await refreshAgreement(store,'agreements/'+m.id):null,tasks:assignments(m)[productionId]?(await list('tasks/'+m.id+'/')).filter(Boolean):[],activated:!!await get('passwords/'+m.id)})));
     for(const row of rows){
       const original=accounts.find(m=>m.id===row.id);
       const base=sharedBase(original);
@@ -380,12 +389,15 @@ export default async function handle(req) {
       row.referencePhoto=published?.photo||base?.photo;
       row.profile??={bio:published?.bio??base?.bio??''};
       const memberPaperwork=row.offlineStatus||row.agreement?.status||(row.paperworkExempt?'Not required':'No agreement on file');
-      row.paperworkStatus=row.offlineSigning?.status||memberPaperwork;
-      row.memberPaperworkStatus=['Complete','Waiting on Heidi','Not required'].includes(memberPaperwork)?'Complete':memberPaperwork;
+      row.tracking=await get('paperwork/'+productionId+'/'+row.id);
+      if(admin)row.documentTracking=Object.fromEntries((await list('document-tracking/'+productionId+'/'+row.id+'/')).filter(Boolean).map(item=>[item.document,item.reason]));
+      row.paperworkStatus=row.tracking?'Complete':row.offlineSigning?.status||memberPaperwork;
+      row.memberPaperworkStatus=row.tracking?'Complete':['Complete','Waiting on Heidi','Not required'].includes(memberPaperwork)?'Complete':memberPaperwork;
       row.publication=Object.fromEntries(await Promise.all(Object.keys(assignments(original)).map(async pid=>{
         const id=findProfile(original,pid)?.id||'member-'+row.id;
-        const ready=!!row.profile.bio?.trim()&&!!(row.hasPhoto||row.referencePhoto);
+        const ready=!!original.approvedProfiles?.[pid]||!!row.profile.bio?.trim()&&!!(row.hasPhoto||row.referencePhoto);
         const hidden=practiceName(row.name)||original.publication?.[pid]===false;
+        if(original.generalInvite&&!original.approvedProfiles?.[pid])return [pid,{state:'Awaiting approval',visible:false}];
         let state=hidden?'Hidden from website':ready?'Sync failed':'Needs bio and headshot';
         if(!hidden&&ready){try{state=(await publicItems(pid)).some(x=>x.id===id&&!x.hidden)?'Published':'Sync failed';}catch{}}
         return [pid,{state,visible:!hidden}];
@@ -398,8 +410,8 @@ export default async function handle(req) {
       return {...x,offline,offlineSigning,paperworkStatus:offlineSigning?.status||offline||rows.find(row=>row.filmProfile===x.id)?.paperworkStatus||'No agreement on file'};
     })):[];
     const waiting=admin?(await adminActions(rawStore,productionId)).filter(a=>a.owner==='any'||a.owner===self):[];
-    const productionReviews=admin?await Promise.all(accounts.filter(m=>m.productionRequests?.[productionId]).map(async m=>({id:m.id,name:m.name,role:assignments(m)[productionId]?.role||findProfile(m,productionId)?.role||'',requestId:m.productionRequests[productionId],...await reviewProfile(m)}))):[];
-    return json({productionReviews,productionChoices:productions,waiting,productionId,productions:admin?productions:productions.filter(p=>memberProductions[p.id]),revokedAccounts:admin?allAccounts.filter(m=>m.revoked).map(m=>({id:m.id,name:m.name,keepPublic:m.keepPublic,productions:assignments(m),publication:m.publication||{}})):[],accounts:admin?accounts.map(m=>({id:m.id,name:m.name,productions:assignments(m)})):[],agreementReady:!!await store.getMetadata('contract/master'),agreementSupported:true,welcome:await get('settings/welcome'),welcomePlayed:!!await get('welcome-played/'+self),catalog:adminCatalog,admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),mailLog:admin?(await list('mail-log/')).filter(Boolean).sort((a,b)=>b.updated-a.updated).slice(0,30):[],mailQueue:admin?(await list('outbox/')).filter(Boolean).map(({to,subject,attempts,nextAttempt,lastError})=>({to,subject,attempts,nextAttempt,lastError})):[],members:rows.map(({ticket,...row})=>({...row,practice:practiceName(row.name)})),resources:(await list('resources/')).filter(canReadResource).map(r=>admin?r:({...r,audience:undefined})).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
+    const productionReviews=admin?await Promise.all(accounts.filter(m=>m.productionRequests?.[productionId]).map(async m=>({id:m.id,name:m.name,role:assignments(m)[productionId]?.role||findProfile(m,productionId)?.role||'',credits:m.proposedCredits?.[productionId]||assignments(m)[productionId]||{},requestId:m.productionRequests[productionId],...await reviewProfile(m)}))):[];
+    return json({unassigned:admin?await Promise.all(accounts.filter(m=>!Object.keys(assignments(m)).length).map(async m=>({id:m.id,name:m.name,activated:!!await get('passwords/'+m.id)}))):[],productionReviews,productionChoices:productions,waiting,productionId,productions:admin?productions:productions.filter(p=>memberProductions[p.id]),revokedAccounts:admin?allAccounts.filter(m=>m.revoked).map(m=>({id:m.id,name:m.name,keepPublic:m.keepPublic,productions:assignments(m),publication:m.publication||{}})):[],accounts:admin?accounts.map(m=>({id:m.id,name:m.name,productions:assignments(m)})):[],agreementReady:!!await store.getMetadata('contract/master'),agreementSupported:true,welcome:await get('settings/welcome'),welcomePlayed:!!await get('welcome-played/'+self),catalog:adminCatalog,admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),mailLog:admin?(await list('mail-log/')).filter(Boolean).sort((a,b)=>b.updated-a.updated).slice(0,30):[],mailQueue:admin?(await list('outbox/')).filter(Boolean).map(({to,subject,attempts,nextAttempt,lastError})=>({to,subject,attempts,nextAttempt,lastError})):[],members:rows.map(({ticket,...row})=>({...row,practice:practiceName(row.name)})),resources:(await list('resources/')).filter(canReadResource).map(r=>admin?r:({...r,audience:undefined})).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
   }
   if((action==='invite'||action==='resend')&&post){
     onlyAdmin();requireThat(production&&mailReady(),'Invitation email is awaiting sender setup. No invitation was sent.',503);
@@ -410,9 +422,8 @@ export default async function handle(req) {
       const hex=hash(address);
       // A revoked account must receive a fresh identity on re-invitation.
       const index='active-email/'+hex;
-      m={id:randomUUID(),email:address,name:string(body.name),role:string(body.role)};
-      m.productions={[productionId]:{role:m.role,filmProfile:''}};
-      if(body.filmProfile){allowPublicProfile(m);const base=entry(body.filmProfile);requireThat(base,'Unknown film profile.');m.productions[productionId].filmProfile=base.id;if(productionId==='written-in-the-dark')m.filmProfile=base.id;}
+      m={id:randomUUID(),email:address,name:string(body.name),role:'',generalInvite:true,productions:{}};
+      if(body.filmProfile){const base=entry(body.filmProfile);requireThat(base,'Unknown film profile.');m.profileLinks={[productionId]:base.id};}
       const reserved=await store.setJSON(index,{id:m.id},{onlyIfNew:true});requireThat(reserved.modified,'An invitation already exists.');
       try{await set('members/'+m.id,m);}catch(e){await store.delete(index);throw e;}
     }else m=await target();
@@ -420,24 +431,45 @@ export default async function handle(req) {
     const ticket=token(),expires=Date.now()+7*86400000;
     await set('tickets/'+hash(ticket),{id:m.id,expires});
     await set('members/'+m.id,{...m,ticket:hash(ticket)});await invalidate();
-    await enqueue(store,m,'invite/'+hash(ticket),film+' — your cast & crew invitation','Hi '+m.name+',\n\nYou’re invited to '+film+' as '+m.role+'. Choose your password and finish your profile here:\n'+portalUrl+'#invite='+ticket+'\n\nThis invitation expires in seven days.',expires);
+    await enqueue(store,m,'invite/'+hash(ticket),'Heidi Mikac Films — your cast & crew invitation','Hi '+m.name+',\n\nCreate your cast and crew account, choose your productions, and add your biography, headshot and credits here:\n'+portalUrl+'#invite='+ticket+'\n\nThis invitation expires in seven days.',expires);
     return json({ok:true});
   }
   async function reviewProfile(m){
     const [draft,image]=await Promise.all([get('profiles/'+m.id),store.getMetadata('photos/'+m.id)]);
-    const fallback=sharedBase(m),bio=draft?.bio??fallback?.bio??'',photo=image?'uploaded':fallback?.photo||'';
-    return {bio,photo,revision:hash(JSON.stringify([bio,image?.etag||image?.metadata?.version||photo]))};
+    const fallback=sharedBase(m),bio=m.draftProfile?.bio??draft?.bio??fallback?.bio??'';
+    const imageVersion=m.draftProfile?.imageVersion||'';
+    const photo=imageVersion||image?'uploaded':fallback?.photo||'';
+    const publicImage=photo==='uploaded'?'https://heidimikacfilms.com/.netlify/functions/portal?action=memberPhoto&id='+m.id+'&v='+(imageVersion||image.metadata?.version||'original'):photo;
+    return {bio,photo,imageVersion,publicImage,revision:hash(JSON.stringify([bio,imageVersion||image?.etag||photo]))};
+  }
+  async function saveDraft(change){
+    const key='members/'+uid;
+    for(let attempt=0;attempt<4;attempt++){
+      const rec=await store.getWithMetadata(key,{type:'json'}),m=rec?.data;
+      requireThat(active(m),'Account unavailable.',403);
+      const pending={...m.productionRequests};
+      if(!practiceName(m.name))for(const pid of Object.keys(assignments(m)))pending[pid]??=randomUUID();
+      const updated={...m,draftProfile:{...m.draftProfile,...change},productionRequests:pending};
+      if((await store.setJSON(key,updated,{onlyIfMatch:rec.etag})).modified)return;
+    }
+    requireThat(false,'Your profile changed. Please save again.',409);
   }
   if(action==='requestProductions'&&post){
     requireThat(!admin,'Use a cast or crew account.',403);
     const record=await store.getWithMetadata('members/'+self,{type:'json'}),m=record?.data;
     requireThat(active(m),'Account unavailable.',403);allowPublicProfile(m);
     requireThat(Array.isArray(body.selections)&&body.selections.every(id=>productions.some(p=>p.id===id)),'Choose valid productions.');
-    const pending={};
-    for(const id of new Set(body.selections)){
-      if(!assignments(m)[id]||m.publication?.[id]===false)pending[id]=m.productionRequests?.[id]||randomUUID();
+    const pending={},proposed={};
+    for(const id of new Set([...Object.keys(assignments(m)),...body.selections])){
+      const existing=assignments(m)[id],prior=m.proposedCredits?.[id]||existing||{};
+      const value=credits(body.credits?.[id]||prior);
+      const changed=JSON.stringify(value)!==JSON.stringify(credits(prior));
+      if(!existing||changed||m.productionRequests?.[id]){
+        pending[id]=changed?randomUUID():m.productionRequests?.[id]||randomUUID();
+        proposed[id]=value;
+      }
     }
-    requireThat((await store.setJSON('members/'+self,{...m,productionRequests:pending},{onlyIfMatch:record.etag})).modified,'Your assignments changed. Reload and try again.',409);
+    requireThat((await store.setJSON('members/'+self,{...m,proposedCredits:proposed,productionRequests:pending},{onlyIfMatch:record.etag})).modified,'Your assignments changed. Reload and try again.',409);
     return json({ok:true});
   }
   if(action==='reviewProduction'&&post){
@@ -445,16 +477,17 @@ export default async function handle(req) {
     const record=await store.getWithMetadata('members/'+uid,{type:'json'}),m=record?.data;
     requireThat(active(m)&&m.productionRequests?.[productionId]&&m.productionRequests[productionId]===body.requestId,'This request changed. Reload the portal.',409);
     const pending={...m.productionRequests};delete pending[productionId];
-    let next={...m,productionRequests:pending};
+    let next={...m,productionRequests:pending,proposedCredits:{...m.proposedCredits}};delete next.proposedCredits[productionId];
     if(body.decision==='approve'){
       allowPublicProfile(m);
       const profile=await reviewProfile(m);
-      requireThat(profile.bio.trim()&&profile.photo&&profile.revision===body.revision,'Review the latest saved biography and headshot before approval.',409);
-      const role=string(body.role),base=findProfile(m,productionId);
+      requireThat(profile.revision===body.revision,'Review the latest saved biography and headshot before approval.',409);
+      const fields=credits(body),role=creditLine(fields)||((body.clearLegacy||'character' in (assignments(m)[productionId]||{}))?'':body.role||assignments(m)[productionId]?.role||''),base=findProfile(m,productionId);
       if(base)requireThat(!(await list('members/')).some(other=>active(other)&&other.id!==uid&&assignments(other)[productionId]&&findProfile(other,productionId)?.id===base.id),'This production profile is already assigned to someone else.',409);
       const previous=assignments(m)[productionId];
-      next.productions={...assignments(m),[productionId]:{...previous,role,filmProfile:previous?.filmProfile||''}};
-      next.publication={...m.publication,[productionId]:true};
+      next.productions={...assignments(m),[productionId]:{...previous,...fields,role,filmProfile:previous?.filmProfile||''}};
+      next.approvedProfiles={...m.approvedProfiles,[productionId]:{bio:profile.bio,photo:profile.publicImage,imageVersion:profile.imageVersion}};
+      next.publication={...m.publication,[productionId]:m.publication?.[productionId]!==false};
     }else requireThat(body.decision==='decline','Choose an approval decision.');
     requireThat((await store.setJSON('members/'+uid,next,{onlyIfMatch:record.etag})).modified,'The request changed. Reload and try again.',409);
     await invalidate();return json({ok:true});
@@ -464,12 +497,13 @@ export default async function handle(req) {
     requireThat(Array.isArray(body.productions)&&body.productions.every(id=>catalogs[id]),'Choose valid productions.');
     const next={};
     for(const id of new Set(body.productions)){
-      const role=string(body.roles?.[id]);
+      const role=(body.roles?.[id]||'').trim().slice(0,240);
       const base=findProfile(m,id);
       if(base)requireThat(!(await list('members/')).some(other=>active(other)&&other.id!==m.id&&assignments(other)[id]&&findProfile(other,id)?.id===base.id),'This film profile is already assigned to another account.',409);
-      next[id]={role,filmProfile:base?.id||''};
+      const prev=assignments(m)[id];next[id]={...prev,...(prev&&prev.role!==role?{character:'',crewTitle:role}:{}),role,filmProfile:base?.id||''};
     }
-    await set('members/'+m.id,{...m,productions:next,profileLinks:{...m.profileLinks,...Object.fromEntries(Object.entries(assignments(m)).filter(([,value])=>value.filmProfile).map(([id,value])=>[id,value.filmProfile])),...Object.fromEntries(Object.entries(next).filter(([,value])=>value.filmProfile).map(([id,value])=>[id,value.filmProfile]))}});await invalidate();return json({ok:true});
+    const requests={...m.productionRequests};for(const pid of Object.keys(next))if(m.generalInvite&&!m.approvedProfiles?.[pid])requests[pid]??=randomUUID();
+    await set('members/'+m.id,{...m,productions:next,productionRequests:requests,profileLinks:{...m.profileLinks,...Object.fromEntries(Object.entries(assignments(m)).filter(([,value])=>value.filmProfile).map(([id,value])=>[id,value.filmProfile])),...Object.fromEntries(Object.entries(next).filter(([,value])=>value.filmProfile).map(([id,value])=>[id,value.filmProfile]))}});await invalidate();return json({ok:true});
   }
   if(action==='linkProfile'&&post){
     onlyAdmin();const m=await target();allowPublicProfile(m);const base=entry(body.filmProfile);requireThat(base&&!assignments(m)[productionId]?.filmProfile,'Choose an unlinked member and a valid film profile.');
@@ -500,6 +534,18 @@ export default async function handle(req) {
     const key='tasks/'+body.owner+'/'+body.task,t=await get(key);requireThat(t,'Task unavailable.');
     await set(key,{...t,done:true});return json({ok:true});
   }
+  if(action==='trackPaperwork'&&post){
+    onlyAdmin();await target();let key='paperwork/'+productionId+'/'+uid;
+    if(body.document){
+      requireThat(uuid.test(body.document),'Invalid document.');
+      const resource=await get('resources/'+body.document);
+      requireThat(resource?.type==='PDF'&&(!resource.audience||resource.audience.includes(uid)),'Document unavailable for this member.',404);
+      key='document-tracking/'+productionId+'/'+uid+'/'+body.document;
+    }
+    requireThat(['hard-copy','not-required','reopen'].includes(body.reason),'Choose a paperwork status.');
+    if(body.reason==='reopen')await store.delete(key);else await set(key,{document:body.document||'agreement',reason:body.reason,by:self,at:Date.now()});
+    return json({ok:true});
+  }
   if(action==='finishTask'&&post){
     await target();requireThat(uuid.test(body.task),'Invalid task.');
     const key='tasks/'+uid+'/'+body.task,item=await get(key);requireThat(item,'Task unavailable.');
@@ -509,7 +555,7 @@ export default async function handle(req) {
   if(action==='publication'&&post){onlyAdmin();const m=await target();if(body.visible)allowPublicProfile(m);await set('members/'+uid,{...m,...(m.revoked&&body.visible?{keepPublic:true}:{}),publication:{...m.publication,[productionId]:body.visible===true}});await invalidate();return json({ok:true});} 
   if(action==='bio'&&post){
     await target();requireThat(typeof body.bio==='string'&&body.bio.length<=5000,'Bio limit is 5,000 characters.');
-    await set('profiles/'+uid,{bio:body.bio.trim()});await invalidate();return json({ok:true});
+    await saveDraft({bio:body.bio.trim()});return json({ok:true});
   }
   if(['photo','resource','master'].includes(action)&&post){
     if(action==='photo')await target();else onlyAdmin();
@@ -517,7 +563,7 @@ export default async function handle(req) {
     const bytes=Buffer.from(await req.arrayBuffer());
     requireThat(bytes.length>0&&bytes.length<=4*1024*1024,'Choose a file up to 4 MB.');
     const jpeg=bytes.subarray(0,3).toString('hex')==='ffd8ff',png=bytes.subarray(0,8).toString('hex')==='89504e470d0a1a0a';
-    if(action==='photo'){requireThat(jpeg||png,'Choose a JPG or PNG.');try{await sharp(bytes,{limitInputPixels:40000000}).metadata();}catch{requireThat(false,'This image could not be read. Choose another JPG or PNG.');}await store.set('photos/'+uid,bytes,{metadata:{version:hash(bytes),filename:(url.searchParams.get('filename')||'').split(/[\\/]/).pop().slice(0,255),mime:jpeg?'image/jpeg':'image/png'}});await invalidate();}
+    if(action==='photo'){requireThat(jpeg||png,'Choose a JPG or PNG.');try{await sharp(bytes,{limitInputPixels:40000000}).metadata();}catch{requireThat(false,'This image could not be read. Choose another JPG or PNG.');}await store.set('profile-images/'+uid+'/'+hash(bytes),bytes,{metadata:{version:hash(bytes),filename:(url.searchParams.get('filename')||'').split(/[\\/]/).pop().slice(0,255),mime:jpeg?'image/jpeg':'image/png'}});await saveDraft({imageVersion:hash(bytes)});}
     else if(action==='master'){requireThat(hash(bytes)===(productionId==='written-in-the-dark'?'8437469c10b4a2ebd322adb8fd4c4e246abb2a0e26043a7c4129dffee92e6626':'0777d2cf63f99e584091be91442d9c77f8fe835e738c56308e82c328a49a2be8'),'Choose the approved contract master for this production.');await store.set('contract/master',bytes);}
     else {requireThat(bytes.subarray(0,5).toString()==='%PDF-','Choose a PDF.');const group=await recipients(url.searchParams.get('audience'),url.searchParams.getAll('recipient'));const id=randomUUID(),title=string(url.searchParams.get('title'));await store.set('files/'+id,bytes);await set('resources/'+id,{id,title,audience:group.audience,type:'PDF',created:Date.now()});await Promise.all(group.recipients.map(m=>notify(m,id,'New production file','Production posted a new file for '+film+'.')));}
     return json({ok:true});
@@ -525,20 +571,32 @@ export default async function handle(req) {
   if(action==='notice'&&post){onlyAdmin();const group=await recipients(body.audience,body.recipients);const id=randomUUID();await set('resources/'+id,{id,title:string(body.title),text:string(body.text,5000),audience:group.audience,type:'Update',created:Date.now()});await Promise.all(group.recipients.map(m=>notify(m,id,'New production message','You have a new message from production.')));return json({ok:true});}
   if(action==='photo'||action==='resource'){
     if(action==='photo')await target();else requireThat(uuid.test(uid)&&canReadResource(await get('resources/'+uid)),'File unavailable.',404);
-    const r=await store.getWithMetadata((action==='photo'?'photos/':'files/')+uid,{type:'arrayBuffer'});
+    const version=action==='photo'?(await get('members/'+uid))?.draftProfile?.imageVersion:null;
+    const r=await store.getWithMetadata(version?'profile-images/'+uid+'/'+version:(action==='photo'?'photos/':'files/')+uid,{type:'arrayBuffer'});
     requireThat(r,'File unavailable.',404);return new Response(r.data,{headers:{...headers,'Content-Type':r.metadata?.mime||'application/pdf','Content-Disposition':action==='photo'?'inline':'attachment; filename="production-document.pdf"'}});
   }
   if(action==='agreement'&&post){
 
     onlyAdmin();const m=await target(),t={},profile=findProfile(m,productionId);
     if(!body.preview&&profile)requireThat(!await hasOfflineSigning(profile.id),'This profile already has an uploaded agreement in countersigning. Use its existing request.',409);
-    for(const k of ['legal','character','credit','rate','date','start'])t[k]=string(body[k],120);
+    const fields=credits(body);t.character=creditLine(fields);
+    requireThat(t.character&&t.character.length<=120,'Enter a character or crew title for this agreement (120 characters total).');
+    for(const k of ['legal','credit','rate','date','start'])t[k]=string(body[k],120);
     requireThat(/^\d{1,5}(\.\d{1,2})?$/.test(t.rate),'Enter a daily rate.');
     for(const k of ['date','start'])requireThat(/^\d{4}-\d{2}-\d{2}$/.test(t[k])&&!Number.isNaN(Date.parse(t[k]))&&new Date(t[k]).toISOString().slice(0,10)===t[k],'Enter valid dates.');
     const heidi=COUNTERSIGN_EMAIL;
     requireThat(heidi!==m.email,'Actor and countersigner need separate addresses.');
     const master=await store.get('contract/master',{type:'arrayBuffer'});requireThat(master,'Upload the private agreement master first.');
     const bytes=await packet(master,t);
+    const memberKey='members/'+uid,record=await store.getWithMetadata(memberKey,{type:'json'}),current=record?.data;
+    requireThat(active(current)&&assignments(current)[productionId]&&JSON.stringify(assignments(current)[productionId])===JSON.stringify(assignments(m)[productionId]),'Credits changed. Reload before drafting.',409);
+    const updated={...current,productions:{...assignments(current),[productionId]:{...assignments(current)[productionId],...fields,role:t.character}}};
+    if(current.productionRequests?.[productionId]){
+      updated.proposedCredits={...current.proposedCredits,[productionId]:fields};
+      updated.productionRequests={...current.productionRequests,[productionId]:randomUUID()};
+    }
+    requireThat((await store.setJSON(memberKey,updated,{onlyIfMatch:record.etag})).modified,'Member updated. Reload before drafting.',409);
+    await invalidate();
     if(body.preview)return new Response(bytes,{headers:{...headers,'Content-Type':'application/pdf'}});
     requireThat(process.env.SIGNWELL_API_KEY,'Signing setup required.',503);
     const key='agreements/'+uid;
