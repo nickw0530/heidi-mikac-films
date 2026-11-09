@@ -93,7 +93,7 @@ function creditFields(value={},suffix=''){
  return field('character','Character')+field('crewTitle','Crew title');
 }
 function agreement(m){
- const fields=input('legal','Legal name','text',m.name)+'<p>Enter at least one character or crew title. Previewing or creating the agreement saves these credits for '+escape(lastState.film)+'.</p>'+creditFields(m.proposedCredits?.[lastState.productionId]||m.productions[lastState.productionId]||{})+(m.role?'<p>Current credit · '+escape(m.role)+'</p>':'')+input('credit','Screen credit / professional name','text',m.name)+input('rate','Agreed daily rate (USD)')+input('date','Agreement date','date')+input('start','First shoot date','date');
+ const fields=input('legal','Legal name','text',m.name)+'<p>Enter at least one character or crew title. Previewing or creating the agreement saves these credits for '+escape(lastState.film)+'.</p>'+creditFields(m.proposedCredits?.[lastState.productionId]||m.productions[lastState.productionId]||{})+(m.role?'<p>Current credit · '+escape(m.role)+'</p>':'')+input('credit','Screen credit / professional name','text',m.name)+input('rate','Agreed daily rate (USD)')+input('date','Agreement date','date')+'<p>This agreement covers services already performed for this film and any future services mutually agreed. Each signer’s date is filled automatically when they sign.</p>';
  return panel('Prepare agreement for '+escape(lastState.film),'<form data-action="agreement" data-id="'+m.id+'">'+fields+'<button value="preview">Preview agreement</button><button value="send">Create signing request</button></form>');
 }
 const ticket=new URLSearchParams(location.hash.slice(1)).get('invite');

@@ -19,17 +19,19 @@ const store={
 };
 
 globalThis.__contractCycleStore=store;
+globalThis.__contractCyclePackets=[];
+globalThis.__contractCycleEnqueued=[];
 const portalUrl=new URL('../netlify/functions/portal.mjs',import.meta.url);
 let source=await fs.readFile(portalUrl,'utf8');
 source=source.replace("import {begin as beginCalendar,events as calendarEvents} from './calendar-callback.mjs';",'const beginCalendar=()=>{},calendarEvents=()=>{};')
  .replace("import { getStore } from '@netlify/blobs';",'const getStore=()=>globalThis.__contractCycleStore;')
  .replace("import sharp from 'sharp';",'const sharp=()=>{};')
  .replace("import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';",'const PDFDocument={},StandardFonts={},rgb=()=>{};')
- .replace("import {enqueue, mailReady, portalUrl} from '../lib/mail.mjs';","const enqueue=async()=>{},mailReady=()=>true,portalUrl='https://heidimikacfilms.com/members/';");
+ .replace("import {enqueue, mailReady, portalUrl} from '../lib/mail.mjs';","const enqueue=async(...args)=>{globalThis.__contractCycleEnqueued.push(args);},mailReady=()=>true,portalUrl='https://heidimikacfilms.com/members/';");
 const packetStart=source.indexOf('async function packet(bytes, terms) {');
 const handlerStart=source.indexOf('export default async function handle(req)');
 assert.ok(packetStart>=0&&handlerStart>packetStart,'Packet stub must replace only the PDF rendering helper.');
-source=source.slice(0,packetStart)+"async function packet(){return Buffer.from('%PDF-current');}\n"+source.slice(handlerStart);
+source=source.slice(0,packetStart)+"async function packet(bytes,terms){globalThis.__contractCyclePackets.push(structuredClone(terms));return Buffer.from('%PDF-current');}\n"+source.slice(handlerStart);
 source=source.replace(/from (['"])(\.\.?\/[^'"]+)\1/g,(_match,_quote,path)=>'from '+JSON.stringify(new URL(path,portalUrl).href));
 const {default:handle}=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
 
@@ -57,7 +59,7 @@ const providerReads=[],providerCreates=[];
 globalThis.fetch=async(url,options)=>{
  if(options?.method==='POST'){
   providerCreates.push({url:String(url),body:JSON.parse(options.body)});
-  return Response.json({id:'new-dark',status:'sent'});
+  return Response.json({id:providerCreates.at(-1).body.name.startsWith('Wherein Lies Continue')?'new-lies':'new-dark',status:'sent'});
  }
  providerReads.push(String(url));return Response.json({status:'completed',recipients:[{id:'1',status:'completed'},{id:'2',status:'completed'}]});
 };
@@ -93,7 +95,28 @@ for(const [key,record] of before)if(key.startsWith('agreements/')||key.startsWit
 
 const currentKey=currentAgreementKey(dark,id);
 await store.set('contract/master',Buffer.from('%PDF-approved-master'));
-const terms={legal:'Rachel DeMicco',character:'Megan',crewTitle:'',credit:'Rachel DeMicco',rate:'100',date:'2026-11-09',start:'2026-11-10'};
+await store.set('productions/'+lies+'/contract/master',Buffer.from('%PDF-approved-master-lies'));
+const terms={legal:'Rachel DeMicco',character:'Megan',crewTitle:'',credit:'Rachel DeMicco',rate:'100',date:'2026-11-09'};
+for(const production of [dark,lies]){
+ const packetsBefore=globalThis.__contractCyclePackets.length;
+ for(const invalid of [{date:'2026-02-30'},{rate:'not agreed'},{character:'',crewTitle:''}]){
+  result=await call('agreement',{...terms,...invalid,preview:true},production);
+  assert.equal(result.response.status,400,'Agreement date, daily rate and at least one credit remain required for '+production);
+ }
+ assert.equal(globalThis.__contractCyclePackets.length,packetsBefore,'Invalid terms cannot reach PDF generation.');
+ const notificationsBefore=globalThis.__contractCycleEnqueued.length;
+ for(const request of [{...terms,preview:true},{...terms,start:'not a valid historical date',preview:true}]){
+  result=await call('agreement',request,production);
+  assert.equal(result.response.status,200,'Preview needs no first shoot date for '+production);
+  assert.equal(Buffer.from(result.data).toString(),'%PDF-current');
+  assert.equal(Object.hasOwn(globalThis.__contractCyclePackets.at(-1),'start'),false,'Stale first shoot dates must not enter the contract.');
+ }
+ assert.equal(globalThis.__contractCycleEnqueued.length,notificationsBefore,'Preview cannot notify signers.');
+ assert.equal(await store.get(currentAgreementKey(production,id)),null,'Preview cannot reserve a signing request.');
+}
+assert.equal(providerCreates.length,0,'Preview cannot create a SignWell document.');
+assert.equal(providerReads.length,0,'Preview does not contact SignWell.');
+for(const [key,record] of before)if(key.startsWith('agreements/')||key.startsWith('offline/')||key.startsWith('offline-signing/')||key.startsWith('paperwork/'))assert.deepEqual(data.get(key),record,'Preview preserves prior contract records at '+key);
 const sends=await Promise.all([call('agreement',terms),call('agreement',terms)]);
 assert.equal(sends.filter(result=>result.response.status===200).length,1,'One concurrent send creates the new agreement.');
 assert.ok(sends.some(result=>[400,409].includes(result.response.status)),'Concurrent duplicate is rejected.');
@@ -116,8 +139,14 @@ assert.equal((await store.get('productions/'+lies+'/agreements/'+id)).status,'Wa
 assert.ok(providerReads.every(url=>url.includes('/new-dark/')),'Only the current document is polled.');
 result=await call('home');assert.equal(result.data.members.find(member=>member.id===id).paperworkStatus,'Complete');
 result=await call('home',undefined,lies);assert.equal(result.data.members.find(member=>member.id===id).paperworkStatus,'No agreement on file','Completion in one production does not satisfy another.');
+result=await call('agreement',terms,lies);assert.equal(result.response.status,200,'Wherein Lies Continue can send without a first shoot date.');
+assert.equal(providerCreates.length,2,'Each production gets one separate signing request.');
+assert.equal(providerCreates[1].body.name,'Wherein Lies Continue — Rachel DeMicco · '+AGREEMENT_CYCLE);
+assert.equal((await store.get(currentAgreementKey(lies,id))).id,'new-lies');
+assert.equal(Object.hasOwn(globalThis.__contractCyclePackets.at(-1),'start'),false);
+assert.equal((await store.get('productions/'+lies+'/agreements/'+id)).id,'old-lies','New production send preserves the original provider record.');
 
 result=await call('home',undefined,dark,memberToken);assert.equal(result.response.status,200);
 assert.ok(result.data.members[0].documents.some(document=>document.kind==='previous-signed'),'Members retain access to previously completed agreements.');
 assert.deepEqual(Buffer.from(await store.get('offline/'+profile.id)),oldPdf,'Reset preserves original PDF bytes.');
-console.log('PASS: old contract/waiver isolation, everyone requires a fresh contract, stale route protection, current-cycle provider polling, concurrent/repeated sends, per-film completion and historical files. No external requests or emails.');
+console.log('PASS: date-free previews/sends for both films, stale shoot dates ignored, required terms validated, old contract/waiver isolation, stale route protection, current-cycle provider polling, concurrent/repeated sends, per-film completion and historical files. No external requests or emails.');

@@ -75,7 +75,7 @@ async function packet(bytes, terms) {
   const white=rgb(1,1,1), gray=rgb(.97,.98,.98);
   write(pages[0],340.5,143.3,31.4,terms.date,gray);
   write(pages[0],208.8,156.8,103,terms.legal,gray);
-  write(pages[0],51,526.6,489,"Actor's services shall be rendered during principal photography scheduled to begin on "+terms.start+".",white);
+  write(pages[0],51,526.6,489,"This Agreement covers Actor's services already performed for the Picture and any future services mutually agreed.",white);
   write(pages[1],51,270.8,131,terms.credit,white);
   write(pages[1],310,383.3,150,terms.legal,white);
   for(const [x,signer] of [[310,1],[52,2]]) {
@@ -549,9 +549,9 @@ export default async function handle(req) {
 
     const fields=credits(body);t.character=creditLine(fields);
     requireThat(t.character&&t.character.length<=120,'Enter a character or crew title for this agreement (120 characters total).');
-    for(const k of ['legal','credit','rate','date','start'])t[k]=string(body[k],120);
+    for(const k of ['legal','credit','rate','date'])t[k]=string(body[k],120);
     requireThat(/^\d{1,5}(\.\d{1,2})?$/.test(t.rate),'Enter a daily rate.');
-    for(const k of ['date','start'])requireThat(/^\d{4}-\d{2}-\d{2}$/.test(t[k])&&!Number.isNaN(Date.parse(t[k]))&&new Date(t[k]).toISOString().slice(0,10)===t[k],'Enter valid dates.');
+    requireThat(/^\d{4}-\d{2}-\d{2}$/.test(t.date)&&!Number.isNaN(Date.parse(t.date))&&new Date(t.date).toISOString().slice(0,10)===t.date,'Enter a valid agreement date.');
     const heidi=COUNTERSIGN_EMAIL;
     requireThat(heidi!==m.email,'Actor and countersigner need separate addresses.');
     const master=await store.get('contract/master',{type:'arrayBuffer'});requireThat(master,'Upload the private agreement master first.');

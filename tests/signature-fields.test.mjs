@@ -22,10 +22,16 @@ for(const [index,name] of ['Actor name or professional name','Role or character'
 const original=Buffer.from(await master.save());
 const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
 const originalDigest=digest(original);
-const result=await packet(original,{credit:'Example Member',character:'Supporting Actor',rate:'100',legal:'Example Member',date:'2026-11-09',start:'2026-11-20'});
+const result=await packet(original,{credit:'Example Member',character:'Supporting Actor',rate:'100',legal:'Example Member',date:'2026-11-09'});
 assert.equal(digest(original),originalDigest,'Preparing a request must preserve the unsigned master bytes.');
 const output=await PDFDocument.load(result);
 assert.equal(output.getPageCount(),2,'Field placement must retain the original page count.');
+const firstPageStreams=output.getPage(0).node.Contents();
+const firstPageText=firstPageStreams.asArray().map(reference=>Buffer.from(decodePDFRawStream(output.context.lookup(reference)).decode()).toString('latin1')).join('\n');
+const services="This Agreement covers Actor's services already performed for the Picture and any future services mutually agreed.";
+const firstPageStrings=[...firstPageText.matchAll(/<([A-Fa-f0-9]+)>\s*Tj/g)].map(match=>Buffer.from(match[1],'hex').toString('latin1'));
+assert.ok(firstPageStrings.includes(services),'The generated agreement must cover past services and mutually agreed future services without a first shoot date.');
+assert.ok(!firstPageStrings.some(value=>value.includes('scheduled to begin on')||value.includes('undefined')),'No missing or historical start date may appear in the new services clause.');
 
 function tagFields(page,pageNumber){
  const contents=page.node.Contents();
