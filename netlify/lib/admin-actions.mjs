@@ -22,7 +22,7 @@ export async function adminActions(store,production,refresh=false){
   const k=currentAgreementKey(production,m.id);
   const a=refresh?await refreshAgreement(store,k):await store.get(k,{type:'json'});
   if(a?.status==='Draft ready to send'&&!a.syncError)add('any','Send the pending agreement for '+m.name,k+'/send/'+a.id,'people',m.id);
-  else if(a?.status==='Waiting on Heidi'&&!a.syncError)add('any','Open for Heidi’s signature · '+m.name,k+'/countersign/'+a.id,'people',m.id,true);
+  else if(a?.status==='Waiting on Heidi'&&!a.syncError)add('Heidi','Open for Heidi’s signature · '+m.name,k+'/countersign/'+a.id,'people',m.id,true);
   else if(a?.syncError||/recovery|declined|cancel|expired|bounced|failed/i.test(a?.status||''))add('any','Review the signing request for '+m.name,k+'/'+(a.id||a.created)+'/review','people',m.id);
   else if(!a||a.cleared)add('any','Prepare a new agreement for '+m.name,k+'/prepare/'+(a?.created||'initial'),'people',m.id);
  }

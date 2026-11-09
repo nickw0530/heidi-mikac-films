@@ -233,3 +233,70 @@ test('draft sending rejects mismatched identities, signed recipients, and manual
  assert.equal(context.calls.length,before,'An N/A requirement must be reopened before sending a draft.');
  assert.equal(context.notifications.length,0);
 });
+
+test('only Heidi’s own sign-in receives the countersignature link',async()=>{
+ const context=await fixture();await setAgreement(context,{status:'Waiting on Heidi'});
+ const document=context.documents.get('active-doc');
+ document.recipients[0].status='signed';
+ document.recipients[0].embedded_signing_url='https://www.signwell.com/sign/actor';
+ document.recipients[1].embedded_signing_url='https://www.signwell.com/sign/heidi';
+ const params={document:'active-doc'};
+ const nick=await call('status',{who:'Nick',params});
+ assert.equal(nick.status,200);assert.equal(nick.data.status,'Waiting on Heidi');
+ assert.equal(nick.data.url,null,'Another administrator must not be handed Heidi’s signing link.');
+ assert.equal((await call('status',{who:'member',params})).data.url,null,'The member has no link once their part is signed.');
+ assert.equal((await call('status',{who:'Heidi',params})).data.url,'https://www.signwell.com/sign/heidi');
+ const actions=await adminActions(context.store,dark);
+ assert.deepEqual(actions.filter(action=>action.signature).map(action=>action.owner),['Heidi'],'The countersignature is queued for Heidi only.');
+ assert.ok(!(await call('home',{who:'Nick'})).data.waiting.some(action=>action.signature));
+ assert.ok((await call('home',{who:'Heidi'})).data.waiting.some(action=>action.signature));
+});
+
+test('the public feed never names hidden people who have no card on a film website',async()=>{
+ const context=await fixture();
+ for(const id of [actor,other]){
+  await context.store.setJSON('profiles/'+id,{bio:'A biography.'});
+  await context.store.set('photos/'+id,Buffer.from('photo'),{metadata:{mime:'image/jpeg'}});
+ }
+ let feed=(await call('published',{who:null})).data;
+ assert.ok(feed.some(item=>item.name==='Another Member'&&!item.hidden)&&feed.some(item=>item.id===profile.id&&!item.hidden));
+ for(const id of [actor,other])assert.equal((await call('publication',{body:{visible:false},id})).status,200);
+ feed=(await call('published',{who:null})).data;
+ assert.ok(!JSON.stringify(feed).includes('Another Member')&&!JSON.stringify(feed).includes(other),'A portal-only person hidden from the website is absent, not listed as hidden.');
+ assert.deepEqual(feed.find(item=>item.id===profile.id),{id:profile.id,name:profile.name,hidden:true},'A hidden catalog profile keeps only what the film site needs to suppress its printed card.');
+ await context.store.setJSON('members/'+other,{...(await context.store.get('members/'+other)),revoked:true,keepPublic:false});
+ await context.store.setJSON('public-revision','changed');
+ assert.ok(!JSON.stringify((await call('published',{who:null})).data).includes('Another Member'),'Revoking access does not publish the name either.');
+});
+
+test('downloads use the posted title and administrators can remove a posted file or message',async()=>{
+ const context=await fixture();
+ await context.store.setJSON('resources/'+pdfId,{...(await context.store.get('resources/'+pdfId)),title:'Call sheet · Day 3 / rev 11/08: "final"?'});
+ const download=await call('resource',{who:'member',id:pdfId});
+ assert.equal(download.status,200);
+ const disposition=download.response.headers.get('content-disposition');
+ assert.ok(disposition.startsWith('attachment; filename="Call sheet - Day 3 - rev 11-08- -final.pdf"; filename*=UTF-8\'\''),disposition);
+ assert.ok(disposition.endsWith(encodeURIComponent('Call sheet · Day 3 - rev 11-08- -final.pdf')),disposition);
+ await context.store.setJSON('resources/'+privatePdfId,{...(await context.store.get('resources/'+privatePdfId)),title:'../..\\\r\n'});
+ await context.store.set('files/'+privatePdfId,resourcePdf);
+ assert.ok((await call('resource',{who:'Nick',id:privatePdfId})).response.headers.get('content-disposition').startsWith('attachment; filename="production-document.pdf"'),'An unusable title falls back to a safe name.');
+
+ const noteId='00000000-0000-4000-8000-000000000045';
+ await context.store.setJSON('resources/'+noteId,{id:noteId,title:'Parking',text:'Side door.',type:'Update',audience:null,created:2});
+ await context.store.setJSON('outbox/'+digest(actor+'/'+pdfId),{id:actor,to:'x@example.invalid',subject:'New production file'});
+ await context.store.setJSON(trackingKey(dark,actor,pdfId),{document:pdfId,reason:'complete',by:'Nick',at:1});
+ for(const options of [{who:null},{who:'member'},{who:'Nick',origin:'https://other.invalid'},{who:'Nick',method:'GET'}]){
+  const refused=await call('removeResource',{body:options.method?undefined:{},id:pdfId,...options});
+  if(!options.method)assert.ok([401,403].includes(refused.status));
+  assert.ok(await context.store.get('files/'+pdfId)&&await context.store.get('resources/'+pdfId),'Only an administrator’s own POST removes anything.');
+ }
+ assert.equal((await call('removeResource',{body:{},id:pdfId,production:lies})).status,404,'Another production’s workspace cannot remove it.');
+ assert.equal((await call('removeResource',{body:{},id:pdfId})).status,200);
+ for(const key of ['resources/'+pdfId,'files/'+pdfId,'outbox/'+digest(actor+'/'+pdfId),trackingKey(dark,actor,pdfId)])assert.equal(await context.store.get(key),null,key);
+ assert.equal((await call('resource',{who:'member',id:pdfId})).status,404);
+ assert.ok(!(await call('home',{who:'member'})).data.resources.some(item=>item.id===pdfId));
+ assert.equal((await call('removeResource',{body:{},id:noteId})).status,200);
+ assert.equal(await context.store.get('resources/'+noteId),null);
+ assert.equal((await call('removeResource',{body:{},id:noteId})).status,404,'Removing twice reports that it is already gone.');
+ assert.ok(await context.store.get('members/'+actor),'Removing a board item leaves people untouched.');
+});
