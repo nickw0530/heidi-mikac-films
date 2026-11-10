@@ -1,3 +1,4 @@
+import {comparePeople,sortPeople} from './people-order.mjs';
 const ZONE='America/Indiana/Indianapolis';
 const DAYS=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 const STATUSES={available:'Available',unavailable:'Unavailable',unknown:'Not answered','needs-confirmation':'Check clock change'};
@@ -92,7 +93,7 @@ export function mountAvailability(container,options){
   else if(!preserveEdits)body.querySelectorAll('input,select,button').forEach(control=>{control.disabled=true;});
   try{
    const result=await request('availability',undefined,'','&'+new URLSearchParams(monthRange()));if(destroyed||sequence!==loadSequence)return false;
-   data=result;
+   data=admin?{...result,members:sortPeople(result.members)}:result;
    invalidateMatches();
    const visibleIds=new Set(data.members.map(member=>member.id));
    for(const id of selectedPeople)if(!visibleIds.has(id))selectedPeople.delete(id);
@@ -210,8 +211,7 @@ export function mountAvailability(container,options){
   const days=data.members.map(member=>({member,value:viewDay(member,selectedDate)}));
   const totals=Object.fromEntries(Object.keys(STATUSES).map(status=>[status,days.filter(day=>day.value.status===status).length]));
   section.append(el('p',{class:'availability-daily-totals'},totals.available+' available · '+totals.unavailable+' unavailable · '+totals.unknown+' not answered'+(totals['needs-confirmation']?' · '+totals['needs-confirmation']+' to check':'')),el('p',{class:'availability-help'},'Click a name to view or edit their schedule.'));
-  const order={available:0,unavailable:1,'needs-confirmation':2,unknown:3};
-  days.sort((a,b)=>(order[a.value.status]??3)-(order[b.value.status]??3)||a.member.name.localeCompare(b.member.name));
+  days.sort((a,b)=>comparePeople(a.member,b.member));
   function row({member,value}){
    const person=el('div',{},button(member.name,()=>openPerson(member.id),{class:'availability-person-link','aria-label':'View or edit availability for '+member.name}),member.role?el('span',{class:'availability-role'},member.role):null);
    const hours=el('div',{class:'availability-daily-hours'},value.status==='available'?el('strong',{},windowsLabel(value.windows)):null,el('span',{class:'availability-badge availability-'+value.status},STATUSES[value.status]||STATUSES.unknown));
@@ -270,9 +270,9 @@ export function mountAvailability(container,options){
    const details=el('details',{},el('summary',{},'Dates needing follow-up ('+blocked.length+')')),list=el('ul');
    for(const day of blocked){
     const reasons=[];
-    if(day.missing?.length)reasons.push('Not answered: '+day.missing.map(person=>person.name).join(', '));
-    if(day.unavailable?.length)reasons.push('Unavailable: '+day.unavailable.map(person=>person.name).join(', '));
-    if(day.needsConfirmation?.length)reasons.push('Check clock change: '+day.needsConfirmation.map(person=>person.name).join(', '));
+    if(day.missing?.length)reasons.push('Not answered: '+sortPeople(day.missing).map(person=>person.name).join(', '));
+    if(day.unavailable?.length)reasons.push('Unavailable: '+sortPeople(day.unavailable).map(person=>person.name).join(', '));
+    if(day.needsConfirmation?.length)reasons.push('Check clock change: '+sortPeople(day.needsConfirmation).map(person=>person.name).join(', '));
     list.append(el('li',{},el('strong',{},shortDate(day.date)),el('span',{},reasons.join(' · ')||'Available hours do not overlap for the requested duration.')));
    }
    details.append(list);result.append(details);

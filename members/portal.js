@@ -1,3 +1,4 @@
+import {comparePeople,sortPeople,orderAdminPeople} from './people-order.mjs';
 import {mountAvailability} from './availability.js';
 import {mountFilmingAvailability} from './filming-availability.js';
 const officeTabs=[['overview','Overview'],['people','People'],['documents','Documents'],['messages','Messages & files'],['availability','Filming availability'],['calendar','Calendar'],['settings','Settings']];
@@ -176,11 +177,11 @@ function combinedPeople(states){
   const key='account/'+member.id;
   if(!people.has(key))people.set(key,{name:member.name,memberId:member.id,hasMemberProfile:true,hasAccount:!member.needsEmail,needsEmail:!!member.needsEmail,unassigned:true,member,films:[]});
  }
- return [...people.values()].sort((a,b)=>a.name.localeCompare(b.name));
+ return [...people.values()].sort(comparePeople);
 }
 
 function productionAssignments(accounts,productions,label='Manage production assignments ('+accounts.length+' '+(accounts.length===1?'person':'people')+')'){
- return panel(label,'<p>One profile, one shared biography and headshot. Check each production this person belongs to. Review member submissions before publishing them. Named Test accounts stay private.</p>'+accounts.map(m=>panel(escape(m.name),'<form data-action="enrollments" data-id="'+m.id+'">'+productions.map(p=>{
+ return panel(label,'<p>One profile, one shared biography and headshot. Check each production this person belongs to. Review member submissions before publishing them. Named Test accounts stay private.</p>'+sortPeople(accounts).map(m=>panel(escape(m.name),'<form data-action="enrollments" data-id="'+m.id+'">'+productions.map(p=>{
   const assigned=m.productions[p.id];
   const role=assigned?.role||'';
   return '<fieldset><label><input style="width:auto;display:inline" type="checkbox" name="production" value="'+p.id+'" '+(assigned?'checked':'')+'> '+escape(p.name)+'</label><label>Character / crew title for this production<input name="role_'+p.id+'" value="'+escape(role)+'" '+(assigned?'':'disabled')+'></label></fieldset>';
@@ -190,7 +191,7 @@ function productionAssignments(accounts,productions,label='Manage production ass
 function pendingPeoplePanel(state,selected){
  const choices=state.productionChoices||state.productions;
  const fields=values=>'<fieldset><legend>Productions (optional)</legend>'+choices.map(p=>'<label><input type="checkbox" name="pendingProduction" value="'+escape(p.id)+'" '+(values.includes(p.id)?'checked':'')+'> '+escape(p.name)+'</label>').join('')+'</fieldset>';
- const records=(state.pendingPeople||[]).filter(p=>!p.productions.length||p.productions.some(id=>selected.includes(id)));
+ const records=sortPeople(state.pendingPeople).filter(p=>!p.productions.length||p.productions.some(id=>selected.includes(id)));
  const row=person=>{
   const films=person.productions.map(id=>choices.find(p=>p.id===id)?.name||id).join(' · ')||'Production not selected';
   const edit=person.memberId?'':panel('Edit saved name',form('savePendingPerson',input('name','Name','text',person.name)+fields(person.productions),'Save name',person.id));
@@ -318,6 +319,7 @@ async function load(initial){
  if(availabilityBusy())return;
  clearAvailability();
  if(office&&!s.admin){location.reload();return;}
+ s=orderAdminPeople(s);
  lastState=s;let admin=s.admin;
  selectedProduction=s.productionId;
  const params=new URLSearchParams(location.search);
@@ -335,7 +337,7 @@ async function load(initial){
  }
  if(admin&&selected.length>1){
   const states=await Promise.all(selected.map(id=>id===s.productionId?s:request('home',undefined,'','',id)));
-  renderCombinedOffice(states,productionPicker);
+  renderCombinedOffice(states.map(orderAdminPeople),productionPicker);
   return;
  }
  const reviewCard=r=>panel(escape(r.name)+' · Approval needed','<p>'+escape(r.bio||'No biography submitted')+'</p>'+(r.photo?'<img alt="Headshot submitted for approval" style="width:8rem;max-width:100%" src="'+escape(r.photo==='uploaded'?url('photo',r.id)+'&v='+r.revision:r.photo)+'">':'<p>No headshot submitted</p>')+'<form data-action="reviewProduction" data-id="'+escape(r.id)+'"><input type="hidden" name="requestId" value="'+escape(r.requestId)+'"><input type="hidden" name="revision" value="'+escape(r.revision)+'">'+creditFields(r.credits)+(r.role?'<p>Current credit · '+escape(r.role)+'</p>':'')+'<button value="approve">Approve for '+escape(s.film)+'</button> <button formnovalidate value="decline">Decline</button></form>');
@@ -346,8 +348,9 @@ async function load(initial){
  const offline=x=>x.previousOffline?panel('Previous paper agreement · replaced','<p>A new electronic agreement is required.</p><a href="'+escape(url('offline',x.id))+'">Download previous paper agreement</a>'):'';
  const uploaded=library.filter(x=>x.previousOffline);
  const previousOnline=s.members.filter(m=>m.previousAgreement?.completed);
- const uploadedDocuments=admin&&(uploaded.length||previousOnline.length)?'<section><h2>Previous agreements</h2><p>These records have been replaced for portal tracking. Everyone requires a new signed agreement.</p>'+uploaded.map(x=>panel(escape(x.name),offline(x))).join('')+previousOnline.map(m=>'<p>'+escape(m.name)+' · <a href="'+escape(url('memberDocument',m.id)+'&kind=previous-signed')+'">Download previous signed agreement and audit record</a></p>').join('')+'</section>':'';
- const people=[...available,...s.members];
+ const previousDocuments=sortPeople([...uploaded.map(x=>({name:x.name,html:panel(escape(x.name),offline(x))})),...previousOnline.map(m=>({name:m.name,html:'<p>'+escape(m.name)+' · <a href="'+escape(url('memberDocument',m.id)+'&kind=previous-signed')+'">Download previous signed agreement and audit record</a></p>'}))]);
+ const uploadedDocuments=admin&&previousDocuments.length?'<section><h2>Previous agreements</h2><p>These records have been replaced for portal tracking. Everyone requires a new signed agreement.</p>'+previousDocuments.map(document=>document.html).join('')+'</section>':'';
+ const people=sortPeople([...available,...s.members]);
  function outstanding(person){
   const source=library.find(x=>x.id===(person.filmProfile||person.id));
   const status=person.paperworkStatus||source?.offline||person.agreement?.status||'No agreement on file';
@@ -359,9 +362,9 @@ async function load(initial){
   return {name:person.name,status,gaps,exempt};
  }
  const waiting=s.waiting||[];
- const personal='<section class="audit" style="border:2px solid #a35c68;padding:1.25rem;margin-bottom:1.5rem" aria-labelledby="waiting-heading"><h2 id="waiting-heading">Waiting on you <span class="count">'+waiting.length+'</span></h2><p>'+escape(s.self)+' · '+escape(s.film)+'</p>'+(waiting.length?'<ul>'+waiting.map(a=>'<li><strong>'+escape(a.label)+'</strong> · '+(a.owner==='any'?'Any admin':'Assigned to you')+' '+(a.taskId?form('finishAdminTask','<input type="hidden" name="owner" value="'+escape(a.owner)+'"><input type="hidden" name="task" value="'+escape(a.taskId)+'">','Mark done'):a.member?'<button data-open-person="'+escape(a.member)+'">Open paperwork</button>':'<button data-view-button="'+escape(a.view)+'">'+(a.view==='settings'?'Review request':'Open documents')+'</button>')+'</li>').join('')+'</ul>':'<p>You’re caught up for this production.</p>')+panel('Assign an admin task',form('adminTask',input('title','Task','text')+'<label>Assigned to<select name="owner"><option value="any">Any admin</option><option>Nick</option><option>Heidi</option></select></label>','Assign task'))+'</section>';
+ const personal='<section class="audit" style="border:2px solid #a35c68;padding:1.25rem;margin-bottom:1.5rem" aria-labelledby="waiting-heading"><h2 id="waiting-heading">Waiting on you <span class="count">'+waiting.length+'</span></h2><p>'+escape(s.self)+' · '+escape(s.film)+'</p>'+(waiting.length?'<ul>'+waiting.map(a=>'<li><strong>'+escape(a.label)+'</strong> · '+(a.owner==='any'?'Any admin':'Assigned to you')+' '+(a.taskId?form('finishAdminTask','<input type="hidden" name="owner" value="'+escape(a.owner)+'"><input type="hidden" name="task" value="'+escape(a.taskId)+'">','Mark done'):a.member?'<button data-open-person="'+escape(a.member)+'">Open paperwork</button>':'<button data-view-button="'+escape(a.view)+'">'+(a.view==='settings'?'Review request':'Open documents')+'</button>')+'</li>').join('')+'</ul>':'<p>You’re caught up for this production.</p>')+panel('Assign an admin task',form('adminTask',input('title','Task','text')+'<label>Assigned to<select name="owner"><option value="any">Any admin</option><option>Heidi</option><option>Nick</option></select></label>','Assign task'))+'</section>';
  const audit=people.map(outstanding);
- const group=(label,items,detail)=>'<details class="audit-group"><summary>'+label+' <b>'+items.length+'</b></summary>'+(items.length?'<ul>'+items.map(x=>'<li><strong>'+escape(x.name)+'</strong><span>'+escape(detail(x))+'</span></li>').join('')+'</ul>':'<p>Nothing outstanding.</p>')+'</details>';
+ const group=(label,items,detail)=>'<details class="audit-group"><summary>'+label+' <b>'+items.length+'</b></summary>'+(items.length?'<ul>'+sortPeople(items).map(x=>'<li><strong>'+escape(x.name)+'</strong><span>'+escape(detail(x))+'</span></li>').join('')+'</ul>':'<p>Nothing outstanding.</p>')+'</details>';
  const attention='<section class="audit"><p><strong>New contracts are required unless an admin marks the requirement Complete or Document N/A.</strong> Earlier agreements remain in Previous agreements.</p><small>'+escape(s.film)+' · PRODUCTION OFFICE</small><h2>Needs attention</h2><p>Open a category to see who needs follow-up.</p>'+group('No agreement on file',audit.filter(x=>!x.exempt&&x.status==='No agreement on file'),x=>x.status)+group('Paperwork in progress',audit.filter(x=>(!x.exempt||/waiting on Heidi/i.test(x.status))&&!['Complete','Document N/A','Not required','No agreement on file'].includes(x.status)),x=>x.status)+group('Missing profile items or open tasks',audit.filter(x=>x.gaps.length),x=>x.gaps.join(' · '))+'</section>';
  const directory=admin?'<p>Profiles available to invite</p>'+available.map(x=>'<div data-catalog-profile="'+escape(x.id)+'">'+panel(escape(x.name)+' · '+escape(x.role),'<img loading="lazy" alt="Approved headshot" src="'+escape(x.photo)+'"><p style="white-space:pre-line">'+escape(x.bio)+'</p>'+offline(x)+(s.mailReady?form('invite',input('email','Invitation email','email')+['name','role','filmProfile'].map((k,i)=>'<input type="hidden" name="'+k+'" value="'+escape([x.name,x.role,x.id][i])+'">').join(''),'Invite '+escape(x.name)):'') )+'</div>').join(''):'';
  const linkControls=m=>m.practice?'':m.filmProfile?'<p>Approved biography and headshot appear on the assigned film websites.</p>':panel('Link an existing film profile',form('linkProfile','<label>Approved profile<select name="filmProfile" required><option value="">Select person</option>'+available.map(x=>'<option value="'+escape(x.id)+'" '+(x.name===m.name?'selected':'')+'>'+escape(x.name)+'</option>').join('')+'</select></label>','Confirm profile match',m.id));

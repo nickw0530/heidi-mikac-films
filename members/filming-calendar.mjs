@@ -1,3 +1,5 @@
+import {comparePeople} from './people-order.mjs';
+
 export function monthRange(month){
  const [year,number]=month.split('-').map(Number);
  return {from:month+'-01',to:month+'-'+String(new Date(Date.UTC(year,number,0)).getUTCDate()).padStart(2,'0')};
@@ -19,5 +21,5 @@ export function peopleForFilmingDay(members,selectedIds,date,filter='available')
  const selected=new Set(selectedIds);
  return (members||[]).filter(member=>selected.has(member.id)).map(member=>({member,day:member.days?.find(day=>day.date===date)||{date,status:'unknown',windows:[]}}))
   .filter(({day})=>filter==='available'?day.status==='available':filter==='unavailable'?day.status==='unavailable':!['available','unavailable'].includes(day.status))
-  .sort((a,b)=>a.member.name.localeCompare(b.member.name));
+  .sort((a,b)=>comparePeople(a.member,b.member));
 }

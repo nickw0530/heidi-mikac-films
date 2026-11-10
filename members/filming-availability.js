@@ -1,3 +1,4 @@
+import {sortPeople} from './people-order.mjs';
 import {monthRange,filmingDayState,filmingSuggestions,peopleForFilmingDay} from './filming-calendar.mjs';
 
 const ZONE='America/Indiana/Indianapolis';
@@ -31,7 +32,7 @@ export function mountFilmingAvailability(container,{request,productions,producti
  const notice=el('p',{class:'availability-notice',role:'status','aria-live':'polite'}),body=el('div'),board=el('div',{class:'filming-board'});
  container.classList.add('availability-widget','filming-widget');container.dataset.availabilityRoot='';container.replaceChildren(notice,body);
  const note=(message,error=false)=>{notice.textContent=message;notice.classList.toggle('availability-error',error);};
- const roster=()=>data?.members||[];
+ const roster=()=>sortPeople(data?.members);
  const selectedNames=()=>roster().filter(m=>selected.has(m.id)).map(m=>m.name);
  function invalidate(){sequence++;checking=false;result=null;selectedDate='';filter='available';board.replaceChildren();note('');const select=body.querySelector('[aria-label="Filming production"]'),refreshButton=body.querySelector('.filming-heading button');if(select)select.disabled=loading;if(refreshButton)refreshButton.disabled=loading;}
  async function loadRoster(reopen=true){
