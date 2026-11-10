@@ -314,8 +314,12 @@ export default async function handle(req, context) {
     if(action==='availabilityMatch'){
       requireThat(Array.isArray(body.members)&&body.members.length>0&&body.members.length<=100&&body.members.every(id=>typeof id==='string'&&roster.some(m=>m.id===id)),'Select people from this production (up to 100).');
       const ids=[...new Set(body.members)];
-      const people=await Promise.all(ids.map(async id=>({id,name:roster.find(m=>m.id===id).name,availability:await rawStore.get(key(id),{type:'json'})})));
-      return json({productionId,film,...matchAvailability(people,{from:body.from,to:body.to,minMinutes:body.minMinutes})});
+      const people=await Promise.all(ids.map(async id=>{const member=roster.find(m=>m.id===id);return {id,name:member.name,role:assignments(member)[productionId].role||'',availability:await rawStore.get(key(id),{type:'json'})};}));
+      const comparison=matchAvailability(people,{from:body.from,to:body.to,minMinutes:body.minMinutes});
+      const dates=listDates(comparison.from,comparison.to);
+      // Calendar cells and selected-day details use the same schedule snapshot.
+      const members=people.map(person=>({id:person.id,name:person.name,role:person.role,days:dates.map(date=>availabilityForDate(person.availability,date))}));
+      return json({productionId,film,...comparison,members});
     }
     const from=url.searchParams.get('from'),to=url.searchParams.get('to');
     const dates=from||to?listDates(from,to):null;

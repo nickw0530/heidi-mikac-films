@@ -111,11 +111,16 @@ test('match requests require visible production members and confirmed continuous
  const body={members:[ids.a,ids.b],from:'2027-01-04',to:'2027-01-04',minMinutes:90};
  let result=await call('availabilityMatch',{who:'a',body});assert.equal(result.status,200);
  assert.deepEqual(result.data.matches[0].windows.map(({start,end})=>[start,end]),[['10:00','12:00']]);
+ assert.deepEqual(result.data.members.map(member=>member.id),[ids.a,ids.b],'Day details contain only the selected production members.');
+ for(const member of result.data.members)assert.deepEqual(Object.keys(member).sort(),['days','id','name','role'],'The calendar projection must not include contact, invitation, document or account data.');
+ assert.deepEqual(result.data.members[0].days[0].windows.map(({start,end})=>[start,end]),[['09:00','12:00'],['13:00','17:00']],'Individual hours and shared calendar results use the same saved schedule snapshot.');
+ for(const secret of ['private@example.invalid','private-invitation-secret','private-draft-biography'])assert.ok(!JSON.stringify(result.data).includes(secret));
  for(const members of [[],[ids.a,ids.otherFilm],[ids.a,ids.revoked],[ids.a,ids.contact]])assert.ok((await call('availabilityMatch',{who:'a',body:{...body,members}})).status>=400);
  assert.equal((await call('availabilityMatch',{who:'b',production:lies,body})).status,403);
  assert.equal((await call('availabilityMatch',{body:{...body,to:'2027-05-01'}})).status,400);
  await context.store.delete('availability/'+dark+'/'+ids.b);
  result=await call('availabilityMatch',{body});assert.equal(result.status,200);assert.equal(result.data.matches.length,0);assert.deepEqual(result.data.days[0].missing.map(person=>person.id),[ids.b]);
+ assert.equal(result.data.members.find(member=>member.id===ids.b).days[0].status,'unknown');
  assert.equal(context.notifications.length,0);assert.equal(context.requests.length,0);
 });
 

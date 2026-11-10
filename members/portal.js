@@ -1,5 +1,6 @@
 import {mountAvailability} from './availability.js';
-const officeTabs=[['overview','Overview'],['people','People'],['documents','Documents'],['messages','Messages & files'],['availability','Availability'],['calendar','Calendar'],['settings','Settings']];
+import {mountFilmingAvailability} from './filming-availability.js';
+const officeTabs=[['overview','Overview'],['people','People'],['documents','Documents'],['messages','Messages & files'],['availability','Filming availability'],['calendar','Calendar'],['settings','Settings']];
 function startPortal(app, office=null){
 const message=document.querySelector('#message');
 let combined=null;
@@ -20,7 +21,7 @@ function clearAvailability(){for(const view of availabilityViews.values())view.d
 function openAvailability(slot,memberId){
  if(!slot||!lastState||availabilityViews.has(slot))return;
  slot.dataset.availabilityRoot='';
- const view=mountAvailability(slot,{request:(action,body,id,suffix)=>request(action,body,id,suffix),productionId:lastState.productionId,admin:lastState.admin,selfId:lastState.self,memberId});
+ const view=lastState.admin&&!memberId?mountFilmingAvailability(slot,{request:(action,body,id,suffix,production)=>request(action,body,id,suffix,production||selectedProduction),productions:lastState.productionChoices||lastState.productions,productionId:lastState.productionId}):mountAvailability(slot,{request:(action,body,id,suffix)=>request(action,body,id,suffix),productionId:lastState.productionId,admin:lastState.admin,selfId:lastState.self,memberId});
  availabilityViews.set(slot,view);
 }
 function ensureAvailability(){
@@ -225,7 +226,7 @@ function renderCombinedOffice(states,picker){
  const snapshots=new Map(states.map(state=>[state.productionId,state]));
  let pendingState=states[0];
  const nav=officeTabs.map(([id,label])=>'<button type="button" data-main-tab="'+id+'">'+label+'</button>').join('');
- app.innerHTML='<div class="office-header">'+picker+form('logout','','Sign out')+'</div><nav class="office-nav" aria-label="Production office">'+nav+'</nav><div data-main-reviews></div><section data-shared-settings hidden><h2>All productions · account settings</h2><div data-shared-assignments></div></section><div data-main-people><div data-pending-people></div><h2>People &amp; profiles <span class="count" data-total></span></h2><label>Search name, role or email<input type="search" data-roster-search></label><div data-accounts></div><details data-combined-directory><summary></summary><div data-catalog></div></details></div><div data-offices></div>';
+ app.innerHTML='<div class="office-header">'+picker+form('logout','','Sign out')+'</div><nav class="office-nav" aria-label="Production office">'+nav+'</nav><div data-main-reviews></div><section data-shared-settings hidden><h2>All productions · account settings</h2><div data-shared-assignments></div></section><div data-main-people><div data-pending-people></div><h2>People &amp; profiles <span class="count" data-total></span></h2><label>Search name, role or email<input type="search" data-roster-search></label><div data-accounts></div><details data-combined-directory><summary></summary><div data-catalog></div></details></div><section data-main-filming hidden><div data-availability-slot></div></section><div data-offices></div>';
  function renderAssignments(state){
   const host=app.querySelector('[data-shared-assignments]');
   const expanded=[...host.querySelectorAll('details[open] > summary')].map(node=>node.textContent);
@@ -268,8 +269,13 @@ function renderCombinedOffice(states,picker){
   activeView=view;
   app.querySelector('[data-main-people]').hidden=view!=='people';
   app.querySelector('[data-shared-settings]').hidden=view!=='settings';
+  app.querySelector('[data-main-filming]').hidden=view!=='availability';
+  app.querySelector('[data-offices]').hidden=view==='availability';
+  app.querySelector('[data-main-reviews]').hidden=view==='availability';
+  const picker=app.querySelector('.office-header .production-picker');if(picker)picker.hidden=view==='availability';
   app.querySelectorAll('[data-main-tab]').forEach(b=>b.setAttribute('aria-current',b.dataset.mainTab===view?'page':'false'));
-  for(const child of offices.values())child.show(view);
+  if(view==='availability')openAvailability(app.querySelector('[data-main-filming] [data-availability-slot]'));
+  else for(const child of offices.values())child.show(view);
  }
  combined={show,busy:()=>[...offices.values()].some(child=>child.busy()),refresh(){for(const child of offices.values())child.refresh();}};
  for(const state of states){
@@ -701,6 +707,7 @@ async function mountCalendar(admin=true){
 
 
 function applyView(){
+ if(lastState?.admin&&!office){const picker=app.querySelector('.office-header .production-picker');if(picker)picker.hidden=activeView==='availability';}
  app.querySelectorAll('[data-view]').forEach(el=>el.hidden=el.dataset.view!==activeView);
  app.querySelectorAll('[data-view-button]').forEach(b=>b.setAttribute('aria-current',b.dataset.viewButton===activeView?'page':'false'));
  ensureAvailability();
