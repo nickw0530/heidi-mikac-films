@@ -2,6 +2,7 @@ import {AGREEMENT_CYCLE,currentAgreementKey} from '../lib/agreement-cycle.mjs';
 import {manualAgreementKey,resourceTrackingKey,normalizePaperworkReason,manualPaperworkStatus,readAgreementTracking} from '../lib/paperwork.mjs';
 import {COUNTERSIGN_EMAIL} from '../lib/signing.mjs';
 import {adminActions} from '../lib/admin-actions.mjs';
+import {adminProfileCandidates,adminProfileOwner,adminProfilesKey,loadAdminProfiles} from '../lib/admin-profiles.mjs';
 import {reportSnapshot,reportMatch,reportRecords,validateSavedReport} from '../lib/reports.mjs';
 import {AVAILABILITY_TIME_ZONE,normalizeAvailability,availabilityForDate,listDates,matchAvailability} from '../lib/availability.mjs';
 import {begin as beginCalendar,events as calendarEvents} from './calendar-callback.mjs';
@@ -155,6 +156,9 @@ export default async function handle(req, context) {
   }
   const invalidate=()=>set('public-revision',token());
   const active=m=>m&&!m.revoked;
+  let ownerBindings;
+  const adminProfiles=()=>ownerBindings??=loadAdminProfiles(rawStore);
+  const isAdminProfile=async member=>!!adminProfileOwner(await adminProfiles(),member);
   const publicPhotoHeaders={'Cache-Control':'public, max-age=60','Access-Control-Allow-Origin':'*'};
   const memberPhotoUrl=(id,version)=>'https://heidimikacfilms.com/.netlify/functions/portal?action=memberPhoto&id='+id+'&v='+version;
   async function legacyPublicProfile(m){
@@ -230,7 +234,7 @@ export default async function handle(req, context) {
     if(allowed.modified){
       const adm=adminKeys.find(([id])=>id.toLowerCase()===who||recoveryAddress(id).toLowerCase()===who);
       const m=adm?{id:adm[0],email:recoveryAddress(adm[0])}:(await list('members/')).find(m=>active(m)&&m.email===who);
-      const old=m&&await get('passwords/'+m.id);
+      const old=m&&(adm||!await isAdminProfile(m))&&await get('passwords/'+m.id);
       if(old&&(!adm||old.adminDigest===adm[1])){
         const ticket=token(),expires=Date.now()+3600000;
         await set('resets/'+hash(ticket),{id:m.id,expires,passwordDigest:old.digest,adminDigest:adm?.[1]||null});
@@ -244,7 +248,7 @@ export default async function handle(req, context) {
     const key='resets/'+hash(body.ticket),rec=await store.getWithMetadata(key,{type:'json'}),r=rec?.data;
     requireThat(r?.expires>Date.now(),'This reset link expired or was used. Request a new one.');
     const adm=adminKeys.find(([id])=>id===r.id),m=adm?null:await get('members/'+r.id);
-    requireThat(adm?adm[1]===r.adminDigest:active(m),'This account is unavailable.');
+    requireThat(adm?adm[1]===r.adminDigest:active(m)&&!await isAdminProfile(m),'This account is unavailable.');
     const old=await store.getWithMetadata('passwords/'+r.id,{type:'json'});
     requireThat(old?.data?.digest===r.passwordDigest,'This reset link has been replaced.');
     const pass=await credential(body.password);
@@ -258,6 +262,7 @@ export default async function handle(req, context) {
     requireThat(rec?.data?.expires>Date.now(),'Invitation expired. Ask production to resend it.');
     const m=await get('members/'+rec.data.id);
     requireThat(active(m)&&m.ticket===hash(body.ticket),'This invitation has been replaced.');
+    requireThat(!await isAdminProfile(m),'Sign in with your administrator account.',409);
     const pass=await credential(body.password);
     const result=await store.setJSON('passwords/'+m.id,pass,{onlyIfNew:true});
     requireThat(result.modified,'This account already has a password. Sign in instead.');
@@ -270,7 +275,7 @@ export default async function handle(req, context) {
     const members=admin?[]:await list('members/');
     const id=admin?.[0]||members.find(m=>active(m)&&m.email===who)?.id;
     const pass=id&&await get('passwords/'+id);
-    requireThat(pass&&(!admin||pass.adminDigest===admin[1]),'Invalid login.',401);
+    requireThat(pass&&(admin?pass.adminDigest===admin[1]:!await isAdminProfile(id)),'Invalid login.',401);
     // Failed guesses are counted per account and visitor address, so someone
     // hammering a known sign-in name locks out only themselves. A much higher
     // ceiling per account still slows guessing spread across many addresses.
@@ -298,16 +303,20 @@ export default async function handle(req, context) {
     const digest=hash(code), admin=adminKeys.find(([,k])=>k?.length===64&&k===digest);
     const member=admin?null:await get('keys/'+digest);
     requireThat(admin||(member&&active(await get('members/'+member.id))),'Access key is invalid or revoked.',401);
+    requireThat(admin||!await isAdminProfile(member.id),'Sign in with your administrator account.',401);
     requireThat(!await get('passwords/'+(admin?admin[0]:member.id)),'A password is already configured. Sign in or use Forgot your password.',409);
     return signedIn(admin?admin[0]:member.id,admin?.[1]);
   }
   requireThat(session?.expires>Date.now(),'Please sign in.',401);
   const admin=session.admin, self=session.id;
-  requireThat(admin?adminKeys.some(([id,k])=>id===self&&k&&k===session.adminDigest):active(await get('members/'+self)),'Access revoked.',401);
+  const account=admin?null:await get('members/'+self);
+  requireThat(admin?adminKeys.some(([id,k])=>id===self&&k&&k===session.adminDigest):active(account),'Access revoked.',401);
   requireThat((session.passwordVersion||0)===((await get('passwords/'+self))?.version||0),'Please sign in again.',401);
   if(action==='logout'&&post){await store.delete(sessionKey);return json({}, {'Set-Cookie':cookie('',0)});}
   const onlyAdmin=()=>requireThat(admin,'Administrator access required.',403);
-  const account=admin?null:await get('members/'+self);
+  if(!admin)requireThat(!await isAdminProfile(account),'Sign in with your administrator account.',401);
+  if(post&&['resend','reviewProduction','revoke','trackPaperwork','task','finishTask','agreement','sendAgreement','recoverAgreement'].includes(action))
+    requireThat(!await isAdminProfile(uid),'This profile is managed through an administrator account and has no personal requirements.',409);
   const memberProductions=account?assignments(account):null;
   if(!admin&&action==='home'&&!url.searchParams.has('production')&&Object.keys(memberProductions).length){
     productionId=Object.keys(memberProductions)[0];catalog=catalogs[productionId];film=productions.find(p=>p.id===productionId).name;
@@ -399,12 +408,44 @@ export default async function handle(req, context) {
     const record=withMetadata?await store.getWithMetadata(key,{type:'json'}):null;
     const member=withMetadata?record?.data:await get(key);
     requireThat(member,'Member unavailable.',404);
-    if(!['bio','photo','memberProfile','revoke','enrollments','resend'].includes(action))requireThat(assignments(member)[productionId],'Member is not assigned to this production.',403);
+    if(!['bio','photo','memberProfile','revoke','enrollments','resend','saveAdminProfileDetails'].includes(action))requireThat(assignments(member)[productionId],'Member is not assigned to this production.',403);
     return withMetadata?record:member;
   };
   async function saveTarget(record,member){
     const saved=await store.setJSON('members/'+uid,member,{onlyIfMatch:record.etag});
     requireThat(saved.modified,'This profile changed. Reload before saving again.',409);
+  }
+  if(action==='linkAdminProfiles'&&post){
+    onlyAdmin();
+    const bindings=await adminProfiles();
+    if(bindings.Nick===body.Nick&&bindings.Heidi===body.Heidi&&bindings.Nick)return json({ok:true});
+    const candidates=adminProfileCandidates((await list('members/')).filter(Boolean),assignments,findProfile);
+    requireThat(candidates&&candidates.Nick===body.Nick&&candidates.Heidi===body.Heidi,'The existing profiles could not be matched uniquely. Refresh and verify both cast profiles.',409);
+    requireThat((await rawStore.setJSON(adminProfilesKey,candidates,{onlyIfNew:true})).modified,'The administrator profiles are already linked. Refresh the portal.',409);
+    return json({ok:true});
+  }
+  if(action==='saveAdminProfileDetails'&&post){
+    onlyAdmin();requireThat(await isAdminProfile(uid),'Select a linked administrator profile.',409);
+    const record=await target({withMetadata:true}),member=record.data;
+    const name=string(body.name,120),address=body.email===''?'':email(body.email);
+    // Keep the existing catalog identity even if its public display name changes.
+    const profileLinks={...member.profileLinks};
+    for(const id of Object.keys(assignments(member))){const linked=findProfile(member,id);if(linked)profileLinks[id]=linked.id;}
+    const previous=member.email||'';
+    const index=address&&address!==previous?'active-email/'+hash(address):null;
+    let reserved=false;
+    if(index){
+      requireThat(!(await list('members/')).some(other=>active(other)&&other.id!==uid&&other.email===address),'That email is already used by another profile.',409);
+      reserved=(await store.setJSON(index,{id:uid},{onlyIfNew:true})).modified;
+      requireThat(reserved||(await get(index))?.id===uid,'That email is already used by another profile.',409);
+    }
+    try{await saveTarget(record,{...member,name,email:address,profileLinks});}
+    catch(error){if(reserved&&(await get('members/'+uid))?.email!==address)await store.delete(index);throw error;}
+    if(previous&&previous!==address){
+      const oldIndex='active-email/'+hash(previous);
+      if((await get(oldIndex))?.id===uid)await store.delete(oldIndex);
+    }
+    await invalidate();return json({ok:true});
   }
   async function recordProfileActivity(pid,action){
     const key=profileActivityKey(pid,uid);
@@ -559,6 +600,8 @@ export default async function handle(req, context) {
   if(action==='home'){
     const allAccounts=(await list('members/')).filter(Boolean);
     const accounts=allAccounts.filter(active);
+    const bindings=await adminProfiles();
+    const ownerOf=member=>adminProfileOwner(bindings,member);
     const rosterCatalog=catalog.filter(x=>{const matches=allAccounts.filter(m=>(!m.generalInvite||assignments(m)[productionId]||m.approvedProfiles?.[productionId])&&findProfile(m,productionId)?.id===x.id);return !matches.length||matches.some(m=>assignments(m)[productionId]&&(!m.revoked||m.keepPublic));});
     const members=admin?accounts.filter(m=>assignments(m)[productionId]||!Object.keys(assignments(m)).length):[account];
     const offlineRequests=new Map();
@@ -573,6 +616,7 @@ export default async function handle(req, context) {
     };
     const rows=await Promise.all(members.filter(Boolean).map(async member=>{
       const memberAssignments=assignments(member),assignment=memberAssignments[productionId];
+      const adminProfile=ownerOf(member);
       const agreementKey='agreements/'+member.id;
       const imageKey=member.draftProfile?.imageVersion?'profile-images/'+member.id+'/'+member.draftProfile.imageVersion:'photos/'+member.id;
       // The scheduled sweep refreshes saved status. Signing and downloads check the selected document directly.
@@ -580,16 +624,17 @@ export default async function handle(req, context) {
         member.draftProfile?.bio!==undefined?{bio:member.draftProfile.bio}:get('profiles/'+member.id),
         store.getMetadata(imageKey),
         assignment?(admin?get(agreementKey):refreshAgreement(store,agreementKey)):null,
-        assignment?list('tasks/'+member.id+'/'):[],
-        get('passwords/'+member.id),
+        assignment&&!adminProfile?list('tasks/'+member.id+'/'):[],
+        adminProfile?null:get('passwords/'+member.id),
       ]);
-      return {...member,needsEmail:!member.email,role:assignment?.role||'',filmProfile:assignment?findProfile(member,productionId)?.id||'':'',
-        productions:memberAssignments,profile,hasPhoto:!!photo,photoName:photo?.metadata?.filename||'',agreement,tasks:tasks.filter(Boolean),activated:!!password};
+      return {...member,needsEmail:!adminProfile&&!member.email,role:assignment?.role||'',filmProfile:assignment?findProfile(member,productionId)?.id||'':'',
+        productions:memberAssignments,profile,hasPhoto:!!photo,photoName:photo?.metadata?.filename||'',agreement:adminProfile&&agreement?.status!=='Complete'?null:agreement,tasks:tasks.filter(Boolean),activated:!!(adminProfile||password),
+        ...(adminProfile?{adminProfile,productionRequests:{},proposedCredits:{}}:{})};
     }));
     await Promise.all(rows.map(async row=>{
       const original=accounts.find(m=>m.id===row.id);
       const base=sharedBase(original);
-      row.paperworkExempt=false;
+      row.paperworkExempt=!!row.adminProfile;
       const [published,offlineMetadata,previous]=await Promise.all([
         base?get('published/'+base.id):null,
         assignments(original)[productionId]&&row.filmProfile?store.getMetadata('offline/'+row.filmProfile):null,
@@ -622,13 +667,13 @@ export default async function handle(req, context) {
       const documentTracking=(await list('document-tracking/'+productionId+'/'+row.id+'/')).filter(item=>item&&uuid.test(item.document)&&normalizePaperworkReason(item.reason));
       row.documentTracking=Object.fromEntries(documentTracking.map(item=>[item.document,normalizePaperworkReason(item.reason)]));
       if(admin)row.documentTrackingDetails=Object.fromEntries(documentTracking.map(({document,at,by})=>[document,{at,by}]));
-      row.paperworkStatus=manualPaperworkStatus(tracking)||memberPaperwork;
+      row.paperworkStatus=row.paperworkExempt?'Not required':manualPaperworkStatus(tracking)||memberPaperwork;
       row.memberPaperworkStatus=row.paperworkStatus;
       row.publication=Object.fromEntries(await Promise.all(Object.keys(assignments(original)).map(async pid=>{
         const id=findProfile(original,pid)?.id||'member-'+row.id;
         const ready=!!original.approvedProfiles?.[pid]||!!row.profile.bio?.trim()&&!!(row.hasPhoto||row.referencePhoto);
         const hidden=practiceName(row.name)||original.publication?.[pid]===false;
-        if(original.generalInvite&&!original.approvedProfiles?.[pid])return [pid,{state:'Awaiting approval',visible:false}];
+        if(original.generalInvite&&!original.approvedProfiles?.[pid])return [pid,{state:row.adminProfile?'Ready for admin edits':'Awaiting approval',visible:false}];
         let state=hidden?'Hidden from website':ready?'Sync failed':'Needs bio and headshot';
         if(!hidden&&ready){try{state=(await publicationFor(pid)).some(x=>x.id===id&&!x.hidden)?'Published':'Sync failed';}catch{}}
         return [pid,{state,visible:!hidden}];
@@ -640,13 +685,15 @@ export default async function handle(req, context) {
       return {...x,offline:null,previousOffline,offlineSigning:null,paperworkStatus:rows.find(row=>row.filmProfile===x.id)?.paperworkStatus||'No agreement on file'};
     })):[];
     const waiting=admin?(await adminActions(rawStore,productionId,{members:accounts,memberRows:rows})).filter(a=>a.owner==='any'||a.owner===self):[];
-    const productionReviews=admin?await Promise.all(accounts.filter(m=>m.productionRequests?.[productionId]).map(async m=>({id:m.id,name:m.name,role:assignments(m)[productionId]?.role||findProfile(m,productionId)?.role||'',credits:m.proposedCredits?.[productionId]||assignments(m)[productionId]||{},requestId:m.productionRequests[productionId],...await reviewProfile(m)}))):[];
+    const adminProfileId=admin?bindings[self]||null:null;
+    const profileCandidates=admin&&!bindings.Nick?adminProfileCandidates(accounts,assignments,findProfile):null;
+    const productionReviews=admin?await Promise.all(accounts.filter(m=>!ownerOf(m)&&m.productionRequests?.[productionId]).map(async m=>({id:m.id,name:m.name,role:assignments(m)[productionId]?.role||findProfile(m,productionId)?.role||'',credits:m.proposedCredits?.[productionId]||assignments(m)[productionId]||{},requestId:m.productionRequests[productionId],...await reviewProfile(m)}))):[];
     const tracking=admin?await get('mail-status/tracking'):null,mailTracking=tracking?.blocked?{status:tracking.status}:null;
-    const pendingPeople=admin?await Promise.all((await globalRecords('portal-pending/')).filter(p=>!p.archived).map(async p=>{
+    const pendingPeople=admin?await Promise.all((await globalRecords('portal-pending/')).filter(p=>!p.archived&&!ownerOf(p.memberId||p.id)).map(async p=>{
       const member=allAccounts.find(m=>m.id===(p.memberId||p.id)),activated=!!member?.email&&!!await get('passwords/'+member.id);
       return {id:p.id,name:member?.name||p.name,profileId:member?.id||p.id,productions:member?Object.keys(assignments(member)):p.productions||[],created:p.created,updated:p.updated,...(member?.email?{memberId:member.id,archived:false}:{}),activated,status:member?.email?(member.revoked?'Access revoked':activated?'Account created':'Invitation pending'):'Email needed'};
     })):[];
-    return json({pendingPeople,unassignedProfiles:admin?rows.filter(row=>!Object.keys(assignments(row)).length).map(({ticket,...row})=>({...row,practice:practiceName(row.name)})):[],agreementCycle:AGREEMENT_CYCLE,unassigned:admin?await Promise.all(accounts.filter(m=>!Object.keys(assignments(m)).length).map(async m=>({id:m.id,name:m.name,needsEmail:!m.email,pendingPersonId:m.pendingPersonId,activated:!!m.email&&!!await get('passwords/'+m.id)}))):[],productionReviews,productionChoices:productions,waiting,productionId,productions:admin?productions:productions.filter(p=>memberProductions[p.id]),revokedAccounts:admin?allAccounts.filter(m=>m.revoked).map(m=>({id:m.id,name:m.name,keepPublic:m.keepPublic,productions:assignments(m),publication:m.publication||{}})):[],accounts:admin?accounts.map(m=>({id:m.id,name:m.name,needsEmail:!m.email,pendingPersonId:m.pendingPersonId,productions:assignments(m)})):[],agreementReady:!!await store.getMetadata('contract/master'),agreementSupported:true,welcome:await get('settings/welcome'),welcomePlayed:!!await get('welcome-played/'+self),catalog:adminCatalog,admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),mailTracking,mailLog:admin?(await list('mail-log/')).filter(Boolean).sort((a,b)=>b.updated-a.updated).slice(0,30).map(row=>mailTracking&&/^Delivery status unavailable/.test(row.error||'')?{...row,error:null}:row):[],mailQueue:admin?(await list('outbox/')).filter(Boolean).map(({to,subject,attempts,nextAttempt,lastError})=>({to,subject,attempts,nextAttempt,lastError})):[],members:rows.filter(row=>!admin||assignments(row)[productionId]).map(({ticket,...row})=>({...row,practice:practiceName(row.name)})),resources:(await list('resources/')).filter(canReadResource).map(r=>admin?r:({...r,audience:undefined})).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
+    return json({pendingPeople,adminProfileId,adminProfileCandidates:profileCandidates,unassignedProfiles:admin?rows.filter(row=>!Object.keys(assignments(row)).length).map(({ticket,...row})=>({...row,practice:practiceName(row.name)})):[],agreementCycle:AGREEMENT_CYCLE,unassigned:admin?await Promise.all(accounts.filter(m=>!Object.keys(assignments(m)).length).map(async m=>({id:m.id,name:m.name,needsEmail:!ownerOf(m)&&!m.email,adminProfile:ownerOf(m),pendingPersonId:m.pendingPersonId,activated:!!ownerOf(m)||!!m.email&&!!await get('passwords/'+m.id)}))):[],productionReviews,productionChoices:productions,waiting,productionId,productions:admin?productions:productions.filter(p=>memberProductions[p.id]),revokedAccounts:admin?allAccounts.filter(m=>m.revoked).map(m=>({id:m.id,name:m.name,keepPublic:m.keepPublic,productions:assignments(m),publication:m.publication||{}})):[],accounts:admin?accounts.map(m=>({id:m.id,name:m.name,needsEmail:!ownerOf(m)&&!m.email,adminProfile:ownerOf(m),pendingPersonId:m.pendingPersonId,productions:assignments(m)})):[],agreementReady:!!await store.getMetadata('contract/master'),agreementSupported:true,welcome:await get('settings/welcome'),welcomePlayed:!!await get('welcome-played/'+self),catalog:adminCatalog,admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),mailTracking,mailLog:admin?(await list('mail-log/')).filter(Boolean).sort((a,b)=>b.updated-a.updated).slice(0,30).map(row=>mailTracking&&/^Delivery status unavailable/.test(row.error||'')?{...row,error:null}:row):[],mailQueue:admin?(await list('outbox/')).filter(Boolean).map(({to,subject,attempts,nextAttempt,lastError})=>({to,subject,attempts,nextAttempt,lastError})):[],members:rows.filter(row=>!admin||assignments(row)[productionId]).map(({ticket,...row})=>({...row,practice:practiceName(row.name)})),resources:(await list('resources/')).filter(canReadResource).map(r=>admin?r:({...r,audience:undefined})).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
   }
   if((action==='invite'||action==='resend')&&post){
     onlyAdmin();requireThat(production&&mailReady(),'Invitation email is awaiting sender setup. No invitation was sent.',503);
@@ -1125,6 +1172,7 @@ export default async function handle(req, context) {
     requireThat(req.method==='GET','Use GET to check signing status.',405);
     const member=await target();
     requireThat(active(member),'Member unavailable.',404);
+    if(await isAdminProfile(member))return json({status:'Not required',paperworkStatus:'Not required',url:null});
     const tracking=await readAgreementTracking(rawStore,productionId,uid);
     const key='agreements/'+uid,record=await store.getWithMetadata(key,{type:'json'}),a=record?.data;
     requireThat(a?.id&&!a.cleared,'No new signing request has been prepared yet.');

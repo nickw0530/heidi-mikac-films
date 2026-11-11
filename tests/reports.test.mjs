@@ -3,6 +3,8 @@ import {test} from 'node:test';
 import {emptyAvailability,availabilityForDate,normalizeAvailability,matchAvailability} from '../netlify/lib/availability.mjs';
 import {groupReportPeople,runPeopleReport,personReportValue,normalizedReportConfig,reportCsv} from '../members/report-model.mjs';
 import {rawAvailabilityDay} from '../members/availability-state.mjs';
+import {reportSnapshot} from '../netlify/lib/reports.mjs';
+import {currentAgreementKey} from '../netlify/lib/agreement-cycle.mjs';
 
 const dark='written-in-the-dark',lies='wherein-lies-continue';
 const row=(id,name,productionId,extra={})=>({id:'member/'+id,memberId:id,profileId:id,name,productionId,productionName:productionId===dark?'Written in the Dark':'Wherein Lies Continue',hasAccount:true,accountStatus:'Active',agreementStatus:'No agreement on file',documents:[{title:'Current agreement',status:'No agreement on file'}],bioProvided:true,headshotProvided:true,days:[],openTasks:[],actions:[],...extra});
@@ -26,6 +28,34 @@ test('population is explicit, selected people remain selected, and unassigned re
  assert.deepEqual(runPeopleReport(data,settings({audience:'no-account'})).people.map(p=>p.name),['B']);
  assert.deepEqual(runPeopleReport(data,settings({audience:'selected',selectedPeople:['member/b']})).people.map(p=>p.name),['B']);
  assert.deepEqual(runPeopleReport(data,settings({includeUnassigned:true})).people.map(p=>p.name),['A','B','U']);
+});
+
+test('admin profile reports preserve rosters and signed history without counting personal requirements',async()=>{
+ const nick='00000000-0000-4000-8000-000000000071',heidi='00000000-0000-4000-8000-000000000072';
+ const data=new Map([
+  ['settings/admin-profiles',{Nick:nick,Heidi:heidi}],
+  ['members/'+nick,{id:nick,name:'Nick Williams',productions:{[dark]:{role:'Producer'}},productionRequests:{[dark]:'old-review'}}],
+  ['members/'+heidi,{id:heidi,name:'Heidi Mikac',productions:{[dark]:{role:'Director'}}}],
+  ['members/other',{id:'other',name:'Nick Williams',productions:{[dark]:{role:'Cast'}}}],
+  [currentAgreementKey(dark,nick),{id:'old-owner-draft',status:'Waiting on actor'}],
+  [currentAgreementKey(dark,heidi),{id:'completed-owner-agreement',status:'Complete'}],
+  ['resources/required-document',{id:'required-document',title:'Production agreement',type:'PDF'}],
+  ['tasks/'+nick+'/old-task',{id:'old-task',title:'Upload your biography',done:false}],
+ ]);
+ const store={async get(key){return data.get(key)||null;},async getMetadata(){return null;},async *list({prefix}){yield {blobs:[...data.keys()].filter(key=>key.startsWith(prefix)).map(key=>({key}))};}};
+ const snapshot=await reportSnapshot({store,productionId:dark,film:'Written in the Dark',catalog:[],assignments:member=>member.productions,findProfile:()=>null,sharedBase:()=>null,from:'2026-11-11',to:'2026-11-11'});
+ const bound=snapshot.rows.find(record=>record.memberId===nick),signed=snapshot.rows.find(record=>record.memberId===heidi);
+ assert.equal(bound.accountStatus,'Admin profile');assert.equal(bound.hasAccount,true);
+ assert.equal(bound.agreementStatus,'Document N/A');assert.equal(signed.agreementStatus,'Complete');
+ assert.equal(bound.approvalPending,false);assert.deepEqual(bound.openTasks,[]);assert.deepEqual(bound.actions,[]);
+ assert.ok(bound.documents.every(document=>document.status==='Document N/A'));
+ for(const filter of [{type:'profiles',status:'missing'},{type:'documents',status:'outstanding'},{type:'accounts',status:'no-account'},{type:'availability',status:'unanswered'}]){
+  assert.deepEqual(runPeopleReport([snapshot],settings(filter)).people.map(person=>person.memberId),['other']);
+ }
+ const roster=runPeopleReport([snapshot],settings());
+ assert.equal(roster.total,3);
+ assert.equal(personReportValue(roster.people.find(person=>person.memberId===nick),'availability'),'Optional');
+ assert.deepEqual(runPeopleReport([snapshot],settings({type:'accounts',status:'Active'})).people.map(person=>person.memberId),[heidi,nick]);
 });
 test('availability reports count any answer within selected dates and do not use answers from another month',()=>{
  const record=emptyAvailability();record.exceptions['2026-12-05']={status:'available',windows:[{start:'00:00',end:'24:00'}]};

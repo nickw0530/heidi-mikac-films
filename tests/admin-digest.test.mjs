@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {adminActions,notifyAdmins} from '../netlify/lib/admin-actions.mjs';
-import {deliver,emailHtml,TRACKING_KEY} from '../netlify/lib/mail.mjs';
-import {currentAgreementKey} from '../netlify/lib/agreement-cycle.mjs';
+import {deliver,emailHtml,enqueue,TRACKING_KEY} from '../netlify/lib/mail.mjs';
+import {AGREEMENT_CYCLE,currentAgreementKey} from '../netlify/lib/agreement-cycle.mjs';
+import {manualAgreementKey} from '../netlify/lib/paperwork.mjs';
 
 // Isolated storage and a mocked provider: nothing here sends email.
 function fixture(){
@@ -97,6 +98,39 @@ test('Heidi’s countersignature keeps its own immediate notice to the signing i
  const mail=outbox(store);
  assert.equal(mail.length,1);assert.equal(mail[0].to,'hello@heidimikacfilms.com');assert.equal(mail[0].id,'Heidi');
  assert.ok(mail[0].text.startsWith('Open for Heidi’s signature · Ada'));
+});
+
+test('bound admin profiles have no personal actions, while same-name members and admin work retain theirs',async()=>{
+ const store=fixture(),production='written-in-the-dark';
+ const nick='00000000-0000-4000-8000-000000000071',heidi='00000000-0000-4000-8000-000000000072';
+ await store.setJSON('settings/admin-profiles',{Nick:nick,Heidi:heidi});
+ for(const [id,name,email] of [[nick,'Nick Williams','nick@example.invalid'],[heidi,'Heidi Mikac',''],['other','Nick Williams','other@example.invalid']]){
+  await store.setJSON('members/'+id,{id,name,email,productions:{[production]:{}},productionRequests:{[production]:'request-'+id}});
+ }
+ await store.setJSON(currentAgreementKey(production,nick),{id:'old-owner-doc',status:'Waiting on Heidi'});
+ await store.setJSON('tasks/Heidi/admin-task',{id:'admin-task',title:'Review the production calendar'});
+ const actions=await adminActions(store,production);
+ assert.deepEqual(actions.map(item=>item.member),['other','other',null]);
+ assert.equal(actions.at(-1).label,'Review the production calendar');
+ assert.equal(actions.at(-1).owner,'Heidi');
+});
+
+test('queued personal requirements for bound admins are skipped without suppressing production notices',async t=>{
+ const store=fixture(),production='written-in-the-dark';
+ const nick='00000000-0000-4000-8000-000000000073',heidi='00000000-0000-4000-8000-000000000074';
+ const member={id:nick,email:'nick@example.invalid'};
+ await store.setJSON('settings/admin-profiles',{Nick:nick,Heidi:heidi});
+ await store.setJSON('members/'+nick,member);
+ await enqueue(store,member,'owner-task','New production task','Personal task');
+ await enqueue(store,{id:'Heidi',email:'signing@example.invalid'},'owner-countersign','Agreement ready for your signature','Personal contract',0,{agreementCycle:AGREEMENT_CYCLE,requirementKey:manualAgreementKey(production,nick)});
+ await enqueue(store,member,'production-update','New production message','General production news');
+ const fetch=globalThis.fetch,key=process.env.RESEND_API_KEY,from=process.env.HMF_MAIL_FROM;
+ t.after(()=>{globalThis.fetch=fetch;if(key===undefined)delete process.env.RESEND_API_KEY;else process.env.RESEND_API_KEY=key;if(from===undefined)delete process.env.HMF_MAIL_FROM;else process.env.HMF_MAIL_FROM=from;});
+ process.env.RESEND_API_KEY='test-only';process.env.HMF_MAIL_FROM='Production <test@example.invalid>';
+ const sent=[];globalThis.fetch=async(input,options)=>{assert.equal(String(input),'https://api.resend.com/emails');sent.push(JSON.parse(options.body).subject);return Response.json({});};
+ await deliver(store);
+ assert.deepEqual(sent,['New production message']);
+ assert.equal([...store.data.values()].filter(record=>record.value.status==='Not sent — admin profile exempt').length,2);
 });
 
 test('a send-only provider key is reported once instead of on every row',async()=>{

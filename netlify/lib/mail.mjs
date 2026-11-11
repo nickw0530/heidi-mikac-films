@@ -1,11 +1,13 @@
 import {supersededContractNotice} from './agreement-cycle.mjs';
 import {manualPaperworkStatus} from './paperwork.mjs';
 import {includesMember} from './calendar-audience.mjs';
+import {adminProfileOwner,loadAdminProfiles} from './admin-profiles.mjs';
 import {createHash} from 'node:crypto';
 export const mailReady=()=>Boolean(process.env.RESEND_API_KEY&&process.env.HMF_MAIL_FROM);
 export const portalUrl='https://heidimikacfilms.com/members/';
 export const TRACKING_KEY='mail-status/tracking';
 const TRACKING_PAUSE=6*3600000;
+const personalNotices=new Set(['Heidi Mikac Films — your cast & crew invitation','Reset your portal password','New production task','Document ready for signature','Agreement ready for your signature']);
 const mailKey=(member,event)=>createHash('sha256').update(member.id+'/'+event).digest('hex');
 const calendarReceipt=(email,event)=>'calendar/recipients/'+event+'/'+createHash('sha256').update(email.trim().toLowerCase()).digest('hex');
 export async function calendarInvitationAccepted(store,member,eventKey){
@@ -37,6 +39,7 @@ export function emailHtml(message){
 export async function deliver(store,{currentCalendarEvent}={}){
  if(!mailReady())return;
  const entries=(await store.list({prefix:'outbox/'})).blobs;
+ const adminProfiles=entries.length?await loadAdminProfiles(store):{};
  let processed=0;const deadline=Date.now()+22000;let lastRequest=0;
  const pace=async()=>{const delay=600-(Date.now()-lastRequest);if(delay>0)await new Promise(r=>setTimeout(r,delay));lastRequest=Date.now();};
  for(const {key} of entries){
@@ -46,6 +49,8 @@ export async function deliver(store,{currentCalendarEvent}={}){
   const logKey='mail-log/'+key.split('/')[1];
   const log=async(status,extra={})=>store.setJSON(logKey,{to:msg.to,subject:msg.subject,updated:Date.now(),status,...extra});
   if(supersededContractNotice(msg)){await log('Not sent — replaced agreement');await store.delete(key);continue;}
+  const requirementOwner=msg.requirementKey?.startsWith('document-tracking/')?msg.requirementKey.split('/')[2]:null;
+  if((requirementOwner&&adminProfileOwner(adminProfiles,requirementOwner))||(personalNotices.has(msg.subject)&&adminProfileOwner(adminProfiles,msg.id))){await log('Not sent — admin profile exempt');await store.delete(key);continue;}
   if(msg.requirementKey&&manualPaperworkStatus(await store.get(msg.requirementKey,{type:'json'}))){await log('Not sent — document requirement completed');await store.delete(key);continue;}
   if((msg.expires&&msg.expires<Date.now())||!member||member.revoked){await log('Not sent — expired or access revoked');await store.delete(key);continue;}
   if(msg.calendarEvent||msg.subject==='New event on the production calendar'){

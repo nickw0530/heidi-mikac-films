@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {createHash} from 'node:crypto';
+import {createHash,scryptSync} from 'node:crypto';
 import {test} from 'node:test';
 import sharp from 'sharp';
 import {AGREEMENT_CYCLE,currentAgreementKey} from '../netlify/lib/agreement-cycle.mjs';
@@ -31,6 +31,7 @@ const {default:handle}=await import('data:text/javascript;base64,'+Buffer.from(s
 const dark='written-in-the-dark',lies='wherein-lies-continue';
 const actor='00000000-0000-4000-8000-000000000041',other='00000000-0000-4000-8000-000000000042';
 const pdfId='00000000-0000-4000-8000-000000000043',privatePdfId='00000000-0000-4000-8000-000000000044';
+const owners={Nick:'00000000-0000-4000-8000-000000000051',Heidi:'00000000-0000-4000-8000-000000000052'};
 const tokens={Nick:'a'.repeat(64),Heidi:'b'.repeat(64),member:'c'.repeat(64)};
 const digest=value=>createHash('sha256').update(value).digest('hex');
 const profile=darkCatalog.find(person=>person.name==='Rachel DeMicco');assert.ok(profile);
@@ -92,6 +93,108 @@ async function setAgreement(context,{id='active-doc',production=dark,status='Wai
  context.documents.set(id,{id,name:agreement.name,status:providerStatus,recipients:[{id:'1',name:'Rachel DeMicco',email:actor+'@example.invalid',status:'pending'},{id:'2',name:'Heidi Mikac',email:'hello@heidimikacfilms.com',status:'pending'}]});
  return agreement;
 }
+async function ownerFixture({linked=true}={}){
+ const context=await fixture(),{store}=context;
+ if(linked)await store.setJSON('settings/admin-profiles',owners);
+ const names={Nick:'Nick Williams',Heidi:'Heidi Mikac'};
+ for(const [owner,id] of Object.entries(owners)){
+  const productions={
+   [dark]:{role:'Producer',filmProfile:owner==='Nick'?'nick':'heidi'},
+   [lies]:{role:'Producer',filmProfile:owner==='Nick'?'nick-williams':'heidi'},
+  };
+  await store.setJSON('members/'+id,{id,name:names[owner],email:owner.toLowerCase()+'-profile@example.invalid',productions,
+   productionRequests:{[dark]:'stale-request-'+owner}});
+  await store.setJSON('tasks/'+id+'/old-task',{id:'old-task',title:'Old personal task',done:false});
+  await store.setJSON('portal-pending/'+id,{id,memberId:id,name:names[owner]});
+  await store.setJSON(currentAgreementKey(dark,id),{id:'pending-'+owner,cycle:AGREEMENT_CYCLE,status:'Waiting on Heidi'});
+  await store.setJSON('agreements/'+id,{id:'archived-'+owner,status:'Complete'});
+ }
+ return context;
+}
+
+test('administrator linking accepts only the verified pair of existing cast profile IDs',async()=>{
+ const {store}=await ownerFixture({linked:false});
+ assert.equal((await call('linkAdminProfiles',{who:'member',body:owners})).status,403);
+ assert.equal((await call('linkAdminProfiles',{body:{...owners,Nick:other}})).status,409);
+ assert.equal(await store.get('settings/admin-profiles'),null);
+ assert.equal((await call('linkAdminProfiles',{body:owners})).status,200);
+ assert.deepEqual(await store.get('settings/admin-profiles'),owners);
+ assert.equal((await call('linkAdminProfiles',{who:'Heidi',body:owners})).status,200);
+ assert.equal((await call('linkAdminProfiles',{body:{Nick:owners.Heidi,Heidi:owners.Nick}})).status,409);
+ assert.deepEqual(await store.get('settings/admin-profiles'),owners);
+});
+
+test('both administrators see the linked personal profiles and can edit either of them',async()=>{
+ const {store,notifications}=await ownerFixture();
+ for(const [who,id] of Object.entries(owners)){
+  const home=await call('home',{who});
+  assert.equal(home.status,200);
+  assert.equal(home.data.adminProfileId,id);
+  for(const [owner,memberId] of Object.entries(owners)){
+   const member=home.data.members.find(row=>row.id===memberId);
+   assert.equal(member.adminProfile,owner);
+   assert.equal(member.paperworkExempt,true);
+   assert.equal(member.needsEmail,false);
+   assert.deepEqual(member.tasks,[]);
+   assert.ok(member.documents.some(document=>document.kind==='previous-signed'));
+   assert.ok(!home.data.waiting.some(action=>action.member===memberId));
+   assert.ok(!home.data.productionReviews.some(review=>review.id===memberId));
+   assert.ok(!home.data.pendingPeople.some(person=>person.profileId===memberId));
+  }
+ }
+ const photo=await sharp({create:{width:12,height:16,channels:3,background:'#ffc344'}}).jpeg().toBuffer();
+ for(const [who,target] of [['Heidi',owners.Nick],['Nick',owners.Heidi]]){
+  assert.equal((await call('bio',{who,id:target,body:{bio:'Edited by '+who}})).status,200);
+  assert.equal((await call('photo',{who,id:target,body:new Blob([photo],{type:'image/jpeg'})})).status,200);
+  const member=await store.get('members/'+target);
+  assert.deepEqual(member.draftProfile,{bio:'Edited by '+who,imageVersion:digest(photo)});
+  assert.equal((await call('memberDocument',{who,id:target,params:{kind:'previous-signed'}})).status,200);
+ }
+ const details={name:'Nick Williams (fixture)',email:'updated-profile@example.invalid'};
+ assert.equal((await call('saveAdminProfileDetails',{who:'Heidi',id:owners.Nick,body:details})).status,200);
+ const updated=await row(dark,'Nick',owners.Nick);
+ assert.equal(updated.adminProfile,'Nick');
+ assert.equal(updated.name,details.name);
+ assert.equal(updated.email,details.email);
+ assert.equal(updated.filmProfile,'nick');
+ assert.equal((await call('home',{who:'Nick'})).data.adminProfileId,owners.Nick);
+ assert.equal((await call('saveAdminProfileDetails',{who:'member',id:owners.Nick,body:details})).status,403);
+ assert.deepEqual(notifications,[]);
+});
+
+test('linked personal profiles cannot sign in separately or trigger portal requirements',async()=>{
+ const context=await ownerFixture(),{store}=context;
+ const id=owners.Nick,password='A unique former member password',salt='old-member-password-salt';
+ const code='old-member-key-'.repeat(4),ticket='d'.repeat(64),resetTicket='e'.repeat(64);
+ const credential={salt,digest:scryptSync(password,salt,64).toString('hex')};
+ await store.setJSON('passwords/'+id,credential);
+ await store.setJSON('keys/'+digest(code),{id});
+ await store.setJSON('sessions/'+digest(tokens.member),{id,admin:false,expires:Date.now()+3600000});
+ await store.setJSON('resets/'+digest(resetTicket),{id,passwordDigest:credential.digest,expires:Date.now()+3600000});
+ await store.setJSON('members/'+owners.Heidi,{...(await store.get('members/'+owners.Heidi)),ticket:digest(ticket)});
+ await store.setJSON('tickets/'+digest(ticket),{id:owners.Heidi,expires:Date.now()+3600000});
+ const isDenied=response=>assert.ok([401,403,409].includes(response.status),JSON.stringify(response.data));
+ const username=(await store.get('members/'+id)).email;
+ isDenied(await call('passwordLogin',{who:null,body:{username,password}}));
+ isDenied(await call('login',{who:null,body:{code}}));
+ isDenied(await call('activate',{who:null,body:{ticket,password}}));
+ isDenied(await call('home',{who:'member',id}));
+ await call('requestReset',{who:null,body:{username}});
+ const reset=await call('resetPassword',{who:null,body:{ticket:resetTicket,password:'Another formerly valid password'}});
+ assert.ok([400,401,403,409].includes(reset.status));
+ assert.deepEqual(await store.get('passwords/'+id),credential);
+ for(const [action,body] of [
+  ['agreement',{preview:true}],['sendAgreement',{documentId:'pending-Nick'}],['trackPaperwork',{document:'agreement',reason:'reopen'}],
+  ['task',{title:'An unnecessary task'}],['resend',{}]
+ ])isDenied(await call(action,{who:'Heidi',id,body}));
+ const status=await call('status',{who:'Heidi',id,params:{document:'pending-Nick'}});
+ if(status.status===200){
+  assert.equal(status.data.url,null);
+  assert.match(status.data.paperworkStatus||status.data.status,/not required/i);
+ }else isDenied(status);
+ assert.deepEqual(context.calls,[],'Exempt personal requirements must never reach SignWell.');
+ assert.deepEqual(context.notifications,[]);
+});
 
 test('a member saves their headshot and biography together before website approval',async()=>{
  const context=await fixture();

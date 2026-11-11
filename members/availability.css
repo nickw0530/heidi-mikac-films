@@ -59,3 +59,13 @@
 .availability-maybe{background:#6b5318!important;color:#fff3bd!important;border-color:#e2bc51!important}.availability-date.availability-available{background:#1d6638!important;color:#effff3!important;border-color:#7bdfa0!important}.availability-date.availability-unavailable{background:#8c2935!important;color:#fff1f2!important;border-color:#ff9aa4!important}.availability-date.availability-maybe{background:#b18b1c!important;color:#171305!important;border-color:#ffe184!important}.availability-widget .availability-date{touch-action:manipulation}.availability-status.availability-maybe,.availability-badge.availability-maybe{color:#fff3bd}
 
 .availability-widget:not(.availability-admin) .availability-date>span{font-size:1.15rem;line-height:1.1;font-weight:750}.availability-widget:not(.availability-admin) .availability-date{min-height:66px}
+
+.availability-team-calendar{width:100%;max-width:22rem;margin:0 0 14px}
+.availability-team-month-nav{display:grid;grid-template-columns:44px minmax(0,1fr) 44px;align-items:center;gap:6px;margin-bottom:5px}
+.availability-team-month-nav h5{margin:0;text-align:center}
+.availability-team-month-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:3px}
+.availability-team-calendar button{min-width:0;min-height:40px;margin:0;padding:4px 0;touch-action:manipulation}
+.availability-team-month-nav button{font-size:1.3rem;line-height:1}
+.availability-team-calendar .availability-team-date{font-size:.9rem;background:#242126}
+.availability-team-calendar .availability-team-date[aria-pressed="true"]{background:#47332c;border-color:#f4d39e;color:#fff3dd}
+.availability-team-calendar button:focus-visible{outline-offset:-3px}

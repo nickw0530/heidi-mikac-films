@@ -25,4 +25,14 @@ globalThis.fetch=async()=>Response.json({status:'sent',recipients:[{id:'1',statu
 await checkSigningNotices(store);
 assert.equal((await store.get(currentAgreementKey('wherein-lies-continue','person'))).status,'Waiting on Heidi');
 queued=[...data].filter(([key])=>key.startsWith('outbox/'));assert.equal(queued.length,1);assert(queued[0][1].value.text.includes('Example Actor'));
+const nick='00000000-0000-4000-8000-000000000075',heidi='00000000-0000-4000-8000-000000000076';
+await store.setJSON('settings/admin-profiles',{Nick:nick,Heidi:heidi});
+const owner={id:nick,name:'Nick Williams'},ownerAgreement={id:'owner-agreement',status:'Waiting on Heidi'};
+await store.setJSON('members/'+nick,owner);
+await store.setJSON(currentAgreementKey(production.id,nick),ownerAgreement);
+assert.equal(await countersignatureNotice(store,ownerAgreement,owner,production),false);
+globalThis.fetch=async input=>{assert.ok(!String(input).includes('owner-agreement'),'A bound admin’s personal agreement does not need a status sweep.');return Response.json({status:'sent',recipients:[{id:'1',status:'signed'}]});};
+await checkSigningNotices(store);
+assert.equal((await store.get(currentAgreementKey(production.id,nick))).status,'Waiting on Heidi','The prior agreement stays intact.');
+assert.equal([...data].filter(([key])=>key.startsWith('outbox/')).length,1);
 console.log('PASS: actor-first notifications, failure protection, concurrent/repeated delivery deduplication and unattended production status checks. No external requests.');

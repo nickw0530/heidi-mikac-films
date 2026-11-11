@@ -30,12 +30,12 @@ export function reportField(row,field){
   case 'account':return row.accountStatus||'Website profile only';
   case 'agreement':return row.agreementStatus||'No agreement on file';
   case 'documents':return (row.documents||[]).map(d=>d.title+': '+d.status).join('\n')||'No assigned documents';
-  case 'bio':return row.bioProvided?'Provided':'Missing';
-  case 'headshot':return row.headshotProvided?'Provided':'Missing';
+  case 'bio':return row.bioProvided?'Provided':row.adminProfile?'Optional':'Missing';
+  case 'headshot':return row.headshotProvided?'Provided':row.adminProfile?'Optional':'Missing';
   case 'approval':return row.approvalPending?'Approval needed':row.productionId?'No pending approval':'Not assigned';
   case 'tasks':return (row.openTasks||[]).join('\n')||'None';
   case 'actions':return (row.actions||[]).join('\n')||'None';
-  case 'availability':return counts.answered?ANSWER_LABELS.answered:ANSWER_LABELS.unanswered;
+  case 'availability':return counts.answered?ANSWER_LABELS.answered:row.adminProfile?'Optional':ANSWER_LABELS.unanswered;
   case 'answeredDays':return counts.answered+' / '+counts.total;
   case 'availableDays':return String(counts.available);
   case 'unavailableDays':return String(counts.unavailable);
@@ -72,10 +72,10 @@ export function compareCondition(row,condition){
 }
 function readyMatch(row,settings){
  const counts=availabilityCounts(row),status=settings.status||'all';
- if(settings.type==='availability')return status==='all'||status==='answered'&&counts.answered>0||status==='unanswered'&&counts.answered===0||status==='available'&&counts.available>0||status==='maybe'&&counts.maybe>0;
+ if(settings.type==='availability')return status==='all'||status==='answered'&&counts.answered>0||status==='unanswered'&&!row.adminProfile&&counts.answered===0||status==='available'&&counts.available>0||status==='maybe'&&counts.maybe>0;
  if(settings.type==='documents')return status==='all'||status==='outstanding'&&(row.documents||[]).some(d=>!['Complete','Document N/A'].includes(d.status))||reportField(row,'agreement')===status;
- if(settings.type==='profiles')return status==='all'||status==='missing'&&(!row.bioProvided||!row.headshotProvided)||status==='bio'&&!row.bioProvided||status==='headshot'&&!row.headshotProvided||status==='complete'&&row.bioProvided&&row.headshotProvided;
- if(settings.type==='accounts')return status==='all'||status==='no-account'&&!row.hasAccount||row.accountStatus===status;
+ if(settings.type==='profiles')return status==='all'||status==='complete'&&row.bioProvided&&row.headshotProvided||!row.adminProfile&&(status==='missing'&&(!row.bioProvided||!row.headshotProvided)||status==='bio'&&!row.bioProvided||status==='headshot'&&!row.headshotProvided);
+ if(settings.type==='accounts')return status==='all'||status==='no-account'&&!row.hasAccount||status==='Active'&&!!row.adminProfile||row.accountStatus===status;
  if(settings.type==='pending')return status==='all'||status==='needed'&&(row.approvalPending||row.openTasks?.length)||status==='approvals'&&row.approvalPending||status==='tasks'&&row.openTasks?.length||status==='actions'&&row.actions?.length;
  return true;
 }
