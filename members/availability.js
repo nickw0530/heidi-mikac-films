@@ -164,7 +164,7 @@ export function mountAvailability(container,options){
   redraw();return host;
  }
  function weeklyEditor(){
-  const details=el('details',{class:'availability-weekly'},el('summary',{},admin?'Usual weekly availability':'Your usual week'));
+  const details=el('details',{class:'availability-weekly'},el('summary',{},'Usual weekly availability'));
   details.open=weeklyOpen;details.addEventListener('toggle',()=>{weeklyOpen=details.open;});
   details.append(el('p',{},'Enter the hours you can physically be on set after allowing for your drive. Change a particular date below when your usual week does not apply.'));
   const week=el('div',{class:'availability-week'});
@@ -196,6 +196,10 @@ export function mountAvailability(container,options){
   if(!quickBlocked)note('Saving calendar changes…');
   clearTimeout(quickTimer);if(!quickBlocked)quickTimer=setTimeout(saveClickedDays,250);
  }
+ function retryClickedDays(){
+  if(quickBlocked!=='retry')return;
+  quickBlocked=false;note('Saving calendar changes…');saveClickedDays();
+ }
  async function saveClickedDays(){
   if(destroyed||quickSaving||saving||quickBlocked||!dirty)return;
   const version=quickVersion;
@@ -203,12 +207,15 @@ export function mountAvailability(container,options){
    validateDraft();quickSaving=true;render();
    const value=clone(draft),saved=await request('saveAvailability',{revision,timezone:ZONE,weekly:value.weekly,exceptions:value.exceptions},selectedMember);
    if(destroyed)return;
-   if(!saved.availability)throw Error('Calendar could not be confirmed. Refresh before trying again.');
+   if(!saved.availability)throw Error('The calendar save could not be confirmed.');
    const member=currentMember();member.availability=saved.availability;member.revision=saved.revision??null;delete member.days;revision=member.revision;
    if(version===quickVersion){adopt(true);note('Calendar saved.');onSaved?.();}
    else note('Saving calendar changes…');
   }catch(error){
-   if(!destroyed){quickBlocked=true;note(error.status===409?'Your calendar changed in another session. These clicks are not saved. Refresh availability before trying again.':(error.message||'These calendar changes could not be saved.')+' Your changes remain on screen. Use Save this date to retry.',true);}
+   if(!destroyed){
+    quickBlocked=error.status===409?'conflict':'retry';
+    note(quickBlocked==='conflict'?'Your calendar changed in another session. These clicks are not saved. Refresh availability before trying again.':(error.message||'These calendar changes could not be saved.')+' Your changes remain on screen. Use Retry save to try again.',true);
+   }
   }finally{
    quickSaving=false;
    if(!destroyed){render();if(dirty&&!quickBlocked&&version!==quickVersion)quickTimer=setTimeout(saveClickedDays,0);}
@@ -222,7 +229,7 @@ export function mountAvailability(container,options){
   const section=el('section',{class:'availability-calendar'});
   section.append(el('div',{class:'availability-month-nav'},button('Previous month',()=>shift(-1),{'data-availability-focus':'previous-month'}),el('h4',{},heading),button('Next month',()=>shift(1),{'data-availability-focus':'next-month'})));
   if(admin)section.append(el('p',{class:'availability-help'},'Calendar for '+(currentMember()?.name||'this person')+'. Select a date to see everyone’s availability.'));
-  else section.append(el('p',{class:'availability-help'},'Tap a date to cycle through available, unavailable, maybe, and blank. Changes save automatically.'));
+  else section.append(el('p',{class:'availability-help'},'Tap a date to cycle through available all day, unavailable, maybe, and blank. Changes save automatically.'));
   const grid=el('div',{class:'availability-month-grid',role:'group','aria-label':heading+' availability'});
   const totals=Object.fromEntries(Object.keys(STATUSES).map(status=>[status,0]));
   DAYS.forEach(name=>grid.append(el('div',{class:'availability-day-heading','aria-label':name},name.slice(0,3))));
@@ -241,7 +248,7 @@ export function mountAvailability(container,options){
   if(!admin){
    const summary=totals.available+' available · '+totals.unavailable+' unavailable · '+totals.maybe+' maybe · '+totals.unknown+' not answered'+(totals['needs-confirmation']?' · '+totals['needs-confirmation']+' to check':'');
    section.append(el('p',{class:'availability-month-summary'},summary),
-    el('p',{class:'availability-help'},totals.unknown===count?'An untouched month is unanswered. Once you set any day in a month, blank dates in that month count as unavailable.':'Blank dates count as unavailable this month. Green dates are available all day unless you set hours below.'));
+    el('p',{class:'availability-help'},totals.unknown===count?'An untouched month is unanswered. Once you set any day in a month, blank dates in that month count as unavailable.':'Blank dates count as unavailable this month.'));
    if(canEdit())section.append(button(lastQuickChange?'Undo '+shortDate(lastQuickChange.date)+' change':'Undo last day change',undoDay,{'data-availability-undo':'',disabled:lastQuickChange?null:'disabled'}));
   }
   return section;
@@ -268,7 +275,7 @@ export function mountAvailability(container,options){
    if(value.warning)row.append(el('small',{},value.warning));
    list.append(row);
   }
-  section.append(list);return section;
+  section.append(el('p',{class:'availability-help'},'Hours are shown in Eastern time.'),list);return section;
  }
  function dailyAvailability(){
   const section=el('section',{class:'availability-daily'},el('h4',{},dayLabel(selectedDate)));
@@ -381,13 +388,10 @@ export function mountAvailability(container,options){
   body.replaceChildren(header);
   body.append(button('Discard unsaved changes',()=>{adopt();render();note('Unsaved availability changes discarded.');},{class:'availability-discard','data-availability-discard':'',hidden:dirty?null:'hidden',disabled:saving||quickSaving?'disabled':null}));
   if(admin){renderAdmin();if(saving)body.querySelectorAll('button,input,select').forEach(control=>{control.disabled=true;});return;}
-  body.append(el('p',{class:'availability-timezone'},'Eastern time. Set exact arrival and departure times for partial days.'));
   if(!data.members.length){body.append(el('p',{},'No cast or crew profiles are assigned to this production yet.'));return;}
+  if(canEdit()&&quickBlocked==='retry')body.append(button('Retry save',retryClickedDays));
   const updated=updatedLabel(member);if(updated)body.append(updated);
-  body.append(calendar());
-  if(canEdit())body.append(dateEditor());
-  if(canEdit())body.append(weeklyEditor());
-  body.append(productionDay());
+  body.append(calendar(),productionDay());
   if(saving)body.querySelectorAll('button,input,select').forEach(control=>{control.disabled=true;});
   else if(quickSaving)body.querySelectorAll('input,select,button:not(.availability-date)').forEach(control=>{control.disabled=true;});
   const focusSelector=focused?.availabilityDate?'[data-availability-date="'+focused.availabilityDate+'"]':

@@ -801,7 +801,7 @@ async function load(initial){
     '<label>Import biography (.txt)<input type="file" accept=".txt,text/plain" data-bio-file></label>','Save profile',m.id)+'</section>';
   const documentsPane=assigned||documents.length?'<section class="member-panel member-paperwork" data-member-view="documents"><h2>My documents</h2>'+agreementControls+
    (documents.length?'<ul>'+documents.join('')+'</ul>':(agreementControls?'':'<p>No documents assigned yet.</p>'))+'<div id="signing" data-signing></div></section>':'';
-  const availabilityPane='<section class="member-panel member-availability" data-member-view="availability"><h2>My availability</h2><p>Share your earliest arrival and latest departure with cast and crew of '+escape(s.film)+'.</p><div data-availability-slot></div></section>';
+  const availabilityPane='<section class="member-panel member-availability" data-member-view="availability"><h2>My availability</h2><p>Share your availability with the cast and crew of '+escape(s.film)+'.</p><div data-availability-slot></div></section>';
   const eventsPane='<div data-member-view="events"><h2>Events &amp; updates</h2><div id="calendar-slot"></div><section class="member-panel member-board"><h3>Production board</h3>'+(updates||'<p>No updates posted yet.</p>')+'</section></div>';
   const tabs=memberViews.filter(([view])=>assigned||view==='profile'||view==='documents'&&documentsPane);
   return '<nav class="office-nav member-nav" aria-label="Member dashboard">'+tabs.map(([view,label])=>memberButton(view,label)).join('')+'</nav>'+
