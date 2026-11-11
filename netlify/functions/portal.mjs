@@ -383,10 +383,11 @@ export default async function handle(req, context) {
     }));
     return json({productionId,film,timezone:AVAILABILITY_TIME_ZONE,selfId:self,admin,members,...(dates?{from,to}:{})});
   }
-  if(action==='calendarConnect'||action==='calendarEvents'){
+  if(['calendarConnect','calendarEvents','calendarNotes'].includes(action)){
     requireThat(url.origin==='https://heidimikacfilms.com','Production only.',403);
     if(action==='calendarConnect'){onlyAdmin();requireThat(post,'Use the connect button.',405);return await beginCalendar(store,sessionKey);}
-    return await calendarEvents(store,admin,url.searchParams.get('event'),account);
+    requireThat(!post,'Use GET to read the calendar.',405);
+    return await calendarEvents(store,admin,url.searchParams.get('event'),account,{notesOnly:action==='calendarNotes'});
   }
   const target=async({withMetadata=false}={})=>{
     requireThat(uuid.test(uid)&&(admin||uid===self),'Access denied.',403);

@@ -9,8 +9,10 @@ const tenant='7b0dc2ce-48a2-4703-987f-9bbca1bf0089';
 const authority='https://login.microsoftonline.com/'+tenant+'/oauth2/v2.0';
 const client='858bc951-de5f-4423-8602-acf4923ba964';
 const mailbox='hello@heidimikacfilms.com';
-const scope='offline_access User.Read Calendars.ReadBasic';
+const scope='offline_access User.Read Calendars.Read';
 const binding='calendar/connection';
+const calendarRowsVersion=3;
+const maxNoteLength=12000;
 const eventStateKey=key=>'calendar/event-state/'+key;
 const nonce=()=>randomBytes(32).toString('base64url');
 const digest=value=>createHash('sha256').update(value).digest('base64url');
@@ -30,8 +32,10 @@ async function exchange(fields){
  if(!response.ok)throw new Error('Microsoft authorization failed');
  return response.json();
 }
-async function graph(path,token,timeout=15000){
- const response=await fetch('https://graph.microsoft.com/v1.0/'+path,{signal:AbortSignal.timeout(timeout),headers:{Authorization:'Bearer '+token}});
+async function graph(path,token,timeout=15000,preferText=false){
+ const requestHeaders={Authorization:'Bearer '+token};
+ if(preferText)requestHeaders.Prefer='outlook.body-content-type="text"';
+ const response=await fetch('https://graph.microsoft.com/v1.0/'+path,{signal:AbortSignal.timeout(timeout),headers:requestHeaders});
  if(!response.ok)throw Object.assign(new Error('Calendar unavailable'),{status:response.status});
  return response.json();
 }
@@ -41,12 +45,13 @@ const utcTime=value=>{
  if(!value)return NaN;
  return Date.parse(/(?:Z|[+-]\d\d:\d\d)$/i.test(value)?value:value+'Z');
 };
-function display(event){
+function display(event,includeOutlookId=false){
  const productions=eventProductions(event);
  return {
   key:digest(event.id),title:event.subject,start:event.start?.dateTime,end:event.end?.dateTime,
   allDay:!!event.isAllDay,productions,
-  location:productions.length?String(event.location?.displayName||'').trim().slice(0,300):''
+  location:productions.length?String(event.location?.displayName||'').trim().slice(0,300):'',
+  ...(includeOutlookId&&productions.length?{outlookId:event.id}:{})
  };
 }
 async function* pages(path,token){
@@ -65,7 +70,7 @@ async function upcoming(token){
  const params=new URLSearchParams({startDateTime:new Date(now).toISOString(),endDateTime:new Date(now+30*86400000).toISOString(),'$select':fields,'$orderby':'start/dateTime','$top':'100'});
  const rows=[];
  for await(const page of pages('me/calendarView?'+params,token))rows.push(...page.filter(e=>!e.isCancelled));
- return rows.map(display);
+ return rows.map(event=>display(event,true));
 }
 async function access(store,record){
  const token=await exchange({grant_type:'refresh_token',refresh_token:record.data.refresh});
@@ -73,16 +78,17 @@ async function access(store,record){
  await store.setJSON(binding,updated,{onlyIfMatch:record.etag});
  return token.access_token;
 }
-export async function events(store,admin,eventKey,member){
+export async function events(store,admin,eventKey,member,{notesOnly=false}={}){
+ if(notesOnly)return eventNotes(store,admin,eventKey,member);
  const record=await store.getWithMetadata(binding,{type:'json'});
- if(!record)return Response.json({connected:false},{headers});
+ if(!record)return Response.json({connected:false,notesEnabled:false},{headers});
  let token;
  let rows=record.data.productionCalendarRows;
- if(!rows||record.data.calendarRowsVersion!==2||record.data.cachedUntil<=Date.now()){
+ if(!rows||record.data.calendarRowsVersion!==calendarRowsVersion||record.data.cachedUntil<=Date.now()){
   token=await access(store,record);
   rows=await upcoming(token);
   const latest=await store.getWithMetadata(binding,{type:'json'});
-  if(latest)await store.setJSON(binding,{...latest.data,productionCalendarRows:rows,calendarRowsVersion:2,cachedUntil:Date.now()+120000},{onlyIfMatch:latest.etag});
+  if(latest)await store.setJSON(binding,{...latest.data,productionCalendarRows:rows,calendarRowsVersion,cachedUntil:Date.now()+120000},{onlyIfMatch:latest.etag});
  }
  let items=rows.filter(event=>admin||includesMember(event.productions,member));
  let selected=null;
@@ -108,7 +114,61 @@ export async function events(store,admin,eventKey,member){
    }
   }
  }
- return Response.json({connected:true,items,selected},{headers});
+ return Response.json({
+  connected:true,notesEnabled:record.data.notesEnabled===true,
+  items:items.map(({outlookId,...event})=>event),selected
+ },{headers});
+}
+
+const entities=new Map(Object.entries({
+ amp:'&',apos:"'",quot:'"',lt:'<',gt:'>',nbsp:' ',ndash:'–',mdash:'—',hellip:'…',
+ lsquo:'‘',rsquo:'’',ldquo:'“',rdquo:'”',bull:'•'
+}));
+function plainOutlookNote(event){
+ const content=typeof event.body?.content==='string'?event.body.content:'';
+ if(event.body?.contentType?.toLowerCase()!=='html')return content||event.bodyPreview||'';
+ return content
+  .replace(/<!--[\s\S]*?-->/g,'')
+  .replace(/<(head|script|style|template|iframe|object)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,'')
+  .replace(/<br\b[^>]*>|<\/(?:p|div|li|tr|h[1-6])\s*>/gi,'\n')
+  .replace(/<[^>]*>/g,'')
+  .replace(/&(#x[0-9a-f]+|#\d+|[a-z][a-z0-9]*);/gi,(match,name)=>{
+   if(!name.startsWith('#'))return entities.get(name)||match;
+   const hexadecimal=name[1].toLowerCase()==='x';
+   const number=Number.parseInt(name.slice(hexadecimal?2:1),hexadecimal?16:10);
+   return number>0&&number<=0x10ffff&&!(number>=0xd800&&number<=0xdfff)?String.fromCodePoint(number):'�';
+  });
+}
+
+export async function eventNotes(store,admin,eventKey,member){
+ const empty=()=>Response.json({notes:'',truncated:false},{headers});
+ if(!/^[\w-]{43}$/.test(eventKey||''))return empty();
+ const record=await store.getWithMetadata(binding,{type:'json'});
+ if(record?.data?.notesEnabled!==true)return empty();
+ const known=record.data.productionCalendarRows?.find(event=>event.key===eventKey);
+ if(known&&(!known.productions.length||!admin&&!includesMember(known.productions,member)))return empty();
+ let id=known?.outlookId;
+ if(!id){
+  id=await store.get('calendar/event-links/'+eventKey);
+  if(!id)return empty();
+  const state=await store.get(eventStateKey(eventKey),{type:'json'});
+  const audience=state?.audience??await store.get('calendar/audiences/'+eventKey,{type:'json'});
+  if(!audience?.length||!admin&&!includesMember(audience,member))return empty();
+ }
+ const token=await access(store,record);
+ let event;
+ try{
+  const params=new URLSearchParams({'$select':'id,categories,sensitivity,isCancelled,body,bodyPreview'});
+  event=await graph('me/calendar/events/'+encodeURIComponent(id)+'?'+params,token,15000,true);
+ }catch(error){
+  if(error.status===404||error.status===410)return empty();
+  throw error;
+ }
+ const productions=eventProductions(event);
+ if(event.id!==id||!productions.length||!admin&&!includesMember(productions,member))return empty();
+ const note=plainOutlookNote(event).replace(/\r\n?/g,'\n').replace(/\u00a0/g,' ').trim();
+ const characters=Array.from(note);
+ return Response.json({notes:characters.slice(0,maxNoteLength).join(''),truncated:characters.length>maxNoteLength},{headers});
 }
 const notices={
  new:['New event on the production calendar','An event has been added to the Heidi Mikac Films calendar. Sign in to see the event and its scheduled time.'],
@@ -251,8 +311,11 @@ export default async function callback(req){
   const token=await exchange({grant_type:'authorization_code',code:url.searchParams.get('code'),redirect_uri:redirect,code_verifier:pending.verifier});
   const user=await graph('me?$select=userPrincipalName',token.access_token);
   if(user.userPrincipalName?.toLowerCase()!==mailbox||!token.refresh_token)throw Error();
-  await upcoming(token.access_token);
-  await store.setJSON(binding,{refresh:token.refresh_token});
-  return new Response(null,{status:303,headers:{...headers,'Set-Cookie':cookie('',0),Location:'/members/'}});
+  const scopes=String(token.scope||'').split(/\s+/).map(value=>value.split('/').at(-1));
+  if(!scopes.includes('Calendars.Read')&&!scopes.includes('Calendars.ReadWrite'))throw Error();
+  const rows=await upcoming(token.access_token);
+  await store.setJSON(binding,{refresh:token.refresh_token,notesEnabled:true,
+   productionCalendarRows:rows,calendarRowsVersion,cachedUntil:Date.now()+120000});
+  return new Response(null,{status:303,headers:{...headers,'Set-Cookie':cookie('',0),Location:'/members/?view=calendar'}});
  }catch{return new Response('Calendar connection did not finish. Return to the admin portal and connect again using hello@heidimikacfilms.com.',{status:400,headers});}
 }

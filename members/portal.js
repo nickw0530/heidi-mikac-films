@@ -1119,6 +1119,64 @@ async function mountCalendar(admin=true){
   const next=app.querySelector('[data-member-next-event]');
   if(next)next.textContent=text;
  };
+ const connectButton=label=>{
+  const button=document.createElement('button');
+  button.type='button';
+  button.textContent=label;
+  button.onclick=async()=>{
+   button.disabled=true;
+   try{location.assign((await request('calendarConnect',{})).url);}
+   catch(error){message.textContent=error.message;button.disabled=false;}
+  };
+  return button;
+ };
+ function attachNotes(detail,eventKey){
+  const region=document.createElement('div');
+  region.hidden=true;
+  detail.append(region);
+  let loading=false,loaded=false;
+  const status=text=>{
+   const note=document.createElement('p');
+   note.setAttribute('role','status');
+   note.textContent=text;
+   return note;
+  };
+  const load=async()=>{
+   if(!detail.open||!detail.isConnected||loading||loaded)return;
+   loading=true;
+   region.hidden=false;
+   region.replaceChildren(status('Loading Outlook notes…'));
+   try{
+    const result=await request('calendarNotes',undefined,'','&event='+encodeURIComponent(eventKey));
+    if(!detail.isConnected)return;
+    loaded=true;
+    const notes=typeof result.notes==='string'?result.notes.trim():'';
+    if(!notes){region.hidden=true;region.replaceChildren();return;}
+    const heading=document.createElement('strong');
+    heading.textContent='Outlook notes';
+    const body=document.createElement('p');
+    body.style.whiteSpace='pre-wrap';
+    body.style.overflowWrap='anywhere';
+    body.textContent=notes;
+    region.replaceChildren(heading,body);
+    if(result.truncated){
+     const hint=document.createElement('small');
+     hint.textContent='Additional text is available in Outlook.';
+     region.append(hint);
+    }
+   }catch(error){
+    if(!detail.isConnected)return;
+    if(error.status===404){loaded=true;region.hidden=true;region.replaceChildren();return;}
+    const retry=document.createElement('button');
+    retry.type='button';
+    retry.textContent='Try notes again';
+    retry.onclick=load;
+    region.replaceChildren(status('Outlook notes are temporarily unavailable.'),retry);
+   }finally{loading=false;}
+  };
+  detail.addEventListener('toggle',load);
+  return load;
+ }
  const refresh=async()=>{
   const key=new URLSearchParams(location.search).get('event');
   const eventKey=/^[\w-]{43}$/.test(key||'')?key:'';
@@ -1132,16 +1190,14 @@ async function mountCalendar(admin=true){
      return;
     }
 
-    const connect=document.createElement('button');
-    connect.textContent='Connect Outlook calendar';
-    connect.onclick=async()=>{try{location.assign((await request('calendarConnect',{})).url);}catch{message.textContent='Calendar connection unavailable. Check the production calendar secret.';}};
-    const heading=document.createElement('h2');heading.textContent='Production calendar';const note=document.createElement('p');note.textContent='Connect the hello@ Exchange calendar.';panel.replaceChildren(heading,note,connect);
+    const heading=document.createElement('h2');heading.textContent='Production calendar';const note=document.createElement('p');note.textContent='Connect the hello@ Exchange calendar.';panel.replaceChildren(heading,note,connectButton('Connect Outlook calendar'));
    }else{
     const openKeys=new Set([...panel.querySelectorAll('details[open]')].map(detail=>detail.dataset.eventKey));
     const next=result.items.filter(event=>!event.cancelled&&Number.isFinite(+calendarDate(event.start)))
      .sort((a,b)=>calendarDate(a.start)-calendarDate(b.start))[0];
     showNextEvent(next?eventWhen(next)+' · '+next.title:'No upcoming events in the next 30 days.');
     const list=document.createElement('ul');
+    const loadOpenedNotes=[];
     const rows=result.selected?[result.selected,...result.items.filter(e=>e.key!==eventKey)]:result.items;
     for(const event of rows){
      const item=document.createElement('li');
@@ -1166,6 +1222,10 @@ async function mountCalendar(admin=true){
        const place=document.createElement('p');place.textContent='Location · '+event.location;
        detail.append(place);
       }
+      if(result.notesEnabled&&event.productions?.length){
+       const load=attachNotes(detail,event.key);
+       if(detail.open)loadOpenedNotes.push(load);
+      }
       item.append(detail);
      }
      list.append(item);
@@ -1174,11 +1234,28 @@ async function mountCalendar(admin=true){
     const note=document.createElement('p');note.textContent=result.items.length?'Next 30 days · Eastern time':'No upcoming events in the next 30 days.';
     if(eventKey&&!result.selected)note.textContent='The linked event is no longer available. '+note.textContent;
     if(result.selected&&!result.selected.cancelled)note.textContent='The linked event is listed first. Upcoming events follow in Eastern time.';
-    panel.replaceChildren(heading,note,list);
+    panel.replaceChildren(heading,note);
+    if(admin&&!result.notesEnabled){
+     const description=document.createElement('p');
+     description.textContent='Reconnect to allow the portal to read event descriptions. Members see descriptions only for events shared with their production.';
+     panel.append(description,connectButton('Reconnect Outlook to show notes'));
+    }
+    panel.append(list);
+    for(const load of loadOpenedNotes)load();
     if(eventKey&&focusedCalendarEvent!==eventKey){focusedCalendarEvent=eventKey;panel.scrollIntoView({block:'start'});}
    }
    panel.className='exchange-calendar';panel.hidden=false;
-  }catch{if(!panel.isConnected)return;showNextEvent('Calendar unavailable.');panel.innerHTML='<h2>Production calendar</h2><p>Calendar unavailable. Your connection may need attention.</p>';const retry=document.createElement('button');retry.textContent='Try again';retry.onclick=refresh;const reconnect=document.createElement('button');reconnect.textContent='Reconnect Outlook';reconnect.onclick=async()=>{try{location.assign((await request('calendarConnect',{})).url);}catch(e){message.textContent=e.message;}};panel.append(retry);if(admin)panel.append(reconnect);}
+  }catch{
+   if(!panel.isConnected)return;
+   showNextEvent('Calendar unavailable.');
+   panel.innerHTML='<h2>Production calendar</h2><p>Calendar unavailable. Your connection may need attention.</p>';
+   const retry=document.createElement('button');
+   retry.type='button';
+   retry.textContent='Try again';
+   retry.onclick=refresh;
+   panel.append(retry);
+   if(admin)panel.append(connectButton('Reconnect Outlook'));
+  }
 
  };
  await refresh();

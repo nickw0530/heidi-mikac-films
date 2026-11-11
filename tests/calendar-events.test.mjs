@@ -8,13 +8,13 @@ const calendarFile=new URL('../netlify/functions/calendar-callback.mjs',import.m
 const source=(await readFile(calendarFile,'utf8'))
  .replace("import {getStore} from '@netlify/blobs';","const getStore=()=>{throw new Error('Unexpected real store access');};")
  .replace(/from (['"])(\.\.?\/[^'"]+)\1/g,(_match,_quote,path)=>'from '+JSON.stringify(new URL(path,calendarFile).href));
-const {events,notifyNewEvents}=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
+const {events,eventNotes,notifyNewEvents}=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
 const eventKey=id=>createHash('sha256').update(id).digest('base64url');
 const firstFilm='written-in-the-dark',secondFilm='wherein-lies-continue';
 const actor={id:'actor',email:'actor@example.test',productions:{[firstFilm]:{}}};
 const other={id:'other',email:'other@example.test',productions:{[secondFilm]:{}}};
 
-async function fixture(t){
+async function fixture(t,{notesEnabled=false}={}){
  let clock=Date.parse('2026-11-11T14:00:00Z'),version=0;
  const originalNow=Date.now;
  const originalFetch=globalThis.fetch;
@@ -27,7 +27,7 @@ async function fixture(t){
  });
  Date.now=()=>clock;
  process.env.RESEND_API_KEY='test';process.env.HMF_MAIL_FROM='test@example.test';
- const data=new Map(),calendar=new Map(),sent=[];
+ const data=new Map(),calendar=new Map(),sent=[],graphRequests=[];
  const store={
   async get(key){return structuredClone(data.get(key)?.value)??null;},
   async getMetadata(key){return data.has(key)?{}:null;},
@@ -55,6 +55,7 @@ async function fixture(t){
    return Response.json({last_event:'delivered'});
   }
   assert.equal(url.hostname,'graph.microsoft.com');
+  graphRequests.push({path:url.pathname,fields:url.searchParams.get('$select')?.split(',')||[],prefer:new Headers(options.headers).get('Prefer')});
   if(url.pathname==='/v1.0/me/calendarView')return Response.json({value:[...calendar.values()]});
   if(url.pathname==='/v1.0/me/calendar/events'){
    const filter=url.searchParams.get('$filter');
@@ -64,7 +65,7 @@ async function fixture(t){
   const id=decodeURIComponent(url.pathname.split('/').at(-1));
   return calendar.has(id)?Response.json(calendar.get(id)):new Response(null,{status:404});
  };
- await store.setJSON('calendar/connection',{refresh:'mock'});
+ await store.setJSON('calendar/connection',{refresh:'mock',...(notesEnabled?{notesEnabled:true}:{})});
  await store.setJSON('calendar/notification-cursor',new Date(clock-300000).toISOString());
  await store.setJSON('members/'+actor.id,actor);
  await store.setJSON('members/'+other.id,other);
@@ -77,7 +78,7 @@ async function fixture(t){
   calendar.set(id,{...event,...updates,lastModifiedDateTime:new Date(clock-120000).toISOString()});
  };
  const messages=()=>[...data.entries()].filter(([key])=>key.startsWith('outbox/')).map(([,record])=>record.value);
- return {store,calendar,sent,change,messages,advance:minutes=>{clock+=minutes*60000;},
+ return {store,calendar,sent,change,messages,graphRequests,advance:minutes=>{clock+=minutes*60000;},
   poll:()=>notifyNewEvents(store,enqueue,portalUrl),mail:()=>deliver(store)};
 }
 
@@ -149,4 +150,89 @@ test('a hard-deleted upcoming event is verified before its cancellation notice i
  const result=await (await events(f.store,false,eventKey('shoot'),actor)).json();
  assert.deepEqual(result.selected,{key:eventKey('shoot'),cancelled:true});
  assert.equal(result.items.length,0);
+});
+
+test('an existing basic Outlook connection keeps events available and skips note retrieval',async t=>{
+ const f=await fixture(t);
+ f.change({body:{contentType:'text',content:'Example event instructions'}});
+ const listing=await (await events(f.store,true,null)).json();
+ assert.equal(listing.connected,true);
+ assert.equal(listing.notesEnabled,false);
+ assert.equal(listing.items.length,1);
+ assert.deepEqual(await (await eventNotes(f.store,true,eventKey('shoot'))).json(),{notes:'',truncated:false});
+ assert.equal(f.graphRequests.some(request=>request.fields.includes('body')||request.fields.includes('bodyPreview')),false);
+});
+
+test('event descriptions load only when requested and stay out of member and admin event lists',async t=>{
+ const f=await fixture(t,{notesEnabled:true});
+ const description='Park at Studio A.\nBring the revised script and water.';
+ const id='fictional-outlook-identifier';
+ f.change({body:{contentType:'text',content:description}},id);
+ await f.store.setJSON('calendar/event-links/'+eventKey(id),id);
+ for(const admin of [false,true]){
+  const response=await events(f.store,admin,eventKey(id),actor);
+  const json=await response.json();
+  assert.equal(json.notesEnabled,true);
+  assert.equal(json.selected.key,eventKey(id));
+  assert.doesNotMatch(JSON.stringify(json),/fictional-outlook-identifier|Park at Studio A|bodyPreview|"notes"/);
+ }
+ assert.equal(f.graphRequests.some(request=>request.fields.includes('body')||request.fields.includes('bodyPreview')),false);
+ const response=await eventNotes(f.store,false,eventKey(id),actor);
+ assert.deepEqual(await response.json(),{notes:description,truncated:false});
+ assert.match(response.headers.get('Cache-Control'),/no-store/);
+ const request=f.graphRequests.at(-1);
+ assert.ok(request.fields.includes('body'));
+ assert.match(request.prefer,/outlook\.body-content-type="text"/);
+ assert.doesNotMatch(JSON.stringify(await f.store.get('calendar/connection')),/Park at Studio A/,'Notes are not cached in the connection record.');
+
+ // An email can link to an event that is outside the currently cached list.
+ const linkedId='older-linked-event';
+ f.change({start:{dateTime:'2026-11-10T15:00:00.000'},end:{dateTime:'2026-11-10T17:00:00.000'},body:{contentType:'text',content:description}},linkedId);
+ await f.store.setJSON('calendar/event-links/'+eventKey(linkedId),linkedId);
+ await f.store.setJSON('calendar/audiences/'+eventKey(linkedId),[firstFilm]);
+ assert.equal((await (await eventNotes(f.store,false,eventKey(linkedId),actor)).json()).notes,description);
+ assert.deepEqual(await (await eventNotes(f.store,false,eventKey(linkedId),other)).json(),{notes:'',truncated:false});
+});
+
+test('notes apply the current production, privacy and cancellation checks to cached and linked events',async t=>{
+ const f=await fixture(t,{notesEnabled:true});
+ const body={contentType:'text',content:'Only this production should read these instructions.'};
+ f.change({body});
+ f.change({body,categories:[]},'uncategorized');
+ f.change({body,sensitivity:'private'},'private');
+ f.change({body,isCancelled:true},'cancelled');
+ await events(f.store,true,null);
+ for(const id of ['shoot','uncategorized','private','cancelled']){
+  await f.store.setJSON('calendar/event-links/'+eventKey(id),id);
+  await f.store.setJSON('calendar/audiences/'+eventKey(id),[firstFilm]);
+ }
+ const denied={notes:'',truncated:false};
+ assert.deepEqual(await (await eventNotes(f.store,false,eventKey('shoot'),other)).json(),denied);
+ assert.deepEqual(await (await eventNotes(f.store,false,eventKey('shoot'),{...actor,revoked:true})).json(),denied);
+ for(const id of ['uncategorized','private','cancelled','unknown']){
+  for(const admin of [false,true])assert.deepEqual(await (await eventNotes(f.store,admin,eventKey(id),actor)).json(),denied,id);
+ }
+ assert.equal((await (await eventNotes(f.store,false,eventKey('shoot'),actor)).json()).notes,body.content);
+ f.change({categories:['Wherein Lies Continue']});
+ assert.deepEqual(await (await eventNotes(f.store,false,eventKey('shoot'),actor)).json(),denied,'An old cache or email link must not preserve access after recategorization.');
+ f.change({categories:['Written in the Dark'],sensitivity:'private'});
+ assert.deepEqual(await (await eventNotes(f.store,false,eventKey('shoot'),actor)).json(),denied,'A cached event that was made private must not expose its notes.');
+ f.change({sensitivity:'normal',isCancelled:true});
+ assert.deepEqual(await (await eventNotes(f.store,false,eventKey('shoot'),actor)).json(),denied,'Cancelling an event immediately hides its notes.');
+ f.calendar.delete('shoot');
+ assert.deepEqual(await (await eventNotes(f.store,false,eventKey('shoot'),actor)).json(),denied);
+});
+
+test('Outlook HTML becomes plain notes and very long descriptions are capped by Unicode character',async t=>{
+ const f=await fixture(t,{notesEnabled:true});
+ f.change({body:{contentType:'html',content:'<html><head><style>.hidden { color: red }</style></head><body><p>Meet &amp; check in.</p><p>Bring &#x1f4d6; scripts.<br>Use Gate A.</p><script>secretScript()</script><img src="https://example.test/tracker"></body></html>'}});
+ await events(f.store,false,null,actor);
+ const key=eventKey('shoot');
+ const html=await (await eventNotes(f.store,false,key,actor)).json();
+ assert.match(html.notes,/^Meet & check in\.\n+Bring 📖 scripts\.\n+Use Gate A\.$/);
+ assert.equal(html.truncated,false);
+ f.change({body:{contentType:'text',content:'🎬'.repeat(12001)}});
+ const long=await (await eventNotes(f.store,false,key,actor)).json();
+ assert.equal(long.notes,'🎬'.repeat(12000));
+ assert.equal(long.truncated,true);
 });
