@@ -2,6 +2,7 @@ import {AGREEMENT_CYCLE,currentAgreementKey} from '../lib/agreement-cycle.mjs';
 import {manualAgreementKey,resourceTrackingKey,normalizePaperworkReason,manualPaperworkStatus,readAgreementTracking} from '../lib/paperwork.mjs';
 import {COUNTERSIGN_EMAIL} from '../lib/signing.mjs';
 import {adminActions} from '../lib/admin-actions.mjs';
+import {reportSnapshot,reportMatch,reportRecords,validateSavedReport} from '../lib/reports.mjs';
 import {AVAILABILITY_TIME_ZONE,normalizeAvailability,availabilityForDate,listDates,matchAvailability} from '../lib/availability.mjs';
 import {begin as beginCalendar,events as calendarEvents} from './calendar-callback.mjs';
 import sharp from 'sharp';
@@ -285,6 +286,34 @@ export default async function handle(req, context) {
   }
   if(!admin&&!['home','bio','photo','choosePassword','welcomePlayed','requestProductions','calendarEvents'].includes(action))requireThat(memberProductions[productionId],'You are not assigned to this production.',403);
   if(!admin&&action==='home'&&Object.keys(memberProductions).length)requireThat(memberProductions[productionId],'You are not assigned to this production.',403);
+  if(['reportData','reportMatch','reportPresets','saveReportPreset','removeReportPreset'].includes(action)){
+    onlyAdmin();
+    const prefix='admin-reports/'+self+'/',presetKey=id=>prefix+id;
+    if(action==='reportPresets'){
+      requireThat(req.method==='GET','Use GET to read saved reports.',405);
+      const presets=[];
+      for(const {key,value} of await reportRecords(rawStore,prefix))if(!value.archived){const record=await rawStore.getWithMetadata(key,{type:'json'});presets.push({id:value.id,name:value.name,config:value.config,revision:record.etag});}
+      return json({presets:presets.sort((a,b)=>a.name.localeCompare(b.name)),owner:self});
+    }
+    if(action==='saveReportPreset'||action==='removeReportPreset'){
+      requireThat(post,'Use POST to save report settings.',405);
+      const id=body.id||randomUUID();requireThat(uuid.test(id),'Invalid saved report.');
+      const key=presetKey(id),record=await rawStore.getWithMetadata(key,{type:'json'});
+      if(body.id)requireThat(record?.data&&!record.data.archived&&body.revision===record.etag,'This saved report changed. Reload your saved reports.',409);
+      if(action==='removeReportPreset'){
+        requireThat(body.id&&record?.data,'Saved report unavailable.',404);
+        requireThat((await rawStore.setJSON(key,{...record.data,archived:true,updated:Date.now()},{onlyIfMatch:record.etag})).modified,'This saved report changed.',409);
+      }else{
+        const value=validateSavedReport(body);
+        requireThat((await rawStore.setJSON(key,{id,...value,updated:Date.now()},record?{onlyIfMatch:record.etag}:{onlyIfNew:true})).modified,'This saved report changed. Reload before saving.',409);
+      }
+      return json({ok:true,id});
+    }
+    requireThat(action==='reportData'?req.method==='GET':post,'Use the Reports controls to run this report.',405);
+    const from=action==='reportMatch'?body.from:url.searchParams.get('from'),to=action==='reportMatch'?body.to:url.searchParams.get('to');
+    const snapshot=await reportSnapshot({store:rawStore,productionId,film,catalog,assignments,findProfile,sharedBase,from,to});
+    return json(action==='reportMatch'?await reportMatch(rawStore,snapshot,body.people,{from,to,minMinutes:body.minMinutes}):snapshot);
+  }
   if(['availability','saveAvailability','availabilityMatch'].includes(action)){
     requireThat(admin||memberProductions?.[productionId],'You are not assigned to this production.',403);
     requireThat(action==='availability'?!post:post,action==='availability'?'Use GET to view availability.':'Use POST to update or compare availability.',405);

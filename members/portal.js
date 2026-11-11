@@ -1,13 +1,14 @@
 import {comparePeople,sortPeople,orderAdminPeople} from './people-order.mjs';
 import {mountAvailability} from './availability.js';
 import {mountFilmingAvailability} from './filming-availability.js';
-const officeTabs=[['overview','Overview'],['people','People'],['documents','Documents'],['messages','Messages & files'],['availability','Filming availability'],['calendar','Calendar'],['settings','Settings']];
+import {mountReports} from './reports.js';
+const officeTabs=[['overview','Overview'],['people','People'],['documents','Documents'],['messages','Messages & files'],['availability','Filming availability'],['calendar','Calendar'],['reports','Reports'],['settings','Settings']];
 function startPortal(app, office=null){
 const message=document.querySelector('#message');
 let combined=null;
 function listen(type,handler){
  app.addEventListener(type,event=>{
-  if(event.target.closest('[data-office-root]')===app&&!event.target.closest('[data-availability-root]'))handler(event);
+  if(event.target.closest('[data-office-root]')===app&&!event.target.closest('[data-availability-root],[data-reports-root]'))handler(event);
  });
 }
 app.dataset.officeRoot='';
@@ -16,9 +17,16 @@ const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&
 let activeView=new URLSearchParams(location.search).get('view')==='people'?'people':'overview',peopleSearch='',peopleFilter='all',lastState,offlineBulkInProgress=false;
 const dirty=()=>[...app.querySelectorAll('form[data-dirty]')];
 const availabilityViews=new Map();
+const reportViews=new Map();
+const reportsBusy=()=>[...reportViews.values()].some(view=>view.busy());
+function clearReports(){for(const view of reportViews.values())view.destroy();reportViews.clear();}
+function openReports(slot){
+ if(!slot||!lastState?.admin||reportViews.has(slot))return;
+ reportViews.set(slot,mountReports(slot,{request:(action,body,id,suffix,production)=>request(action,body,id,suffix,production||selectedProduction),productions:lastState.productionChoices||lastState.productions,owner:lastState.self}));
+}
 const availabilityBusy=()=>[...availabilityViews.values()].some(view=>view.busy());
 const availabilityOpen=()=>[...availabilityViews.keys()].some(slot=>slot.isConnected&&slot.getBoundingClientRect().height>0);
-function clearAvailability(){for(const view of availabilityViews.values())view.destroy();availabilityViews.clear();}
+function clearAvailability(){for(const view of availabilityViews.values())view.destroy();availabilityViews.clear();clearReports();}
 function openAvailability(slot,memberId){
  if(!slot||!lastState||availabilityViews.has(slot))return;
  slot.dataset.availabilityRoot='';
@@ -28,10 +36,11 @@ function openAvailability(slot,memberId){
 function ensureAvailability(){
  const board=app.querySelector('[data-view="availability"] [data-availability-slot]');
  if(activeView==='availability'&&board)openAvailability(board);
+ if(activeView==='reports')openReports(app.querySelector('[data-view="reports"] [data-reports-slot]'));
  for(const details of app.querySelectorAll('details[data-availability-panel][open]'))openAvailability(details.querySelector('[data-availability-slot]'),details.dataset.availabilityPerson||undefined);
 }
 app.addEventListener('toggle',event=>{const details=event.target;if(details.closest('[data-office-root]')===app&&details.matches('details[data-availability-panel]')&&details.open)openAvailability(details.querySelector('[data-availability-slot]'),details.dataset.availabilityPerson||undefined);},true);
-window.addEventListener('beforeunload',e=>{if(dirty().length||availabilityBusy()||combined?.busy()){e.preventDefault();e.returnValue='';}});
+window.addEventListener('beforeunload',e=>{if(dirty().length||availabilityBusy()||reportsBusy()||combined?.busy()){e.preventDefault();e.returnValue='';}});
 let selectedProduction=office?.id||new URLSearchParams(location.search).get('production')||'';
 const url=(action,id='',production=selectedProduction)=>endpoint+'?'+new URLSearchParams({action,id,...(production?{production}:{})});
 async function request(action,body,id='',suffix='',production=selectedProduction){
@@ -227,7 +236,7 @@ function renderCombinedOffice(states,picker){
  const snapshots=new Map(states.map(state=>[state.productionId,state]));
  let pendingState=states[0];
  const nav=officeTabs.map(([id,label])=>'<button type="button" data-main-tab="'+id+'">'+label+'</button>').join('');
- app.innerHTML='<div class="office-header">'+picker+form('logout','','Sign out')+'</div><nav class="office-nav" aria-label="Production office">'+nav+'</nav><div data-main-reviews></div><section data-shared-settings hidden><h2>All productions · account settings</h2><div data-shared-assignments></div></section><div data-main-people><div data-pending-people></div><h2>People &amp; profiles <span class="count" data-total></span></h2><label>Search name, role or email<input type="search" data-roster-search></label><div data-accounts></div><details data-combined-directory><summary></summary><div data-catalog></div></details></div><section data-main-filming hidden><div data-availability-slot></div></section><div data-offices></div>';
+ app.innerHTML='<div class="office-header">'+picker+form('logout','','Sign out')+'</div><nav class="office-nav" aria-label="Production office">'+nav+'</nav><div data-main-reviews></div><section data-shared-settings hidden><h2>All productions · account settings</h2><div data-shared-assignments></div></section><div data-main-people><div data-pending-people></div><h2>People &amp; profiles <span class="count" data-total></span></h2><label>Search name, role or email<input type="search" data-roster-search></label><div data-accounts></div><details data-combined-directory><summary></summary><div data-catalog></div></details></div><section data-main-filming hidden><div data-availability-slot></div></section><section data-main-reports hidden><div data-reports-slot></div></section><div data-offices></div>';
  function renderAssignments(state){
   const host=app.querySelector('[data-shared-assignments]');
   const expanded=[...host.querySelectorAll('details[open] > summary')].map(node=>node.textContent);
@@ -271,11 +280,13 @@ function renderCombinedOffice(states,picker){
   app.querySelector('[data-main-people]').hidden=view!=='people';
   app.querySelector('[data-shared-settings]').hidden=view!=='settings';
   app.querySelector('[data-main-filming]').hidden=view!=='availability';
-  app.querySelector('[data-offices]').hidden=view==='availability';
-  app.querySelector('[data-main-reviews]').hidden=view==='availability';
-  const picker=app.querySelector('.office-header .production-picker');if(picker)picker.hidden=view==='availability';
+  app.querySelector('[data-main-reports]').hidden=view!=='reports';
+  app.querySelector('[data-offices]').hidden=['availability','reports'].includes(view);
+  app.querySelector('[data-main-reviews]').hidden=['availability','reports'].includes(view);
+  const picker=app.querySelector('.office-header .production-picker');if(picker)picker.hidden=['availability','reports'].includes(view);
   app.querySelectorAll('[data-main-tab]').forEach(b=>b.setAttribute('aria-current',b.dataset.mainTab===view?'page':'false'));
   if(view==='availability')openAvailability(app.querySelector('[data-main-filming] [data-availability-slot]'));
+  else if(view==='reports')openReports(app.querySelector('[data-main-reports] [data-reports-slot]'));
   else for(const child of offices.values())child.show(view);
  }
  combined={show,busy:()=>[...offices.values()].some(child=>child.busy()),refresh(){for(const child of offices.values())child.refresh();}};
@@ -309,7 +320,7 @@ function renderCombinedOffice(states,picker){
 }
 
 async function load(initial){
- if(combined||availabilityBusy())return;
+ if(combined||availabilityBusy()||reportsBusy())return;
  clearSigning();
  const savedForms=dirty().map(f=>({action:f.dataset.action,id:f.dataset.id,node:f}));
  const openDetails=[...app.querySelectorAll('details[open]')].map(detailKey);
@@ -445,6 +456,7 @@ async function load(initial){
    '<div data-view="documents"><h2>Paperwork</h2><p>'+(s.test?'Signing is in test mode.':'Live signing is enabled.')+'</p>'+attention+uploadedDocuments+'<div class="document-list">'+s.members.map(m=>'<p><b>'+escape(m.name)+'</b> · '+escape(m.paperworkStatus)+' <button data-open-person="'+m.id+'">Open paperwork</button></p>').join('')+'</div><div data-tool-zone="documents"></div><div id="signing"></div></div>'+
    '<div data-view="messages"><h2>Messages & files</h2><div data-tool-zone="messages"></div>'+mailPanel+'<h2>Production board</h2>'+updates+'</div>'+
    '<div data-view="availability"><div data-availability-slot></div></div>'+
+   '<div data-view="reports"><div data-reports-slot></div></div>'+
    '<div data-view="calendar"><h2>Production calendar</h2><p>Your connected Exchange calendar appears alongside this workspace. It shows the next 30 days in Eastern time. In Outlook, categorize a member event as Written in the Dark, Wherein Lies Continue, or both. Events without a film category stay in the admin calendar.</p></div>'+
    '<div data-view="settings"><h2>Production settings</h2>'+(reviews?'<section data-review-list><h3>Review profiles for publication</h3>'+reviews+'</section>':'')+assignmentsPanel+panel('Revoked portal accounts',s.revokedAccounts?.length?s.revokedAccounts.filter(m=>m.productions[s.productionId]).map(m=>'<section><h3>'+escape(m.name)+'</h3><p>Portal access revoked. Public profile '+(m.keepPublic?'retained':'removed')+'.</p>'+form('publication','<label><input type="checkbox" name="visible" '+(m.keepPublic&&m.publication[s.productionId]!==false?'checked':'')+'> Show on this production website</label>','Save website visibility',m.id)+'</section>').join(''):'<p>No revoked accounts.</p>')+(waitingAccounts?panel('Accounts without a production',waitingAccounts):'')+'<div data-tool-zone="settings"></div></div></div><div id="calendar-slot"></div></div>';
   const staging=document.createElement('div');staging.innerHTML=setup;
@@ -503,6 +515,12 @@ async function load(initial){
  }
  for(const saved of savedForms){const replacement=[...app.querySelectorAll('form')].find(f=>f.dataset.action===saved.action&&f.dataset.id===saved.id);if(replacement)replacement.replaceWith(saved.node);}
  for(const d of app.querySelectorAll('details'))if(openDetails.includes(detailKey(d)))d.open=true;
+ if(admin&&!office){
+  const person=params.get('person'),profile=params.get('profile'),pending=params.get('pending');
+  const card=pending?[...app.querySelectorAll('[data-pending-person]')].find(card=>card.dataset.pendingPerson===pending):person?[...app.querySelectorAll('[data-person],[data-unassigned-person]')].find(card=>(card.dataset.person||card.dataset.unassignedPerson)===person):profile?[...app.querySelectorAll('[data-catalog-profile]')].find(card=>card.dataset.catalogProfile===profile):null;
+  if(card){activeView='people';peopleSearch='';peopleFilter='all';applyView();applyPeopleFilter();for(let node=card;node&&node!==app;node=node.parentElement){node.hidden=false;if(node.tagName==='DETAILS')node.open=true;}card.scrollIntoView({block:'start'});}
+ }
+
  applyPeopleFilter();
  if(office){office.update(s);syncOffice();}
 
@@ -710,7 +728,8 @@ async function mountCalendar(admin=true){
 
 
 function applyView(){
- if(lastState?.admin&&!office){const picker=app.querySelector('.office-header .production-picker');if(picker)picker.hidden=activeView==='availability';}
+ app.classList.toggle('reports-active',activeView==='reports');
+ if(lastState?.admin&&!office){const picker=app.querySelector('.office-header .production-picker');if(picker)picker.hidden=['availability','reports'].includes(activeView);}
  app.querySelectorAll('[data-view]').forEach(el=>el.hidden=el.dataset.view!==activeView);
  app.querySelectorAll('[data-view-button]').forEach(b=>b.setAttribute('aria-current',b.dataset.viewButton===activeView?'page':'false'));
  ensureAvailability();
@@ -732,7 +751,7 @@ listen('click',e=>{
 });
 listen('input',e=>{if(e.target.matches('[data-people-search]')){peopleSearch=e.target.value;applyPeopleFilter();}});
 listen('change',e=>{if(e.target.form)e.target.form.dataset.dirty='true';if(e.target.matches('[data-people-filter]')){peopleFilter=e.target.value;applyPeopleFilter();}});
-setInterval(()=>{if(!combined&&lastState&&!document.hidden&&!dirty().length&&!availabilityBusy()&&!availabilityOpen()&&!signingSession&&!offlineBulkInProgress)load().catch(()=>{});},300000);
+setInterval(()=>{if(!combined&&lastState&&activeView!=='reports'&&!document.hidden&&!dirty().length&&!availabilityBusy()&&!availabilityOpen()&&!signingSession&&!offlineBulkInProgress)load().catch(()=>{});},300000);
 let focusFilm=null;
 function syncOffice(){
  if(!office)return;

@@ -1,5 +1,6 @@
 // Availability is expressed in local shoot dates and Eastern wall-clock times.
 // No member identity, storage, permissions, or notifications belong in this module.
+import {monthHasAvailability} from '../../members/availability-state.mjs';
 export const AVAILABILITY_TIMEZONE='America/Indiana/Indianapolis';
 export const AVAILABILITY_TIME_ZONE=AVAILABILITY_TIMEZONE;
 const MAX_EXCEPTIONS=366,MAX_WINDOWS=8,MAX_MATCH_DAYS=93,MAX_PEOPLE=100;
@@ -41,7 +42,7 @@ function mergeIntervals(windows){
 }
 function normalizeDay(value){
  if(value===undefined)return unknown();
- requireThat(object(value)&&['available','unavailable','unknown'].includes(value.status),'Choose Available, Unavailable, or Not answered for each day.');
+ requireThat(object(value)&&['available','unavailable','maybe','unknown'].includes(value.status),'Choose Available, Unavailable, Maybe, or Not answered for each day.');
  const windows=value.windows??[];
  requireThat(Array.isArray(windows)&&windows.length<=MAX_WINDOWS,'Keep each day to '+MAX_WINDOWS+' availability windows or fewer.');
  if(value.status!=='available'){
@@ -121,6 +122,7 @@ export function availabilityForDate(record,date){
  const weekday=new Date(date+'T12:00:00Z').getUTCDay();
  const entry=normalizeDay(exception?record.exceptions[date]:record?.weekly?.[weekday]);
  const result={date,status:entry.status,source:exception?'exception':'weekly',windows:[]};
+ if(entry.status==='unknown'&&monthHasAvailability(record,date.slice(0,7)))return {...result,status:'unavailable',implicit:true};
  if(entry.status!=='available')return result;
  try{
   for(const window of entry.windows)elapsedMinutes(date,window.start,window.end);
@@ -147,13 +149,13 @@ export function matchAvailability(people,{from,to,minMinutes=60}={}){
  const days=listDates(from,to).map(date=>{
   const evaluated=people.map(person=>({person,day:availabilityForDate(person.availability,date)}));
   const rows=status=>evaluated.filter(row=>row.day.status===status).map(({person})=>({id:person.id,name:person.name||'Member'}));
-  const missing=rows('unknown'),unavailable=rows('unavailable'),needsConfirmation=rows('needs-confirmation');
+  const missing=rows('unknown'),unavailable=rows('unavailable'),maybe=rows('maybe'),needsConfirmation=rows('needs-confirmation');
   let common=[];
-  if(!missing.length&&!unavailable.length&&!needsConfirmation.length){
+  if(!missing.length&&!unavailable.length&&!maybe.length&&!needsConfirmation.length){
    for(const {day} of evaluated){const windows=day.windows.map(window=>[timeMinute(window.start),timeMinute(window.end,true)]);common=common.length?intersect(common,windows):windows;if(!common.length)break;}
   }
   const windows=common.map(([start,end])=>({start:timeText(start),end:timeText(end),minutes:elapsedMinutes(date,timeText(start),timeText(end))})).filter(window=>window.minutes>=minMinutes);
-  return {date,windows,missing,unavailable,needsConfirmation,availableCount:evaluated.filter(row=>row.day.status==='available').length,selectedCount:people.length,status:windows.length?'all-available':missing.length||needsConfirmation.length?'missing-responses':'no-common-time'};
+  return {date,windows,missing,unavailable,maybe,needsConfirmation,availableCount:evaluated.filter(row=>row.day.status==='available').length,selectedCount:people.length,status:windows.length?'all-available':missing.length||maybe.length||needsConfirmation.length?'missing-responses':'no-common-time'};
  });
  return {timezone:AVAILABILITY_TIMEZONE,from,to,minMinutes,days,matches:days.filter(day=>day.windows.length)};
 }

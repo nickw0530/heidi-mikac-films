@@ -159,3 +159,57 @@ test('saving availability does not add private schedules to home, websites, emai
  assert.equal([...context.store.records.keys()].filter(key=>key.includes('agreements/')).length,0);
  assert.equal(context.notifications.length,0);assert.equal(context.requests.length,0);
 });
+
+test('reports require an admin, paginate their inputs and return a read-only metadata projection',async()=>{
+ const context=await fixture(),params={from:'2026-12-01',to:'2026-12-07'};
+ assert.equal((await call('reportData',{who:null,params})).status,401);
+ assert.equal((await call('reportData',{who:'a',params})).status,403);
+ const original=context.store.list,queries=[];
+ context.store.list=function(options){queries.push(options);if(options.paginate){const keys=[...this.records.keys()].filter(key=>key.startsWith(options.prefix));return(async function*(){for(const key of keys)yield {blobs:[{key}]};})();}return original.call(this,options);};
+ const before=structuredClone([...context.store.records]);
+ const report=await call('reportData',{params});assert.equal(report.status,200);
+ assert.ok(report.data.rows.some(row=>row.memberId===ids.a));assert.ok(report.data.rows.some(row=>row.memberId===ids.b),'A later metadata page cannot be dropped.');
+ assert.ok(report.data.rows.some(row=>row.memberId===ids.contact),'Name-only profiles belong in reporting.');
+ assert.ok(!report.data.rows.some(row=>[ids.revoked,ids.otherFilm].includes(row.memberId)));
+ const raw=JSON.stringify(report.data);for(const secret of ['private-invitation-secret','private-draft-biography','"ticket"','"password"','"digest"','"weekly"','"exceptions"'])assert.ok(!raw.includes(secret),secret);
+ assert.ok(queries.every(query=>query.paginate===true));assert.deepEqual([...context.store.records],before,'Running a report must not modify records.');
+ assert.equal(context.notifications.length,0);assert.equal(context.requests.length,0);
+});
+
+test('reports keep current contracts separate from prior contracts and distinguish document N/A from digital completion',async()=>{
+ const context=await fixture(),params={from:'2026-12-01',to:'2026-12-07'};
+ await context.store.setJSON('agreements/'+ids.a,{id:'old-complete',status:'Complete'});
+ await context.store.setJSON('resources/00000000-0000-4000-8000-000000000899',{id:'00000000-0000-4000-8000-000000000899',type:'PDF',title:'Private assigned form',audience:[ids.a]});
+ let response=await call('reportData',{params});assert.equal(response.status,200);
+ let person=response.data.rows.find(row=>row.memberId===ids.a);assert.equal(person.agreementStatus,'No agreement on file');assert.equal(person.documents.length,2);
+ assert.equal(response.data.rows.find(row=>row.memberId===ids.b).documents.length,1);
+ await context.store.setJSON('document-tracking/'+dark+'/'+ids.a+'/agreement-2026-11-09',{document:'agreement',agreementCycle:'2026-11-09',reason:'not-required'});
+ response=await call('reportData',{params});person=response.data.rows.find(row=>row.memberId===ids.a);assert.equal(person.agreementStatus,'Document N/A');
+ assert.equal(context.notifications.length,0);assert.equal(context.requests.length,0);
+});
+
+test('saved report setups are isolated to each authenticated administrator and never persist audience or people',async()=>{
+ const context=await fixture(),config={type:'availability',columns:['name','availability'],status:'answered',conditions:[],audience:'everyone',selectedPeople:[ids.a],owner:'Heidi',from:'2026-12-01'};
+ const created=await call('saveReportPreset',{body:{name:'My availability setup',config,owner:'Heidi'}});assert.equal(created.status,200);
+ const mine=await call('reportPresets');assert.equal(mine.data.presets.length,1);assert.equal(mine.data.owner,'Nick');
+ const preset=mine.data.presets[0];assert.equal(preset.id,created.data.id);assert.equal(preset.config.audience,undefined);assert.equal(preset.config.owner,undefined);assert.equal(preset.config.selectedPeople,undefined);
+ assert.equal((await call('reportPresets',{who:'Heidi'})).data.presets.length,0);
+ assert.equal((await call('saveReportPreset',{who:'Heidi',body:{id:preset.id,revision:preset.revision,name:'Cannot edit Nick',config}})).status,409);
+ assert.equal((await call('saveReportPreset',{who:'a',body:{name:'Denied',config}})).status,403);
+ assert.equal((await call('removeReportPreset',{body:{id:preset.id,revision:preset.revision}})).status,200);
+ assert.equal((await call('reportPresets')).data.presets.length,0);
+ assert.ok(context.store.records.has('admin-reports/Nick/'+preset.id),'Removing a setup is recoverable archival.');
+ assert.equal(context.notifications.length,0);assert.equal(context.requests.length,0);
+});
+
+test('report comparisons never turn Maybe or a person without an account into confirmed availability',async()=>{
+ const context=await fixture(),from='2026-12-05',to=from,params={from,to};
+ const schedule=emptyAvailability();schedule.exceptions[from]={status:'maybe',windows:[]};await context.store.setJSON('availability/'+dark+'/'+ids.a,schedule);
+ let response=await call('reportMatch',{body:{people:['member/'+ids.a],from,to,minMinutes:120}});assert.equal(response.status,200);assert.equal(response.data.matches.length,0);assert.equal(response.data.days[0].maybe.length,1);
+ const snapshot=(await call('reportData',{params})).data,person=snapshot.rows.find(row=>!row.memberId&&!row.pendingId);
+ assert.ok(person);
+ response=await call('reportMatch',{body:{people:[person.id],from,to,minMinutes:120}});assert.equal(response.status,200);assert.equal(response.data.matches.length,0);assert.equal(response.data.days[0].missing.length,1);
+ assert.equal((await call('reportMatch',{who:'a',body:{people:['member/'+ids.a],from,to,minMinutes:120}})).status,403);
+ assert.equal((await call('reportMatch',{body:{people:['member/'+ids.otherFilm],from,to,minMinutes:120}})).status,400);
+ assert.equal(context.notifications.length,0);assert.equal(context.requests.length,0);
+});

@@ -120,11 +120,11 @@ export function mountFilmingAvailability(container,{request,productions,producti
    list.replaceChildren(el('p',{class:'availability-help'},rows.length+' of '+selected.size+' selected '+(selected.size===1?'person':'people')+' '+label));
    if(!rows.length){list.append(el('p',{},'No selected people in this group.'));return;}
    const ul=el('ul');
-   for(const {member,day} of rows)ul.append(el('li',{},el('strong',{},member.name),el('span',{},day.status==='available'?day.windows.map(windowLabel).join(' · '):day.status==='unavailable'?'Unavailable':day.status==='needs-confirmation'?'Confirm hours around the clock change':'No availability given')));
+   for(const {member,day} of rows)ul.append(el('li',{},el('strong',{},member.name),el('span',{},day.status==='available'?day.windows.map(windowLabel).join(' · '):day.status==='unavailable'?'Unavailable':day.status==='maybe'?'Maybe':day.status==='needs-confirmation'?'Confirm hours around the clock change':'No availability given')));
    list.append(ul);
   }
   const filters=el('fieldset',{class:'filming-filters'},el('legend',{},'Selected people'));
-  for(const [value,label] of [['available','Available'],['unavailable','Unavailable'],['unknown','No availability given']]){
+  for(const [value,label] of [['available','Available'],['unavailable','Unavailable'],['maybe','Maybe'],['unknown','No availability given']]){
    const radio=el('input',{type:'radio',name:filterName,value,onchange:()=>{filter=value;showPeople();}});radio.checked=filter===value;filters.append(el('label',{},radio,el('span',{},label)));
   }
   section.append(filters,list);showPeople();return section;

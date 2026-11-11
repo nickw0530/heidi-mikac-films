@@ -1,7 +1,8 @@
 import {comparePeople,sortPeople} from './people-order.mjs';
+import {rawAvailabilityDay,effectiveAvailabilityDay} from './availability-state.mjs';
 const ZONE='America/Indiana/Indianapolis';
 const DAYS=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-const STATUSES={available:'Available',unavailable:'Unavailable',unknown:'Not answered','needs-confirmation':'Check clock change'};
+const STATUSES={available:'Available',unavailable:'Unavailable',maybe:'Maybe',unknown:'Not answered','needs-confirmation':'Check clock change'};
 const clone=value=>JSON.parse(JSON.stringify(value));
 const emptyDay=()=>({status:'unknown',windows:[]});
 const emptySchedule=()=>({timezone:ZONE,weekly:DAYS.map(emptyDay),exceptions:{}});
@@ -37,8 +38,7 @@ function stamp(date,time){
  return matches.length===1?matches[0]:null;
 }
 function scheduleDay(record,date){
- const index=new Date(date+'T12:00:00Z').getUTCDay();
- const entry=record?.exceptions?.[date]||record?.weekly?.[index]||emptyDay();
+ const entry=effectiveAvailabilityDay(record,date);
  if(entry.status!=='available')return {...entry,status:entry.status||'unknown',windows:[]};
  const windows=entry.windows||[];
  if(!windows.length||windows.some(window=>stamp(date,window.start)===null||stamp(date,window.end)===null))return {status:'needs-confirmation',windows:[],warning:'A time falls within a clock change. Update this date with an unambiguous time.'};
@@ -50,6 +50,7 @@ export function mountAvailability(container,options){
  const {request,admin=false,memberId,onSaved}=options;
  let data=null,selectedMember=memberId||'',selectedDate=today(),month=selectedDate.slice(0,7),draft=null,revision=null;
  let destroyed=false,dirty=false,saving=false,loading=false,weeklyOpen=false,matchingBusy=false,loadSequence=0,matchSequence=0,matchResults=null;
+ let quickTimer=null,quickSaving=false,quickVersion=0,quickBlocked=false;
  let scene='',matchFrom=today(),matchTo=addDays(today(),29),minimumHours='2',castSearch='';
  let adminView=memberId?'person':'day',unansweredOpen=false;
  const selectedPeople=new Set();
@@ -68,6 +69,7 @@ export function mountAvailability(container,options){
  const note=(text,error=false)=>{notice.textContent=text;notice.classList.toggle('availability-error',error);};
  function invalidateMatches(){matchSequence++;matchResults=null;body.querySelectorAll('.availability-match-results').forEach(result=>result.remove());}
  function adopt(){
+  clearTimeout(quickTimer);quickBlocked=false;
   const member=currentMember();draft=clone(member?.availability||emptySchedule());
   draft.timezone=ZONE;draft.weekly=DAYS.map((_,index)=>draft.weekly?.[index]||emptyDay());draft.exceptions??={};
   revision=member?.revision??null;markClean();
@@ -87,7 +89,7 @@ export function mountAvailability(container,options){
  }
  function monthRange(){const [year,number]=month.split('-').map(Number);return {from:month+'-01',to:month+'-'+String(new Date(Date.UTC(year,number,0)).getUTCDate()).padStart(2,'0')};}
  async function refresh(force=false,preserveEdits=false){
-  if(destroyed||saving||dirty&&!force)return false;
+  if(destroyed||saving||quickSaving||dirty&&!force)return false;
   const sequence=++loadSequence;loading=true;
   if(!data)body.replaceChildren(el('p',{},'Loading availability…'));
   else if(!preserveEdits)body.querySelectorAll('input,select,button').forEach(control=>{control.disabled=true;});
@@ -117,7 +119,7 @@ export function mountAvailability(container,options){
   }
  }
  async function save(success){
-  if(saving||!canEdit())return;
+  if(saving||quickSaving||!canEdit())return;
   try{
    validateDraft();saving=true;render();note('Saving availability…');
    const saved=await request('saveAvailability',{revision,timezone:ZONE,weekly:draft.weekly,exceptions:draft.exceptions},selectedMember);
@@ -143,7 +145,7 @@ export function mountAvailability(container,options){
   host.addEventListener('change',()=>changed?.());
   function redraw(){
    const select=el('select',{'aria-label':label+' availability',onchange:event=>{entry.status=event.target.value;entry.windows=entry.status==='available'?(entry.windows.length?entry.windows:[{start:'',end:''}]):[];markDirty();redraw();changed?.();}});
-   for(const status of ['unknown','available','unavailable']){const option=el('option',{value:status},STATUSES[status]);option.selected=entry.status===status;select.append(option);}
+   for(const status of ['unknown','available','unavailable','maybe']){const option=el('option',{value:status},STATUSES[status]);option.selected=entry.status===status;select.append(option);}
    host.replaceChildren(field('Availability',select));
    if(entry.status==='available'){
     host.append(...entry.windows.map((window,index)=>windowEditor(entry,window,index,label,()=>{redraw();changed?.();})));
@@ -158,8 +160,35 @@ export function mountAvailability(container,options){
   details.append(el('p',{},'Enter the hours you can physically be on set after allowing for your drive. Change a particular date below when your usual week does not apply.'));
   const week=el('div',{class:'availability-week'});
   DAYS.forEach((name,index)=>week.append(el('section',{class:'availability-weekday'},el('h5',{},name),entryEditor(draft.weekly[index],name))));
-  details.append(week,button('Copy Monday to Tuesday–Friday',()=>{for(const index of [2,3,4,5])draft.weekly[index]=clone(draft.weekly[1]);markDirty();render();},{class:'availability-small'}),el('p',{class:'availability-help'},'For overnight availability, enter one window ending at midnight and another starting on the following date. Saving also includes any unsaved date changes.'),button('Save weekly availability',()=>save('Weekly availability saved.'),{disabled:saving?'disabled':null}));
+  details.append(week,button('Copy Monday to Tuesday–Friday',()=>{for(const index of [2,3,4,5])draft.weekly[index]=clone(draft.weekly[1]);markDirty();render();},{class:'availability-small'}),el('p',{class:'availability-help'},'For overnight availability, enter one window ending at midnight and another starting on the following date. Saving also includes any unsaved date changes.'),button('Save weekly availability',()=>save('Weekly availability saved.'),{disabled:saving||quickSaving?'disabled':null}));
   return details;
+ }
+ function cycleDay(date){
+  if(!canEdit()||saving||loading)return;
+  selectedDate=date;
+  const cycle=['unknown','available','unavailable','maybe'],current=rawAvailabilityDay(draft,date).status;
+  const status=cycle[(Math.max(0,cycle.indexOf(current))+1)%cycle.length];
+  draft.exceptions[date]={status,windows:status==='available'?[{start:'00:00',end:'24:00'}]:[]};
+  quickVersion++;markDirty();render();note('Saving calendar changes…');
+  clearTimeout(quickTimer);if(!quickBlocked)quickTimer=setTimeout(saveClickedDays,250);
+ }
+ async function saveClickedDays(){
+  if(destroyed||quickSaving||saving||quickBlocked||!dirty)return;
+  const version=quickVersion;
+  try{
+   validateDraft();quickSaving=true;render();
+   const value=clone(draft),saved=await request('saveAvailability',{revision,timezone:ZONE,weekly:value.weekly,exceptions:value.exceptions},selectedMember);
+   if(destroyed)return;
+   if(!saved.availability)throw Error('Calendar could not be confirmed. Refresh before trying again.');
+   const member=currentMember();member.availability=saved.availability;member.revision=saved.revision??null;delete member.days;revision=member.revision;
+   if(version===quickVersion){adopt();note('Calendar saved.');onSaved?.();}
+   else note('Saving calendar changes…');
+  }catch(error){
+   if(!destroyed){quickBlocked=true;note(error.status===409?'Your calendar changed in another session. These clicks are not saved. Refresh availability before trying again.':(error.message||'These calendar changes could not be saved.')+' Your changes remain on screen. Use Save this date to retry.',true);}
+  }finally{
+   quickSaving=false;
+   if(!destroyed){render();if(dirty&&!quickBlocked&&version!==quickVersion)quickTimer=setTimeout(saveClickedDays,0);}
+  }
  }
  function calendar(){
   const [year,number]=month.split('-').map(Number),first=new Date(Date.UTC(year,number-1,1,12));
@@ -168,18 +197,20 @@ export function mountAvailability(container,options){
   const shift=delta=>{const date=new Date(Date.UTC(year,number-1+delta,1,12));month=date.toISOString().slice(0,7);selectedDate=month+'-01';render();refresh(true,true);};
   const section=el('section',{class:'availability-calendar'});
   section.append(el('div',{class:'availability-month-nav'},button('Previous month',()=>shift(-1)),el('h4',{},heading),button('Next month',()=>shift(1))));
-  section.append(el('p',{class:'availability-help'},'Calendar for '+(currentMember()?.name||'this person')+'. Select a date to see everyone’s availability.'));
+  section.append(el('p',{class:'availability-help'},'Calendar for '+(currentMember()?.name||'this person')+(admin?'. Select a date to see everyone’s availability.':'. Click a day to set it. Adjust partial-day hours below.')));
   const grid=el('div',{class:'availability-month-grid',role:'group','aria-label':heading+' availability'});
   DAYS.forEach(name=>grid.append(el('div',{class:'availability-day-heading','aria-label':name},name.slice(0,3))));
   for(let blank=0;blank<offset;blank++)grid.append(el('span',{'aria-hidden':'true'}));
   for(let day=1;day<=count;day++){
-   const date=month+'-'+String(day).padStart(2,'0'),value=viewDay(currentMember(),date),label=STATUSES[value.status]||STATUSES.unknown;
-   const cell=button('',()=>{selectedDate=date;render();},{class:'availability-date availability-'+value.status+(date===selectedDate?' availability-selected':''),'aria-label':dayLabel(date)+' · '+label,'aria-pressed':date===selectedDate?'true':'false'});
-   cell.append(el('b',{},String(day)),el('span',{},label));
-   if(Object.hasOwn(draft.exceptions,date))cell.append(el('span',{class:'availability-changed'},'Changed'));
+   const date=month+'-'+String(day).padStart(2,'0'),value=viewDay(currentMember(),date),raw=rawAvailabilityDay(draft,date);
+   const status=!admin&&raw.status==='unknown'?'unknown':value.status;
+   const label=!admin&&status==='unknown'?(value.implicit?'Blank · counts as unavailable':'Blank'):(STATUSES[status]||STATUSES.unknown);
+   const cell=button('',()=>{if(!admin&&canEdit())cycleDay(date);else{selectedDate=date;render();}},{class:'availability-date availability-'+status+(date===selectedDate?' availability-selected':''),'aria-label':dayLabel(date)+' · '+label,'aria-pressed':date===selectedDate?'true':'false'});
+   cell.append(el('b',{},String(day)),el('span',{},admin?STATUSES[status]||label:({available:'✓',unavailable:'×',maybe:'?','needs-confirmation':'!'}[status]||'')));
+   if(admin&&Object.hasOwn(draft.exceptions,date))cell.append(el('span',{class:'availability-changed'},'Changed'));
    grid.append(cell);
   }
-  section.append(grid,el('p',{class:'availability-legend'},el('span',{class:'availability-key availability-available'},'Available'),el('span',{class:'availability-key availability-unavailable'},'Unavailable'),el('span',{class:'availability-key availability-unknown'},'Not answered')));
+  section.append(grid,el('p',{class:'availability-legend'},el('span',{class:'availability-key availability-available'},'Available'),el('span',{class:'availability-key availability-unavailable'},'Unavailable'),el('span',{class:'availability-key availability-maybe'},'Maybe'),el('span',{class:'availability-key availability-unknown'},admin?'Not answered':'Blank')));
   return section;
  }
  function dateEditor(){
@@ -189,8 +220,8 @@ export function mountAvailability(container,options){
   section.append(el('p',{},exception?'This date has a saved change to the usual week.':'This date currently follows the usual week.'));
   const dateInput=el('input',{type:'date',value:selectedDate,'aria-label':'Date to change',onchange:event=>{if(event.target.value){const previousMonth=month;selectedDate=event.target.value;month=selectedDate.slice(0,7);render();if(previousMonth!==month)refresh(true,true);}}});
   section.append(field('Choose date',dateInput),entryEditor(entry,dayLabel(selectedDate),()=>{draft.exceptions[selectedDate]=entry;}));
-  section.append(button('Save this date',()=>{draft.exceptions[selectedDate]=entry;markDirty();save('Availability saved for '+shortDate(selectedDate)+'.');},{disabled:saving?'disabled':null}));
-  if(exception)section.append(button('Use weekly schedule',()=>{delete draft.exceptions[selectedDate];markDirty();save('This date now follows the weekly schedule.');},{disabled:saving?'disabled':null}));
+  section.append(button('Save this date',()=>{draft.exceptions[selectedDate]=entry;markDirty();save('Availability saved for '+shortDate(selectedDate)+'.');},{disabled:saving||quickSaving?'disabled':null}));
+  if(exception)section.append(button('Use weekly schedule',()=>{delete draft.exceptions[selectedDate];markDirty();save('This date now follows the weekly schedule.');},{disabled:saving||quickSaving?'disabled':null}));
   return section;
  }
  function productionDay(){
@@ -210,7 +241,7 @@ export function mountAvailability(container,options){
   section.append(el('div',{class:'availability-daily-nav'},button('Previous day',()=>selectDay(addDays(selectedDate,-1))),field('Choose a date',date),button('Next day',()=>selectDay(addDays(selectedDate,1))),selectedDate!==today()?button('Today',()=>selectDay(today())):null));
   const days=data.members.map(member=>({member,value:viewDay(member,selectedDate)}));
   const totals=Object.fromEntries(Object.keys(STATUSES).map(status=>[status,days.filter(day=>day.value.status===status).length]));
-  section.append(el('p',{class:'availability-daily-totals'},totals.available+' available · '+totals.unavailable+' unavailable · '+totals.unknown+' not answered'+(totals['needs-confirmation']?' · '+totals['needs-confirmation']+' to check':'')),el('p',{class:'availability-help'},'Click a name to view or edit their schedule.'));
+  section.append(el('p',{class:'availability-daily-totals'},totals.available+' available · '+totals.unavailable+' unavailable · '+totals.maybe+' maybe · '+totals.unknown+' not answered'+(totals['needs-confirmation']?' · '+totals['needs-confirmation']+' to check':'')),el('p',{class:'availability-help'},'Click a name to view or edit their schedule.'));
   days.sort((a,b)=>comparePeople(a.member,b.member));
   function row({member,value}){
    const person=el('div',{},button(member.name,()=>openPerson(member.id),{class:'availability-person-link','aria-label':'View or edit availability for '+member.name}),member.role?el('span',{class:'availability-role'},member.role):null);
@@ -272,6 +303,7 @@ export function mountAvailability(container,options){
     const reasons=[];
     if(day.missing?.length)reasons.push('Not answered: '+sortPeople(day.missing).map(person=>person.name).join(', '));
     if(day.unavailable?.length)reasons.push('Unavailable: '+sortPeople(day.unavailable).map(person=>person.name).join(', '));
+    if(day.maybe?.length)reasons.push('Maybe: '+sortPeople(day.maybe).map(person=>person.name).join(', '));
     if(day.needsConfirmation?.length)reasons.push('Check clock change: '+sortPeople(day.needsConfirmation).map(person=>person.name).join(', '));
     list.append(el('li',{},el('strong',{},shortDate(day.date)),el('span',{},reasons.join(' · ')||'Available hours do not overlap for the requested duration.')));
    }
@@ -309,11 +341,11 @@ export function mountAvailability(container,options){
  function render(){
   if(destroyed||!data)return;
   const member=currentMember();
-  const header=el('div',{class:'availability-heading'},el('h3',{},admin?'Availability':'Availability · '+data.film),button('Refresh availability',()=>{if(!dirty||confirm('Discard unsaved availability changes and refresh?')){markClean();refresh(true);}},{disabled:saving?'disabled':null}));
+  const header=el('div',{class:'availability-heading'},el('h3',{},admin?'Availability':'Availability · '+data.film),button('Refresh availability',()=>{if(!dirty||confirm('Discard unsaved availability changes and refresh?')){clearTimeout(quickTimer);markClean();refresh(true);}},{disabled:saving||quickSaving?'disabled':null}));
   body.replaceChildren(header);
-  body.append(button('Discard unsaved changes',()=>{adopt();render();note('Unsaved availability changes discarded.');},{class:'availability-discard','data-availability-discard':'',hidden:dirty?null:'hidden',disabled:saving?'disabled':null}));
+  body.append(button('Discard unsaved changes',()=>{adopt();render();note('Unsaved availability changes discarded.');},{class:'availability-discard','data-availability-discard':'',hidden:dirty?null:'hidden',disabled:saving||quickSaving?'disabled':null}));
   if(admin){renderAdmin();if(saving)body.querySelectorAll('button,input,select').forEach(control=>{control.disabled=true;});return;}
-  body.append(el('p',{class:'availability-timezone'},'All times are Eastern time. Enter earliest arrival on set and latest departure, with travel already accounted for.'),el('p',{class:'availability-help'},'Availability is visible to members of this production. Not answered never counts as available.'));
+  body.append(el('p',{class:'availability-timezone'},'All times are Eastern time. For partial days, enter your earliest arrival on set and latest departure.'),el('p',{class:'availability-help'},'Click a day to cycle: green Available (all day), red Unavailable, yellow Maybe, then blank. Blank days count as unavailable within a month you have started filling out. Untouched months remain unanswered. Changes save automatically.'));
   if(!data.members.length){body.append(el('p',{},'No cast or crew profiles are assigned to this production yet.'));return;}
   body.append(el('p',{},'Your availability · '+(member?.name||'')));
   const updated=updatedLabel(member);if(updated)body.append(updated);
@@ -322,11 +354,12 @@ export function mountAvailability(container,options){
   if(canEdit())body.append(dateEditor());
   body.append(productionDay());
   if(saving)body.querySelectorAll('button,input,select').forEach(control=>{control.disabled=true;});
+  else if(quickSaving)body.querySelectorAll('input,select,button:not(.availability-date)').forEach(control=>{control.disabled=true;});
  }
  refresh();
  return {
   refresh:()=>refresh(),
-  busy:()=>dirty||saving||loading||matchingBusy,
-  destroy(){destroyed=true;loadSequence++;window.removeEventListener('beforeunload',beforeUnload);delete container.dataset.availabilityDirty;container.replaceChildren();}
+  busy:()=>dirty||saving||quickSaving||loading||matchingBusy,
+  destroy(){destroyed=true;clearTimeout(quickTimer);loadSequence++;window.removeEventListener('beforeunload',beforeUnload);delete container.dataset.availabilityDirty;container.replaceChildren();}
  };
 }

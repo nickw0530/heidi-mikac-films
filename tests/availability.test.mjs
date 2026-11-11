@@ -11,7 +11,8 @@ test('a weekly pattern applies only when no date-specific change replaces it',()
  const record=monday(['09:00','17:00']);
  assert.equal(record.timezone,AVAILABILITY_TIME_ZONE);
  assert.deepEqual(ranges(availabilityForDate(record,'2027-01-04')),[['09:00','17:00']]);
- assert.equal(availabilityForDate(record,'2027-01-05').status,'unknown','An unanswered weekday is not unavailable.');
+ assert.equal(availabilityForDate(record,'2027-01-05').status,'unavailable','Blank dates in a started month count as unavailable.');
+ assert.equal(availabilityForDate(record,'2027-01-05').implicit,true);
  record.exceptions['2027-01-04']=unavailable();
  assert.equal(availabilityForDate(normalizeAvailability(record),'2027-01-04').status,'unavailable');
  record.exceptions['2027-01-04']=available(['11:15','15:45']);
