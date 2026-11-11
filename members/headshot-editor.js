@@ -1,23 +1,28 @@
 const MAX_UPLOAD=4*1024*1024;
 const MAX_PIXELS=40_000_000;
 const PHOTO_TYPES=new Set(['image/jpeg','image/png']);
+const convertibleTypes=new Set(['image/webp','image/heic','image/heif']);
+const photoExtensions={jpg:'image/jpeg',jpeg:'image/jpeg',png:'image/png',webp:'image/webp',heic:'image/heic',heif:'image/heif'};
+export const headshotAccept=[...PHOTO_TYPES,...convertibleTypes,...Object.keys(photoExtensions).map(ext=>'.'+ext)].join(',');
 const selections=new WeakMap();
 
 function photoType(file){
- if(PHOTO_TYPES.has(file.type))return file.type;
- if(file.type&&file.type!=='application/octet-stream')return '';
- if(/\.jpe?g$/i.test(file.name))return 'image/jpeg';
- if(/\.png$/i.test(file.name))return 'image/png';
- return '';
+ const type=file.type.toLowerCase();
+ if(PHOTO_TYPES.has(type)||convertibleTypes.has(type))return type;
+ if(type==='image/jpg')return 'image/jpeg';
+ if(type&&type!=='application/octet-stream')return '';
+ const extension=file.name.split('.').pop()?.toLowerCase();
+ return Object.hasOwn(photoExtensions,extension)?photoExtensions[extension]:'';
 }
 
 function loadImage(file){
- if(!photoType(file))return Promise.reject(new Error('Choose a JPG or PNG headshot.'));
+ const type=photoType(file);
+ if(!type)return Promise.reject(new Error('Choose a JPG, PNG, WebP, or iPhone HEIC photo.'));
  return new Promise((resolve,reject)=>{
   const image=new Image();
-  const url=URL.createObjectURL(file);
+  const url=URL.createObjectURL(file.type===type?file:file.slice(0,file.size,type));
   image.onload=()=>{URL.revokeObjectURL(url);resolve(image);};
-  image.onerror=()=>{URL.revokeObjectURL(url);reject(new Error('This photo could not be opened. Try another JPG or PNG.'));};
+  image.onerror=()=>{URL.revokeObjectURL(url);reject(new Error('This browser could not open the photo. Save a JPG or PNG copy and try again.'));};
   image.src=url;
  });
 }
@@ -60,7 +65,8 @@ export function clearHeadshotPreview(form){
 
 export async function selectHeadshot(form){
  clearHeadshotPreview(form);
- const file=form.elements.file.files[0];
+ const picker=form.elements.file;
+ const file=picker.files[0];
  if(!file)return;
  const state={file,image:loadImage(file),portrait:false,position:0.5};
  selections.set(form,state);
@@ -85,7 +91,7 @@ export async function selectHeadshot(form){
  position.type='range';position.min='0';position.max='100';position.value='50';
  const positionLabel=labeled(image.naturalWidth/image.naturalHeight>4/5?'Move crop left or right':'Move crop up or down',position);
  const note=document.createElement('p');
- note.textContent=needsResize(file,image)?'This large image will be resized for upload.':'';
+ note.textContent=!PHOTO_TYPES.has(photoType(file))?'This photo will be saved as a JPG.':needsResize(file,image)?'This large image will be resized for upload.':'';
  const refresh=()=>{
   state.portrait=crop.value==='portrait';
   state.position=Number(position.value)/100;
@@ -96,22 +102,24 @@ export async function selectHeadshot(form){
  position.addEventListener('input',refresh);
  refresh();
  section.append(canvas,labeled('Photo framing',crop),positionLabel,note);
- const submit=form.querySelector('button[type="submit"],button:not([type])');
- form.insertBefore(section,submit);
+ picker.closest('label').after(section);
 }
 
 export async function prepareHeadshot(form,file){
  const selection=selections.get(form);
  const state=selection?.file===file?selection:{image:loadImage(file),portrait:false,position:0.5};
  const image=await state.image;
- if(!state.portrait&&!needsResize(file,image))return file;
+ const originalType=photoType(file);
+ const keepFormat=PHOTO_TYPES.has(originalType);
+ if(keepFormat&&!state.portrait&&!needsResize(file,image))return file;
  const canvas=document.createElement('canvas');
  const crop=cropFor(image,state.portrait,state.position);
- const type=photoType(file);
+ const type=keepFormat?originalType:'image/jpeg';
+ const name=keepFormat?file.name:(file.name.replace(/\.[^.]+$/,'')||'headshot')+'.jpg';
  for(const edge of [1600,1200,900,600]){
   draw(canvas,image,crop,edge);
   const blob=await new Promise(resolve=>canvas.toBlob(resolve,type,0.9));
-  if(blob?.type===type&&blob.size<=MAX_UPLOAD)return new File([blob],file.name,{type});
+  if(blob?.type===type&&blob.size<=MAX_UPLOAD)return new File([blob],name,{type});
  }
  throw new Error('This photo could not be resized for upload. Try a smaller JPG or PNG.');
 }

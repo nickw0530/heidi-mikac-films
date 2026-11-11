@@ -308,7 +308,7 @@ export default async function handle(req, context) {
   if(!admin&&action==='home'&&!url.searchParams.has('production')&&Object.keys(memberProductions).length){
     productionId=Object.keys(memberProductions)[0];catalog=catalogs[productionId];film=productions.find(p=>p.id===productionId).name;
   }
-  if(!admin&&!['home','bio','photo','choosePassword','welcomePlayed','requestProductions','calendarEvents'].includes(action))requireThat(memberProductions[productionId],'You are not assigned to this production.',403);
+  if(!admin&&!['home','bio','photo','memberProfile','choosePassword','welcomePlayed','requestProductions','calendarEvents'].includes(action))requireThat(memberProductions[productionId],'You are not assigned to this production.',403);
   if(!admin&&action==='home'&&Object.keys(memberProductions).length)requireThat(memberProductions[productionId],'You are not assigned to this production.',403);
   if(['reportData','reportMatch','reportPresets','saveReportPreset','removeReportPreset'].includes(action)){
     onlyAdmin();
@@ -395,7 +395,7 @@ export default async function handle(req, context) {
     const record=withMetadata?await store.getWithMetadata(key,{type:'json'}):null;
     const member=withMetadata?record?.data:await get(key);
     requireThat(member,'Member unavailable.',404);
-    if(!['bio','photo','revoke','enrollments','resend'].includes(action))requireThat(assignments(member)[productionId],'Member is not assigned to this production.',403);
+    if(!['bio','photo','memberProfile','revoke','enrollments','resend'].includes(action))requireThat(assignments(member)[productionId],'Member is not assigned to this production.',403);
     return withMetadata?record:member;
   };
   async function saveTarget(record,member){
@@ -915,14 +915,47 @@ export default async function handle(req, context) {
     await target();requireThat(typeof body.bio==='string'&&body.bio.length<=5000,'Bio limit is 5,000 characters.');
     await saveDraft({bio:body.bio.trim()});return json({ok:true});
   }
-  if(['photo','resource','master'].includes(action)&&post){
-    if(action==='photo')await target();else onlyAdmin();
+  async function storeHeadshot(bytes,filename){
+    requireThat(bytes.length>0,'Choose a headshot file.');
+    requireThat(bytes.length<=4*1024*1024,'Choose a headshot up to 4 MB.',413);
+    const jpeg=bytes.subarray(0,3).toString('hex')==='ffd8ff';
+    const png=bytes.subarray(0,8).toString('hex')==='89504e470d0a1a0a';
+    requireThat(jpeg||png,'The headshot must be a readable JPG or PNG.');
+    try{await sharp(bytes,{limitInputPixels:40000000}).metadata();}
+    catch{requireThat(false,'This headshot could not be read. Try another JPG or PNG.');}
+    const version=hash(bytes);
+    await store.set('profile-images/'+uid+'/'+version,bytes,{metadata:{version,filename:filename.split(/[\\/]/).pop().slice(0,255),mime:jpeg?'image/jpeg':'image/png'}});
+    return version;
+  }
+  if(action==='memberProfile'&&post){
+    await target();
+    const fields=await req.formData().catch(()=>null);
+    requireThat(fields,'The profile upload could not be read. Try again.');
+    const bio=fields.get('bio'),photo=fields.get('file'),change={};
+    if(bio!==null){
+      requireThat(typeof bio==='string'&&bio.length<=5000,'Bio limit is 5,000 characters.');
+      change.bio=bio.trim();
+    }
+    if(photo!==null){
+      requireThat(photo instanceof Blob&&typeof photo.name==='string','Choose a headshot file.');
+      requireThat(photo.size<=4*1024*1024,'Choose a headshot up to 4 MB.',413);
+      change.imageVersion=await storeHeadshot(Buffer.from(await photo.arrayBuffer()),photo.name);
+    }
+    requireThat(Object.keys(change).length,'Choose a headshot or edit the biography first.');
+    await saveDraft(change);
+    return json({ok:true,imageVersion:change.imageVersion});
+  }
+  if(action==='photo'&&post){
+    await target();
+    const imageVersion=await storeHeadshot(Buffer.from(await req.arrayBuffer()),url.searchParams.get('filename')||'');
+    await saveDraft({imageVersion});return json({ok:true,imageVersion});
+  }
+  if(['resource','master'].includes(action)&&post){
+    onlyAdmin();
 
     const bytes=Buffer.from(await req.arrayBuffer());
     requireThat(bytes.length>0&&bytes.length<=4*1024*1024,'Choose a file up to 4 MB.');
-    const jpeg=bytes.subarray(0,3).toString('hex')==='ffd8ff',png=bytes.subarray(0,8).toString('hex')==='89504e470d0a1a0a';
-    if(action==='photo'){requireThat(jpeg||png,'Choose a JPG or PNG.');try{await sharp(bytes,{limitInputPixels:40000000}).metadata();}catch{requireThat(false,'This image could not be read. Choose another JPG or PNG.');}await store.set('profile-images/'+uid+'/'+hash(bytes),bytes,{metadata:{version:hash(bytes),filename:(url.searchParams.get('filename')||'').split(/[\\/]/).pop().slice(0,255),mime:jpeg?'image/jpeg':'image/png'}});await saveDraft({imageVersion:hash(bytes)});}
-    else if(action==='master'){requireThat(hash(bytes)===(productionId==='written-in-the-dark'?'8437469c10b4a2ebd322adb8fd4c4e246abb2a0e26043a7c4129dffee92e6626':'0777d2cf63f99e584091be91442d9c77f8fe835e738c56308e82c328a49a2be8'),'Choose the approved contract master for this production.');await store.set('contract/master',bytes);}
+    if(action==='master'){requireThat(hash(bytes)===(productionId==='written-in-the-dark'?'8437469c10b4a2ebd322adb8fd4c4e246abb2a0e26043a7c4129dffee92e6626':'0777d2cf63f99e584091be91442d9c77f8fe835e738c56308e82c328a49a2be8'),'Choose the approved contract master for this production.');await store.set('contract/master',bytes);}
     else {requireThat(bytes.subarray(0,5).toString()==='%PDF-','Choose a PDF.');const group=await recipients(url.searchParams.get('audience'),url.searchParams.getAll('recipient'));const id=randomUUID(),title=string(url.searchParams.get('title'));await store.set('files/'+id,bytes);await set('resources/'+id,{id,title,audience:group.audience,type:'PDF',created:Date.now()});await Promise.all(group.recipients.map(m=>notify(m,id,'New production file','Production posted a new file for '+film+'.')));}
     return json({ok:true});
   }

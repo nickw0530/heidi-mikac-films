@@ -3,7 +3,7 @@ import {mountAvailability} from './availability.js';
 import {mountFilmingAvailability} from './filming-availability.js';
 import {mountReports} from './reports.js';
 import {mountBulkActions} from './bulk-actions.js';
-import {selectHeadshot,prepareHeadshot,clearHeadshotPreview} from './headshot-editor.js';
+import {headshotAccept,selectHeadshot,prepareHeadshot,clearHeadshotPreview} from './headshot-editor.js';
 const officeTabs=[['overview','Overview'],['people','People'],['documents','Documents'],['messages','Messages & files'],['availability','Filming availability'],['calendar','Events'],['reports','Reports'],['settings','Settings']];
 const directoryFilters=[
  ['all','Everyone'],['setup','Account setup needed'],['catalog','Website profiles to link'],
@@ -64,6 +64,9 @@ function showMemberView(name,{navigate=false,scroll=false}={}){
   }
  }
 }
+function publicationLabel(member,production,status){
+ return status==='Published'&&member.productionRequests?.[production]?'Published · Changes awaiting approval':status;
+}
 function memberPublishing(member,productions){
  if(member.practice)return '<p>This practice account stays private.</p>';
  const rows=productions.flatMap(production=>{
@@ -72,7 +75,7 @@ function memberPublishing(member,productions){
   if(!status&&!pending)return [];
   const labels={'Hidden from website':'Hidden','Needs bio and headshot':'Missing profile information','Awaiting approval':'Awaiting approval','Sync failed':'Sync needs attention'};
   const current=labels[status]||status||'Awaiting approval';
-  const display=status==='Published'&&pending?'Published · Changes awaiting approval':current;
+  const display=publicationLabel(member,production.id,current);
   return ['<li><span>'+escape(production.name)+'</span><strong>'+escape(display)+'</strong></li>'];
  });
  return rows.length?'<ul>'+rows.join('')+'</ul>':'<p>Choose a production to request approval for its website.</p>';
@@ -106,7 +109,7 @@ window.addEventListener('beforeunload',e=>{if(dirty().length||availabilityBusy()
 let selectedProduction=office?.id||new URLSearchParams(location.search).get('production')||'';
 const url=(action,id='',production=selectedProduction)=>endpoint+'?'+new URLSearchParams({action,id,...(production?{production}:{})});
 async function request(action,body,id='',suffix='',production=selectedProduction){
- const raw=body instanceof File;
+ const raw=body instanceof File||body instanceof FormData;
  const documentId=action==='status'?lastState?.members.find(member=>member.id===id)?.agreement?.id:null;
  if(documentId)suffix+='&'+new URLSearchParams({document:documentId});
  const r=await fetch(url(action,id,production)+suffix,{method:body===undefined?'GET':'POST',headers:raw?{}:{'Content-Type':'application/json'},body:raw?body:JSON.stringify(body),cache:'no-store'});
@@ -229,7 +232,7 @@ function recordedDetails(record){
  return date?by+' · '+date+' ET':by;
 }
 function profile(m){
- return panel('Headshot &amp; biography · '+((m.hasPhoto||m.referencePhoto)?'photo received':'photo needed')+' · '+(m.profile?.bio?'bio received':'bio needed'),form('bio','<label>Biography<textarea name="bio" rows="5" maxlength="5000">'+escape(m.profile?.bio)+'</textarea></label>','Save biography',m.id)+form('photo',file('Headshot · JPG or PNG, up to 4 MB','image/jpeg,image/png'),'Upload headshot',m.id)+(m.hasPhoto?'<button data-photo="'+m.id+'">View current headshot</button><div class="portrait"></div>':''));
+ return panel('Headshot &amp; biography · '+((m.hasPhoto||m.referencePhoto)?'photo received':'photo needed')+' · '+(m.profile?.bio?'bio received':'bio needed'),form('bio','<label>Biography<textarea name="bio" rows="5" maxlength="5000">'+escape(m.profile?.bio)+'</textarea></label>','Save biography',m.id)+form('photo',file('Headshot',headshotAccept),'Upload headshot',m.id)+(m.hasPhoto?'<button data-photo="'+m.id+'">View current headshot</button><div class="portrait"></div>':''));
 }
 function creditFields(value={},suffix=''){
  const field=(key,label)=>'<label>'+label+'<input maxlength="120" name="'+key+suffix+'" value="'+escape(value[key]||'')+'"></label>';
@@ -258,10 +261,32 @@ function profileStatus(f,text,error=false){
  note.textContent=text;
  note.classList.toggle('profile-save-error',error);
 }
+function showSavedHeadshot(form,id,version){
+ const section=form.closest('section');
+ let image=section.querySelector('[data-headshot]');
+ if(!image){image=document.createElement('img');image.dataset.headshot='';image.alt='Saved headshot';form.before(image);}
+ image.src=url('photo',id)+'&v='+encodeURIComponent(version||Date.now());
+ clearHeadshotPreview(form);
+ form.elements.file.value='';
+}
+async function updateMemberPublishing(id){
+ const publicationInfo=await request('home').catch(()=>null);
+ if(!publicationInfo)return null;
+ lastState=publicationInfo;
+ const member=[...publicationInfo.members,...(publicationInfo.unassignedProfiles||[])].find(m=>m.id===id);
+ const memberStatus=app.querySelector('[data-member-publication]');
+ if(member&&memberStatus)memberStatus.innerHTML=memberPublishing(member,publicationInfo.productionChoices);
+ return member;
+}
+const photoForm=action=>action==='photo'||action==='memberProfile';
 listen('input',e=>{
  const f=e.target.form;if(f)f.dataset.dirty='true';
  if(f?.dataset.action==='bio')profileStatus(f,'Unsaved changes');
- if(f?.dataset.action==='photo'&&e.target.files?.length)profileStatus(f,'Selected · '+e.target.files[0].name+' (not saved yet)');
+ if(photoForm(f?.dataset.action)&&e.target.name==='file'){
+  const selected=e.target.files[0];
+  profileStatus(f,selected?'Selected · '+selected.name+'. '+(f.dataset.action==='memberProfile'?'Choose Save profile to upload it.':'Choose Upload headshot to save it.'):'');
+ }
+ if(f?.dataset.action==='memberProfile'&&e.target.name==='bio'&&!f.elements.file.files[0])profileStatus(f,'Unsaved biography changes');
 });
 function login(){
  clearSigning();
@@ -770,8 +795,9 @@ async function load(initial){
    choices+'<p><strong>'+escape(m.name)+'</strong>'+(m.role?' · '+escape(m.role):'')+'</p>'+
    '<p>Your biography and headshot are shared across your approved productions.</p>'+
    (photo?'<img data-headshot src="'+escape(photo)+'" alt="Your headshot">':'')+
-   form('photo',file(m.hasPhoto?'Replace your headshot (JPG or PNG)':'Upload a headshot (JPG or PNG)','image/jpeg,image/png'),'Save headshot',m.id)+
-   form('bio','<label>My biography<textarea name="bio" rows="5" maxlength="5000">'+escape(m.profile?.bio)+'</textarea></label><label>Import biography (.txt)<input type="file" accept=".txt,text/plain" data-bio-file></label>','Save biography',m.id)+'</section>';
+   form('memberProfile','<label>'+(photo?'Replace your headshot':'Choose a headshot')+'<input type="file" name="file" accept="'+headshotAccept+'"></label>'+
+    '<label>My biography<textarea name="bio" rows="5" maxlength="5000">'+escape(m.profile?.bio)+'</textarea></label>'+
+    '<label>Import biography (.txt)<input type="file" accept=".txt,text/plain" data-bio-file></label>','Save profile',m.id)+'</section>';
   const documentsPane=assigned||documents.length?'<section class="member-panel member-paperwork" data-member-view="documents"><h2>My documents</h2>'+agreementControls+
    (documents.length?'<ul>'+documents.join('')+'</ul>':(agreementControls?'':'<p>No documents assigned yet.</p>'))+'<div id="signing" data-signing></div></section>':'';
   const availabilityPane='<section class="member-panel member-availability" data-member-view="availability"><h2>My availability</h2><p>Share your earliest arrival and latest departure with cast and crew of '+escape(s.film)+'.</p><div data-availability-slot></div></section>';
@@ -780,7 +806,7 @@ async function load(initial){
   return '<nav class="office-nav member-nav" aria-label="Member dashboard">'+tabs.map(([view,label])=>memberButton(view,label)).join('')+'</nav>'+
    (assigned?home:'')+profilePane+documentsPane+(assigned?availabilityPane+eventsPane:'');
  }
- const publication=m=>'<div class="publication-status"><h4>Website publishing</h4>'+Object.entries(m.publication||{}).map(([pid,p])=>'<p>'+escape(s.productions.find(x=>x.id===pid)?.name||pid)+' · <strong>'+escape(p.state)+'</strong></p>').join('')+(m.practice?'':form('publication','<label><input type="checkbox" name="visible" '+(m.publication?.[s.productionId]?.visible?'checked':'')+'> Show on this production’s website</label>','Save website visibility',m.id))+'</div>';
+ const publication=m=>'<div class="publication-status"><h4>Website publishing</h4>'+Object.entries(m.publication||{}).map(([pid,p])=>'<p>'+escape(s.productions.find(x=>x.id===pid)?.name||pid)+' · <strong>'+escape(publicationLabel(m,pid,p.state))+'</strong></p>').join('')+(m.practice?'':form('publication','<label><input type="checkbox" name="visible" '+(m.publication?.[s.productionId]?.visible?'checked':'')+'> Show on this production’s website</label>','Save website visibility',m.id))+'</div>';
  const recover=m=>m.agreement&&!m.agreement.id&&!m.agreement.cleared?panel('Recover interrupted signing request','<p>Check SignWell first. Link the existing document below, or confirm that no document was created. This action never sends a contract.</p>'+form('recoverAgreement','<label>Existing SignWell document ID (if found)<input name="documentId"></label><label><input type="checkbox" name="confirmAbsent"> I checked SignWell; no document exists</label>','Recover request',m.id)):'';
  function documentControls(m,document,reason){
   return '<form data-action="trackPaperwork" data-id="'+escape(m.id)+'"><input type="hidden" name="document" value="'+escape(document)+'"><button value="complete"'+(['complete','hard-copy'].includes(reason)?' disabled':'')+'>Complete</button> <button value="not-required"'+(reason==='not-required'?' disabled':'')+'>Document N/A</button>'+(reason?' <button value="reopen">Reopen requirement</button>':'')+'</form>';
@@ -872,7 +898,7 @@ async function load(initial){
   play.onclick=()=>{video.muted=false;video.play().catch(()=>{message.textContent='Video unavailable. Please try again.';card();});};
  }
  for(const m of s.members){
-  const photo=app.querySelector('form[data-action="photo"][data-id="'+m.id+'"]'), bio=app.querySelector('form[data-action="bio"][data-id="'+m.id+'"]');
+  const photo=app.querySelector('form[data-action="'+(admin?'photo':'memberProfile')+'"][data-id="'+m.id+'"]'), bio=app.querySelector('form[data-action="bio"][data-id="'+m.id+'"]');
   if(photo&&m.hasPhoto)profileStatus(photo,m.photoName?'Saved · '+m.photoName:'Headshot saved');
   if(bio&&m.profile)profileStatus(bio,'Saved');
  }
@@ -902,7 +928,7 @@ listen('change',e=>{
   return;
  }
  if(e.target.name==='selection')e.target.closest('fieldset').querySelector('[data-credit-fields]').hidden=!e.target.checked;
- if(e.target.type==='file'&&e.target.form?.dataset.action==='photo'){
+ if(e.target.name==='file'&&photoForm(e.target.form?.dataset.action)){
   const form=e.target.form;
   selectHeadshot(form).catch(error=>profileStatus(form,error.message,true));
  }
@@ -928,12 +954,12 @@ listen('change',e=>{
  }
 });
 listen('submit',async e=>{
- e.preventDefault();const f=e.target,a=f.dataset.action,id=f.dataset.id,data=Object.fromEntries(new FormData(f));const button=e.submitter;
+ e.preventDefault();const f=e.target,a=f.dataset.action,id=f.dataset.id,data=Object.fromEntries(new FormData(f));const button=e.submitter||f.querySelector('button');
  if(a==='publishProfile'&&!confirm('Publish this member’s saved biography and headshot on the public Written in the Dark website?'))return;
  if(a==='removeResource'&&!confirm('Remove this from the production board for everyone? Email already delivered about it cannot be recalled.'))return;
  if((a==='revoke'||a==='sendAgreement'||(a==='agreement'&&button.value==='send'))&&!confirm(a==='revoke'?'Revoke this member’s access immediately?':a==='sendAgreement'?'Send this pending contract to its recipients?':'Create a signing request for this actor and Heidi?'))return;
  button.disabled=true;message.textContent='';
- const photoInputs=a==='photo'?[...f.querySelectorAll('input,select')].filter(control=>!control.disabled):[];
+ const photoInputs=photoForm(a)?[...f.querySelectorAll('input,select,textarea')].filter(control=>!control.disabled):[];
  for(const control of photoInputs)control.disabled=true;
  try{
   if(a==='logout'){
@@ -944,7 +970,28 @@ listen('submit',async e=>{
    location.replace(location.pathname);
    return;
   }
-  const selectedPhoto=a==='photo'?data.file:null;
+  if(a==='memberProfile'){
+   const changes=new FormData();
+   const photo=f.elements.file.files[0];
+   const bio=f.elements.bio;
+   const bioChanged=data.bio!==bio.defaultValue;
+   if(!photo&&!bioChanged){delete f.dataset.dirty;profileStatus(f,'No profile changes to save.');return;}
+   profileStatus(f,'Saving profile…');
+   if(photo)changes.set('file',await prepareHeadshot(f,photo));
+   if(bioChanged)changes.set('bio',data.bio);
+   const result=await request(a,changes,id);
+   if(!result.ok||photo&&!result.imageVersion)throw Error('The portal could not confirm the save. Try again.');
+   if(photo)showSavedHeadshot(f,id,result.imageVersion);
+   if(bioChanged)bio.defaultValue=data.bio;
+   delete f.dataset.dirty;
+   const saved=photo&&bioChanged?'Headshot and biography saved.':photo?'Headshot saved.':'Biography saved.';
+   profileStatus(f,saved+' Production reviews updates before they appear on film websites.');
+   await updateMemberPublishing(id);
+   return;
+  }
+  const selectedPhoto=a==='photo'?f.elements.file.files[0]:null;
+  if(a==='photo'&&!selectedPhoto)throw Error('Choose a headshot first.');
+  if(a==='photo')profileStatus(f,'Uploading headshot…');
   if(selectedPhoto)data.file=await prepareHeadshot(f,selectedPhoto);
   if(data.file&&data.file.size>4*1024*1024)throw Error('Choose a file up to 4 MB.');
   if(a==='agreement'&&button.value==='credits'){
@@ -996,34 +1043,26 @@ listen('submit',async e=>{
   if(a==='requestReset'){message.textContent=result.message;return;}
   if(a==='resetPassword'){history.replaceState(null,'',location.pathname);login();message.textContent='Password updated. Sign in with your new password.';return;}
   if(a==='photo'||a==='bio'){
-   const section=f.closest('section'), details=f.closest('details');
-   if(a==='photo'){
-    let img=section.querySelector('[data-headshot]');
-    if(!img){img=document.createElement('img');img.dataset.headshot='';img.alt='Saved headshot';f.before(img);}
-    img.src=url('photo',id)+'&updated='+Date.now();
-   }
+   const details=f.closest('details');
+   if(a==='photo')showSavedHeadshot(f,id,result.imageVersion);
    if(details){const summary=details.querySelector('summary');summary.textContent=summary.textContent.replace(a==='photo'?'photo needed':'bio needed',a==='photo'?'photo received':data.bio.trim()?'bio received':'bio needed');}
-   if(a==='photo'&&f.elements.file.files[0]===selectedPhoto){
-    clearHeadshotPreview(f);
-    f.elements.file.value='';
-    profileStatus(f,'Saved · '+data.file.name);
-   }
+   if(a==='photo')profileStatus(f,'Headshot saved to the portal · '+data.file.name+'. Approve the profile in each production to update its website.');
    if(a==='bio')profileStatus(f,f.elements.bio.value===data.bio?'Saved':'Unsaved changes');
-   message.textContent=(a==='photo'?'Headshot saved.':'Bio saved.')+' An admin reviews updates for each selected film.';
-   const publicationInfo=await request('home').catch(()=>null);
-   if(!publicationInfo){message.textContent+=' Refresh to check website status.';return;}
-   lastState=publicationInfo;
-   const member=[...publicationInfo.members,...(publicationInfo.unassignedProfiles||[])].find(m=>m.id===id);
-   const memberStatus=app.querySelector('[data-member-publication]');
-   if(member&&memberStatus)memberStatus.innerHTML=memberPublishing(member,publicationInfo.productionChoices);
-   if(member)message.textContent+=' '+Object.entries(member.publication||{}).map(([pid,p])=>(publicationInfo.productions.find(x=>x.id===pid)?.name||pid)+': '+p.state).join(' · ');
+   message.textContent=(a==='photo'?'Headshot saved to the portal. Approve the pending profile for each film website.':'Bio saved. An admin reviews updates for each selected film.');
+   const member=await updateMemberPublishing(id);
+   if(!member){message.textContent+=' Refresh to check website status.';return;}
+   message.textContent+=' '+Object.entries(member.publication||{}).map(([pid,p])=>(lastState.productions.find(x=>x.id===pid)?.name||pid)+': '+publicationLabel(member,pid,p.state)).join(' · ');
    return;
   }
   if(a==='activate')history.replaceState(null,'',location.pathname);
   if(a==='prepareOfflineCountersign'){await load();message.textContent=result.created?(result.status==='Draft prepared'?'Heidi’s countersignature draft is prepared.':'SignWell is preparing Heidi’s countersignature draft.')+' Review its status under Documents → Uploaded agreements. No signing request has been sent.':'An existing preparation record was found. Review its status under Documents → Uploaded agreements.';return;}
   await load();message.textContent=['invite','resend'].includes(a)?'Invitation queued for email delivery.':a==='savePendingPerson'?'Name saved. Add their email here when you have it.':a==='removePendingPerson'?'Removed from the setup list.':a==='removeResource'?'Removed from the production board.':['login','passwordLogin','activate'].includes(a)?'':a==='logout'?'Signed out.':'Saved.';
  }catch(e){
-  if(a==='photo'||a==='bio')profileStatus(f,e.message,true);
+  if(a==='memberProfile'||a==='photo'){
+   const reason=e.status===401?'Your session ended. Sign in again and retry.':e.status===413?'The photo is too large to upload. Try a smaller copy.':e.status||!(e instanceof TypeError)?e.message:'Check your connection and try again.';
+   profileStatus(f,(a==='photo'?'Headshot upload failed. ':'Profile save could not be confirmed. ')+reason,true);
+  }
+  else if(a==='bio')profileStatus(f,e.message,true);
   else message.textContent=e.message;
  }finally{
   button.disabled=false;

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {test} from 'node:test';
+import sharp from 'sharp';
 import {AGREEMENT_CYCLE,currentAgreementKey} from '../netlify/lib/agreement-cycle.mjs';
 import {adminActions} from '../netlify/lib/admin-actions.mjs';
 import {checkSigningNotices} from '../netlify/lib/signing-notices.mjs';
@@ -15,7 +16,7 @@ const portalFile=new URL('../netlify/functions/portal.mjs',import.meta.url);
 let source=await readFile(portalFile,'utf8');
 for(const [before,after] of [
  ["import {begin as beginCalendar,events as calendarEvents} from './calendar-callback.mjs';",'const beginCalendar=()=>{},calendarEvents=()=>{};'],
- ["import sharp from 'sharp';",'const sharp=()=>{throw Error("Unexpected image operation");};'],
+ ["import sharp from 'sharp';",'const sharp=(...args)=>globalThis.__profileDocumentFixture.sharp(...args);'],
  ["import { getStore } from '@netlify/blobs';",'const getStore=()=>globalThis.__profileDocumentFixture.store;'],
  ["import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';",'const PDFDocument={},StandardFonts={},rgb=()=>{};'],
  ["import {enqueue, mailReady, portalUrl} from '../lib/mail.mjs';",'const enqueue=async(...args)=>{globalThis.__profileDocumentFixture.notifications.push(args);},mailReady=()=>true,portalUrl="https://heidimikacfilms.com/members/";']
@@ -53,7 +54,7 @@ async function fixture(){
   async delete(key){records.delete(key);},
   list({prefix,paginate}){const page={blobs:[...records.keys()].filter(key=>key.startsWith(prefix)).map(key=>({key}))};return paginate?(async function*(){yield page;})():Promise.resolve(page);}
  };
- const context={store,calls:[],notifications:[],documents:new Map()};
+ const context={store,sharp,calls:[],notifications:[],documents:new Map()};
  globalThis.__profileDocumentFixture=context;
  for(const [who,token] of Object.entries(tokens))await store.setJSON('sessions/'+digest(token),{id:who==='member'?actor:who,admin:who!=='member',adminDigest:who==='member'?null:'test-docs-'+who.toLowerCase(),expires:Date.now()+3600000});
  for(const [id,name] of [[actor,'Rachel DeMicco'],[other,'Another Member']])await store.setJSON('members/'+id,{id,name,email:id+'@example.invalid',productions:{[dark]:{role:'Actor',filmProfile:id===actor?profile.id:''},[lies]:{role:'Crew',filmProfile:''}}});
@@ -79,7 +80,8 @@ async function fixture(){
 }
 async function call(action,{body,who='Nick',production=dark,id=actor,params={},method,origin}={}){
  const url=new URL('https://heidimikacfilms.com/.netlify/functions/portal');url.search=new URLSearchParams({action,production,id,...params});
- const response=await handle(new Request(url,{method:method||(body===undefined?'GET':'POST'),headers:{origin:origin||url.origin,'content-type':'application/json',...(who?{cookie:'__Host-hmf='+tokens[who]}:{})},body:body===undefined?undefined:JSON.stringify(body)}));
+ const raw=body instanceof FormData||body instanceof Blob;
+ const response=await handle(new Request(url,{method:method||(body===undefined?'GET':'POST'),headers:{origin:origin||url.origin,...(raw?{}:{'content-type':'application/json'}),...(who?{cookie:'__Host-hmf='+tokens[who]}:{})},body:body===undefined||raw?body:JSON.stringify(body)}));
  const data=response.headers.get('content-type')?.includes('application/json')?await response.json():Buffer.from(await response.arrayBuffer());
  return {status:response.status,response,data};
 }
@@ -90,6 +92,47 @@ async function setAgreement(context,{id='active-doc',production=dark,status='Wai
  context.documents.set(id,{id,name:agreement.name,status:providerStatus,recipients:[{id:'1',name:'Rachel DeMicco',email:actor+'@example.invalid',status:'pending'},{id:'2',name:'Heidi Mikac',email:'hello@heidimikacfilms.com',status:'pending'}]});
  return agreement;
 }
+
+test('a member saves their headshot and biography together before website approval',async()=>{
+ const context=await fixture();
+ const jpeg=await sharp({create:{width:12,height:16,channels:3,background:'#ffc344'}}).jpeg().toBuffer();
+ const edits=new FormData();
+ edits.set('bio','  Saved member biography.  ');
+ edits.set('file',new Blob([jpeg],{type:'image/jpeg'}),'Headshot.jpg');
+ const saved=await call('memberProfile',{who:'member',body:edits});
+ assert.equal(saved.status,200);
+ assert.deepEqual(saved.data,{ok:true,imageVersion:digest(jpeg)});
+ const member=await context.store.get('members/'+actor);
+ assert.deepEqual(member.draftProfile,{bio:'Saved member biography.',imageVersion:digest(jpeg)});
+ assert.deepEqual(Object.keys(member.productionRequests).sort(),[dark,lies].sort());
+ assert.equal(member.approvedProfiles,undefined);
+ const photo=await call('photo',{who:'member'});
+ assert.equal(photo.response.headers.get('content-type'),'image/jpeg');
+ assert.deepEqual(photo.data,jpeg);
+ assert.equal((await row(dark,'member')).photoName,'Headshot.jpg');
+ assert.equal((await call('memberProfile',{who:'member',id:other,body:edits})).status,403);
+});
+
+test('bad headshots produce a specific error without saving the accompanying biography',async()=>{
+ const context=await fixture();
+ const edits=new FormData();
+ edits.set('bio','Do not save this with a broken headshot.');
+ edits.set('file',new Blob([Buffer.from('ffd8ff','hex')],{type:'image/jpeg'}),'Broken.jpg');
+ const failed=await call('memberProfile',{who:'member',body:edits});
+ assert.equal(failed.status,400);
+ assert.match(failed.data.error,/headshot could not be read/i);
+ assert.equal((await context.store.get('members/'+actor)).draftProfile,undefined);
+ assert.ok(![...context.store.records.keys()].some(key=>key.startsWith('profile-images/')));
+
+ const member=await context.store.get('members/'+actor);
+ await context.store.setJSON('members/'+actor,{...member,productions:{}});
+ edits.delete('file');
+ edits.set('bio','An unassigned member can save a biography on its own.');
+ assert.equal((await call('memberProfile',{who:'member',body:edits})).status,200);
+ const saved=await context.store.get('members/'+actor);
+ assert.equal(saved.draftProfile.bio,edits.get('bio'));
+ assert.deepEqual(saved.productionRequests,{});
+});
 
 test('only administrators can change an active assigned member document requirement',async()=>{
  const context=await fixture();
