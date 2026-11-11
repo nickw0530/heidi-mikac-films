@@ -28,6 +28,9 @@ const practiceName=name=>/^test(?:\s+testers[oe]n)?$/i.test(name.trim());
 const allowPublicProfile=m=>requireThat(!practiceName(m.name),'Practice accounts cannot appear on a public website.',403);
 const productions=[{id:'written-in-the-dark',name:'Written in the Dark'},{id:'wherein-lies-continue',name:'Wherein Lies Continue'}];
 const catalogs={'written-in-the-dark':darkCatalog,'wherein-lies-continue':whereinCatalog};
+const castPlacements=new Set(['','lead','supporting','additional','crew']);
+const websitePlacementPrefix=pid=>'website-placement/'+pid+'/';
+const adminTaskOwners=['Nick','Heidi','any'];
 const normalizeName=name=>name.trim().toLowerCase().replace(/[^a-z0-9]/g,'');
 const normalizePendingName=name=>name.normalize('NFKC').toLocaleLowerCase('en-US').replace(/[^\p{L}\p{N}]/gu,'');
 function publicCredit(profile) {
@@ -148,6 +151,16 @@ export default async function handle(req, context) {
     for await(const page of rawStore.list({prefix,paginate:true}))for(const {key} of page.blobs){const record=await rawStore.get(key,{type:'json'});if(record)records.push(record);}
     return records;
   };
+  const websitePlacements=async pid=>{
+    const prefix=websitePlacementPrefix(pid),placements=new Map();
+    for await(const page of rawStore.list({prefix,paginate:true})){
+      await Promise.all(page.blobs.map(async ({key})=>{
+        const value=await rawStore.get(key,{type:'json'});
+        if(value)placements.set(key.slice(prefix.length),value);
+      }));
+    }
+    return placements;
+  };
   const pendingKey=id=>'portal-pending/'+id;
   const pendingNameKey=name=>'portal-pending-names/'+hash(normalizePendingName(name));
   async function releasePendingName(name,id){
@@ -192,8 +205,15 @@ export default async function handle(req, context) {
   if(!post&&action==='published'){
     // Hidden entries exist only to suppress a card already printed on a film website.
     // People without such a card are left out, so hiding someone never names them here.
-    const items=(await publicItems()).filter(x=>!x.hidden||entry(x.id)).map(x=>x.hidden?{id:x.id,name:entry(x.id).name,hidden:true}:publicCredit(x));
-    return json(items,{'Access-Control-Allow-Origin':'*','Cache-Control':'public, max-age=30'});
+    const [published,placements]=await Promise.all([publicItems(),websitePlacements(productionId)]);
+    const items=new Map(published.filter(x=>!x.hidden||entry(x.id)).map(x=>[x.id,x.hidden?{id:x.id,name:entry(x.id).name,hidden:true}:publicCredit(x)]));
+    for(const [id,{castPlacement,billingOrder}] of placements){
+      const profile=items.get(id);
+      if(!castPlacement||profile?.hidden||(!profile&&!entry(id)))continue;
+      // Catalog-only settings update the layout of an existing card without replacing its content.
+      items.set(id,{...profile,id,castPlacement,...(castPlacement==='lead'?{billingOrder}:{})});
+    }
+    return json([...items.values()],{'Access-Control-Allow-Origin':'*','Cache-Control':'public, max-age=30'});
   }
   if(!post&&action==='memberPhoto'){
     const id=url.searchParams.get('id');requireThat(uuid.test(id),'Invalid image.');
@@ -610,6 +630,7 @@ export default async function handle(req, context) {
       return offlineRequests.get(profileId);
     };
     const publicationChecks=new Map();
+    const placementByProfile=admin?await websitePlacements(productionId):null;
     const publicationFor=pid=>{
       if(!publicationChecks.has(pid))publicationChecks.set(pid,publicItems(pid));
       return publicationChecks.get(pid);
@@ -635,6 +656,7 @@ export default async function handle(req, context) {
       const original=accounts.find(m=>m.id===row.id);
       const base=sharedBase(original);
       row.paperworkExempt=!!row.adminProfile;
+      if(admin)row.websitePlacement=placementByProfile.get(row.filmProfile||'member-'+row.id)||null;
       const [published,offlineMetadata,previous]=await Promise.all([
         base?get('published/'+base.id):null,
         assignments(original)[productionId]&&row.filmProfile?store.getMetadata('offline/'+row.filmProfile):null,
@@ -682,9 +704,9 @@ export default async function handle(req, context) {
     }));
     const adminCatalog=admin?await Promise.all(rosterCatalog.map(async x=>{
       const previousOffline=(await store.getMetadata('offline/'+x.id))?.metadata?.status||null;
-      return {...x,offline:null,previousOffline,offlineSigning:null,paperworkStatus:rows.find(row=>row.filmProfile===x.id)?.paperworkStatus||'No agreement on file'};
+      return {...x,websitePlacement:placementByProfile.get(x.id)||null,offline:null,previousOffline,offlineSigning:null,paperworkStatus:rows.find(row=>row.filmProfile===x.id)?.paperworkStatus||'No agreement on file'};
     })):[];
-    const waiting=admin?(await adminActions(rawStore,productionId,{members:accounts,memberRows:rows})).filter(a=>a.owner==='any'||a.owner===self):[];
+    const waiting=admin?await adminActions(rawStore,productionId,{members:accounts,memberRows:rows}):[];
     const adminProfileId=admin?bindings[self]||null:null;
     const profileCandidates=admin&&!bindings.Nick?adminProfileCandidates(accounts,assignments,findProfile):null;
     const productionReviews=admin?await Promise.all(accounts.filter(m=>!ownerOf(m)&&m.productionRequests?.[productionId]).map(async m=>({id:m.id,name:m.name,role:assignments(m)[productionId]?.role||findProfile(m,productionId)?.role||'',credits:m.proposedCredits?.[productionId]||assignments(m)[productionId]||{},requestId:m.productionRequests[productionId],...await reviewProfile(m)}))):[];
@@ -949,11 +971,11 @@ export default async function handle(req, context) {
     await notify(m,productionId+'/'+id,'New production task','You have a new task for '+film+'.');return json({ok:true});
   }
   if(action==='adminTask'&&post){
-    onlyAdmin();const owner=body.owner;requireThat(['Nick','Heidi','any'].includes(owner),'Select an administrator.');
+    onlyAdmin();const owner=body.owner;requireThat(adminTaskOwners.includes(owner),'Select an administrator.');
     const id=randomUUID();await set('tasks/'+owner+'/'+id,{id,title:string(body.title,160),done:false});return json({ok:true});
   }
   if(action==='finishAdminTask'&&post){
-    onlyAdmin();requireThat((body.owner===self||body.owner==='any')&&uuid.test(body.task),'Invalid task.');
+    onlyAdmin();requireThat(adminTaskOwners.includes(body.owner)&&uuid.test(body.task),'Invalid task.');
     const key='tasks/'+body.owner+'/'+body.task,t=await get(key);requireThat(t,'Task unavailable.');
     await set(key,{...t,done:true});return json({ok:true});
   }
@@ -1005,6 +1027,32 @@ export default async function handle(req, context) {
     if(body.visible)allowPublicProfile(m);
     await saveTarget(record,{...m,...(m.revoked&&body.visible?{keepPublic:true}:{}),publication:{...m.publication,[productionId]:body.visible===true}});
     await invalidate();return json({ok:true});
+  }
+  if(action==='saveWebsitePlacement'&&post){
+    onlyAdmin();
+    let profileId;
+    if(uuid.test(uid)){
+      const member=await target();
+      requireThat(active(member),'Member unavailable.',404);
+      allowPublicProfile(member);
+      profileId=findProfile(member,productionId)?.id||'member-'+member.id;
+    }else{
+      requireThat(entry(uid),'Unknown film profile.',404);
+      profileId=uid;
+    }
+    const {castPlacement,expectedRevision}=body;
+    requireThat(castPlacements.has(castPlacement),'Choose a valid cast placement.');
+    const order=body.billingOrder;
+    requireThat(castPlacement!=='lead'||['string','number'].includes(typeof order)&&/^[1-9][0-9]{0,2}$/.test(String(order)),'Enter a lead billing order from 1 to 999.');
+    const billingOrder=castPlacement==='lead'?Number(order):null;
+    const key=websitePlacementPrefix(productionId)+profileId;
+    const current=await rawStore.getWithMetadata(key,{type:'json'});
+    const conflict='Website placement changed. Reload the profile before saving.';
+    requireThat(expectedRevision===(current?.data?.revision||''),conflict,409);
+    if(castPlacement===(current?.data?.castPlacement||'')&&billingOrder===(current?.data?.billingOrder??null))return json({ok:true});
+    const saved=await rawStore.setJSON(key,{castPlacement,billingOrder,revision:randomUUID()},current?{onlyIfMatch:current.etag}:{onlyIfNew:true});
+    requireThat(saved.modified,conflict,409);
+    return json({ok:true});
   }
   if(action==='bio'&&post){
     await target();requireThat(typeof body.bio==='string'&&body.bio.length<=5000,'Bio limit is 5,000 characters.');

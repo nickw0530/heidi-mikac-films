@@ -112,6 +112,31 @@ async function ownerFixture({linked=true}={}){
  return context;
 }
 
+test('either administrator can see and complete tasks assigned to either administrator',async()=>{
+ const context=await fixture();
+ for(const [who,owner,production] of [['Heidi','Nick',dark],['Nick','Heidi',lies]]){
+  const title='Follow up with production';
+  const created=await call('adminTask',{who,production,body:{owner,title}});
+  assert.equal(created.status,200);
+  const pending=async viewer=>(await call('home',{who:viewer,production})).data.waiting.filter(item=>item.taskId);
+  const [task]=await pending(owner);
+  assert.equal(task.owner,owner);
+  assert.equal(task.label,title);
+  assert.deepEqual(await pending(who),[task]);
+  assert.deepEqual(await pending('member'),[]);
+
+  const body={owner,task:task.taskId};
+  assert.equal((await call('finishAdminTask',{who:'member',production,body})).status,403);
+  assert.equal((await call('finishAdminTask',{who,production:production===dark?lies:dark,body})).status,400);
+  assert.equal((await call('finishAdminTask',{who,production,body:{...body,owner:actor}})).status,400);
+  assert.deepEqual(await pending(owner),[task]);
+  assert.equal((await call('finishAdminTask',{who,production,body})).status,200);
+  assert.deepEqual(await pending(owner),[]);
+  assert.deepEqual(await pending(who),[]);
+ }
+ assert.deepEqual(context.notifications,[]);
+});
+
 test('administrator linking accepts only the verified pair of existing cast profile IDs',async()=>{
  const {store}=await ownerFixture({linked:false});
  assert.equal((await call('linkAdminProfiles',{who:'member',body:owners})).status,403);
@@ -539,6 +564,38 @@ test('the public feed never names hidden people who have no card on a film websi
  await context.store.setJSON('members/'+other,{...(await context.store.get('members/'+other)),revoked:true,keepPublic:false});
  await context.store.setJSON('public-revision','changed');
  assert.ok(!JSON.stringify((await call('published',{who:null})).data).includes('Another Member'),'Revoking access does not publish the name either.');
+});
+
+test('either admin can set independent website placement without publishing private profiles',async()=>{
+ const {store}=await fixture();
+ const save=({who='Nick',production=dark,id=actor,castPlacement='lead',billingOrder='2',expectedRevision=''}={})=>
+  call('saveWebsitePlacement',{who,production,id,body:{castPlacement,billingOrder,expectedRevision}});
+ const feed=async production=>(await call('published',{who:null,production})).data;
+ const original=await store.get('members/'+actor);
+ assert.equal((await save({who:'member'})).status,403);
+ assert.equal((await save({billingOrder:0})).status,400);
+ assert.equal((await save({castPlacement:'unrecognized'})).status,400);
+ const published=(await feed(dark)).find(item=>item.id===profile.id);
+ assert.equal((await save()).status,200);
+ assert.deepEqual((await feed(dark)).find(item=>item.id===profile.id),{...published,castPlacement:'lead',billingOrder:2});
+ const {revision}=(await row(dark,'Heidi')).websitePlacement;
+ assert.equal((await save({who:'Heidi',castPlacement:'supporting'})).status,409);
+ assert.equal((await save({who:'Heidi',castPlacement:'supporting',expectedRevision:revision})).status,200);
+ assert.equal((await save({who:'Heidi',production:lies,castPlacement:'additional'})).status,200);
+ assert.equal((await row(lies,'Nick')).websitePlacement.castPlacement,'additional');
+ assert.equal((await row(dark,'Nick')).websitePlacement.castPlacement,'supporting');
+ assert.equal((await save({id:other,production:lies,castPlacement:'additional'})).status,200);
+ assert.ok(!(await feed(lies)).some(item=>item.id==='member-'+other),'A placement alone cannot publish a new member profile.');
+ assert.deepEqual(await store.get('members/'+actor),original,'Website placement is separate from the member’s profile and credits.');
+ assert.equal((await call('publication',{body:{visible:false}})).status,200);
+ assert.deepEqual((await feed(dark)).find(item=>item.id===profile.id),{id:profile.id,name:profile.name,hidden:true});
+
+ const catalog=darkCatalog.find(person=>person.id!==profile.id);
+ assert.equal((await save({who:'Heidi',id:catalog.id})).status,200);
+ const catalogRow=(await call('home',{who:'Nick'})).data.catalog.find(person=>person.id===catalog.id);
+ assert.deepEqual((await feed(dark)).find(item=>item.id===catalog.id),{id:catalog.id,castPlacement:'lead',billingOrder:2});
+ assert.equal((await save({id:catalog.id,castPlacement:'',expectedRevision:catalogRow.websitePlacement.revision})).status,200);
+ assert.ok(!(await feed(dark)).some(item=>item.id===catalog.id),'Website default clears the layout override.');
 });
 
 test('downloads use the posted title and administrators can remove a posted file or message',async()=>{

@@ -5,6 +5,7 @@ import {mountReports} from './reports.js';
 import {mountBulkActions} from './bulk-actions.js';
 import {headshotAccept,selectHeadshot,prepareHeadshot,clearHeadshotPreview} from './headshot-editor.js';
 const officeTabs=[['overview','Overview'],['people','People'],['documents','Documents'],['messages','Messages & files'],['availability','Filming availability'],['calendar','Events'],['reports','Reports'],['settings','Settings']];
+const castPlacements=[['','Website default'],['lead','Lead Cast'],['supporting','Supporting Cast'],['additional','Additional Cast'],['crew','Creative Team & Crew']];
 const directoryFilters=[
  ['all','Everyone'],['setup','Account setup needed'],['catalog','Website profiles to link'],
  ['missing','No agreement on file'],['progress','Signing in progress'],['bio','Biography needed'],
@@ -485,7 +486,8 @@ function renderCombinedOffice(states,picker){
     action='<button type="button" data-inbox-person="'+escape(id)+'" data-inbox-film="'+film+'" data-inbox-area="'+area+'">'+buttonText+'</button>';
    }
    else action='<button type="button" data-inbox-view="'+escape(item.view)+'" data-inbox-film="'+film+'">Open '+(item.view==='settings'?'settings':'documents')+'</button>';
-   return '<li class="action-row"><div><strong>'+escape(name)+'</strong>'+(name!==label?'<span>'+escape(label)+'</span>':'')+'<small>'+escape(state.film)+(item?.owner&&item.owner!=='any'?' · Assigned to you':'')+'</small></div>'+action+'</li>';
+   const assignee=kind==='task'?(item.owner==='any'?' · Any admin':' · Assigned to '+(item.owner===state.self?'you':item.owner)):'';
+   return '<li class="action-row"><div><strong>'+escape(name)+'</strong>'+(name!==label?'<span>'+escape(label)+'</span>':'')+'<small>'+escape(state.film+assignee)+'</small></div>'+action+'</li>';
   };
   const approvals=ordered.filter(row=>row.kind==='review');
   const paperwork=ordered.filter(row=>['person','signature','section'].includes(row.kind));
@@ -762,9 +764,17 @@ async function load(initial){
  const group=(label,items,detail)=>'<details class="audit-group"><summary>'+label+' <b>'+items.length+'</b></summary>'+
   (items.length?'<ul>'+sortPeople(items).map(row=>'<li><button type="button" '+(row.member?'data-open-person':'data-open-catalog')+'="'+escape(row.id)+'">'+escape(row.name)+'</button><span>'+escape(detail(row))+'</span></li>').join('')+'</ul>':'<p>Nothing outstanding.</p>')+'</details>';
  const attention='<section class="audit"><small>'+escape(s.film)+' · PRODUCTION OFFICE</small><h2>Needs attention</h2><p>Open a category to see who needs follow-up.</p>'+group('No agreement on file',audit.filter(x=>!x.exempt&&x.status==='No agreement on file'),x=>x.status)+group('Paperwork in progress',audit.filter(x=>!x.exempt&&!['Complete','Document N/A','Not required','No agreement on file'].includes(x.status)),x=>x.status)+group('Missing profile items or open tasks',audit.filter(x=>!x.exempt&&x.gaps.length),x=>x.gaps.join(' · '))+'</section>';
+ const websitePlacement=profile=>{
+  const placement=profile.websitePlacement,lead=placement?.castPlacement==='lead';
+  return form('saveWebsitePlacement',
+   '<input type="hidden" name="expectedRevision" value="'+escape(placement?.revision)+'">'+
+   '<label>Cast placement<select name="castPlacement">'+castPlacements.map(([value,label])=>'<option value="'+value+'"'+(value===(placement?.castPlacement||'')?' selected':'')+'>'+label+'</option>').join('')+'</select></label>'+
+   '<label data-lead-billing'+(lead?'':' hidden')+'>Lead billing order <small>1 appears first. Give each lead a different number.</small><input type="number" name="billingOrder" min="1" max="999" step="1" value="'+escape(placement?.billingOrder)+'"'+(lead?' required':' disabled')+'></label>',
+   'Save website placement',profile.id);
+ };
  const catalogCard=profile=>'<section class="catalog-editor"><h3>Website profile</h3>'+
   (profile.photo?'<img loading="lazy" alt="Approved headshot" src="'+escape(profile.photo)+'">':'')+
-  '<p>'+escape(profile.role)+'</p><p class="profile-bio">'+escape(profile.bio)+'</p>'+offline(profile)+
+  '<p>'+escape(profile.role)+'</p><div class="publication-status"><h4>Website publishing · '+escape(s.film)+'</h4>'+websitePlacement(profile)+'</div><p class="profile-bio">'+escape(profile.bio)+'</p>'+offline(profile)+
   (s.mailReady?form('invite',input('email','Invitation email','email')+['name','role','filmProfile'].map((key,i)=>'<input type="hidden" name="'+key+'" value="'+escape([profile.name,profile.role,profile.id][i])+'">').join(''),'Invite '+escape(profile.name)):'')+'</section>';
  const linkControls=m=>m.practice?'':m.filmProfile?'<p>Approved biography and headshot appear on the assigned film websites.</p>':panel('Link an existing film profile',form('linkProfile','<label>Approved profile<select name="filmProfile" required><option value="">Select person</option>'+available.map(x=>'<option value="'+escape(x.id)+'" '+(x.name===m.name?'selected':'')+'>'+escape(x.name)+'</option>').join('')+'</select></label>','Confirm profile match',m.id));
  const audience='<fieldset><legend>Who should receive this?</legend><select name="audience" aria-label="Audience"><option value="all">Include all cast and crew</option><option value="selected">Select individuals</option></select><div data-recipients hidden>'+s.members.map(m=>'<label><input type="checkbox" style="width:auto;display:inline" name="recipient" value="'+escape(m.id)+'"> '+escape(m.name)+' · '+escape(m.role)+'</label>').join('')+'<small>Choose from the portal roster.</small></div></fieldset>';
@@ -833,7 +843,7 @@ async function load(initial){
   return '<nav class="office-nav member-nav" aria-label="Member dashboard">'+tabs.map(([view,label])=>memberButton(view,label)).join('')+'</nav>'+
    (assigned?home:'')+profilePane+documentsPane+(assigned?availabilityPane+eventsPane:'');
  }
- const publication=m=>'<div class="publication-status"><h4>Website publishing</h4>'+Object.entries(m.publication||{}).map(([pid,p])=>'<p>'+escape(s.productions.find(x=>x.id===pid)?.name||pid)+' · <strong>'+escape(publicationLabel(m,pid,p.state))+'</strong></p>').join('')+(m.practice?'':form('publication','<label><input type="checkbox" name="visible" '+(m.publication?.[s.productionId]?.visible?'checked':'')+'> Show on this production’s website</label>','Save website visibility',m.id))+'</div>';
+ const publication=m=>'<div class="publication-status"><h4>Website publishing</h4>'+Object.entries(m.publication||{}).map(([pid,p])=>'<p>'+escape(s.productions.find(x=>x.id===pid)?.name||pid)+' · <strong>'+escape(publicationLabel(m,pid,p.state))+'</strong></p>').join('')+(m.practice?'':'<h5>Placement on '+escape(s.film)+'</h5>'+websitePlacement(m)+form('publication','<label><input type="checkbox" name="visible" '+(m.publication?.[s.productionId]?.visible?'checked':'')+'> Show on this production’s website</label>','Save website visibility',m.id))+'</div>';
  const recover=m=>m.agreement&&!m.agreement.id&&!m.agreement.cleared?panel('Recover interrupted signing request','<p>Check SignWell first. Link the existing document below, or confirm that no document was created. This action never sends a contract.</p>'+form('recoverAgreement','<label>Existing SignWell document ID (if found)<input name="documentId"></label><label><input type="checkbox" name="confirmAbsent"> I checked SignWell; no document exists</label>','Recover request',m.id)):'';
  function documentControls(m,document,reason){
   return '<form data-action="trackPaperwork" data-id="'+escape(m.id)+'"><input type="hidden" name="document" value="'+escape(document)+'"><button value="complete"'+(['complete','hard-copy'].includes(reason)?' disabled':'')+'>Complete</button> <button value="not-required"'+(reason==='not-required'?' disabled':'')+'>Document N/A</button>'+(reason?' <button value="reopen">Reopen requirement</button>':'')+'</form>';
@@ -869,8 +879,8 @@ async function load(initial){
   const activity=profileActivityPanel(member,s.productionId);
   const documentActions=member.paperworkExempt?'':panel(member.needsEmail?'Save a document for this person':'Send a document',form('resource',documentFields,member.needsEmail?'Save document':'Send to '+escape(member.name),member.id));
   const taskActions=member.adminProfile?'':tasks(member)+panel('Assign a task',form('task',input('title','Task'),'Assign task',member.id));
-  return '<div class="film-person-card" data-person="'+escape(member.id)+'">'+heading+personalReview(member)+personPaperwork(member)+
-   availability+documentActions+personalMessage(member)+taskActions+(member.filmProfile&&library.find(x=>x.id===member.filmProfile)?offline(library.find(x=>x.id===member.filmProfile)):'')+linkControls(member)+publication(member)+activity+'</div>';
+  return '<div class="film-person-card" data-person="'+escape(member.id)+'">'+heading+personalReview(member)+publication(member)+personPaperwork(member)+
+   availability+documentActions+personalMessage(member)+taskActions+(member.filmProfile&&library.find(x=>x.id===member.filmProfile)?offline(library.find(x=>x.id===member.filmProfile)):'')+linkControls(member)+activity+'</div>';
  }
  renderOfficePerson=film=>{
   if(film.target==='person'){
@@ -962,6 +972,12 @@ listen('change',e=>{
   return;
  }
  if(e.target.name==='selection')e.target.closest('fieldset').querySelector('[data-credit-fields]').hidden=!e.target.checked;
+ if(e.target.matches('form[data-action="saveWebsitePlacement"] select[name="castPlacement"]')){
+  const lead=e.target.value==='lead',billing=e.target.form.elements.billingOrder;
+  billing.closest('label').hidden=!lead;
+  billing.required=lead;
+  billing.disabled=!lead;
+ }
  if(e.target.name==='file'&&photoForm(e.target.form?.dataset.action)){
   const form=e.target.form;
   selectHeadshot(form).catch(error=>profileStatus(form,error.message,true));
@@ -1100,6 +1116,12 @@ listen('submit',async e=>{
    return;
   }
   if(a==='activate')history.replaceState(null,'',location.pathname);
+  if(a==='saveWebsitePlacement'){
+   const film=lastState.film;
+   await load();
+   message.textContent='Website placement saved for '+film+'.';
+   return;
+  }
   if(a==='prepareOfflineCountersign'){await load();message.textContent=result.created?(result.status==='Draft prepared'?'Heidi’s countersignature draft is prepared.':'SignWell is preparing Heidi’s countersignature draft.')+' Review its status under Documents → Uploaded agreements. No signing request has been sent.':'An existing preparation record was found. Review its status under Documents → Uploaded agreements.';return;}
   await load();message.textContent=['invite','resend'].includes(a)?'Invitation queued for email delivery.':a==='savePendingPerson'?'Name saved. Add their email here when you have it.':a==='removePendingPerson'?'Removed from the setup list.':a==='removeResource'?'Removed from the production board.':['login','passwordLogin','activate'].includes(a)?'':a==='logout'?'Signed out.':'Saved.';
  }catch(e){
@@ -1173,7 +1195,7 @@ listen('click',async e=>{
    const u=new URL(raw);if(u.protocol!=='https:'||u.username||u.password||!(u.hostname==='signwell.com'||u.hostname.endsWith('.signwell.com')))throw Error('Unexpected signing address.');
    const link=document.createElement('a');link.href=u.href;link.target='_blank';link.rel='noopener noreferrer';link.textContent=result.editUrl?'Open countersignature draft in SignWell':'Open agreement for Heidi to sign';links.append(link);
    const hint=document.createElement('p');hint.textContent=result.editUrl?'Review the original pages and Heidi’s signature page before sending. To reopen a used draft link, click Review countersignature draft again.':'The portal updates automatically after the final signature.';links.append(hint);
-  }else if(result.status==='Waiting on Heidi')note.textContent='Waiting on Heidi. Only Heidi can open the agreement to sign.';
+  }else if(result.status==='Waiting on Heidi')note.textContent='Waiting on Heidi’s signature. A SignWell link is currently unavailable.';
  }catch(error){if(links.isConnected)links.textContent=error.message;}finally{button.disabled=false;}
 });
 
