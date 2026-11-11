@@ -156,6 +156,11 @@ export default async function handle(req, context) {
   const invalidate=()=>set('public-revision',token());
   const active=m=>m&&!m.revoked;
   const publicPhotoHeaders={'Cache-Control':'public, max-age=60','Access-Control-Allow-Origin':'*'};
+  const memberPhotoUrl=(id,version)=>'https://heidimikacfilms.com/.netlify/functions/portal?action=memberPhoto&id='+id+'&v='+version;
+  async function legacyPublicProfile(m){
+    const [profile,photo]=await Promise.all([get('profiles/'+m.id),store.getMetadata('photos/'+m.id)]),fallback=sharedBase(m);
+    return {bio:profile?.bio??fallback?.bio??'',photo:photo?memberPhotoUrl(m.id,photo.metadata?.version||'original'):fallback?.photo||''};
+  }
   async function publicItems(pid=productionId){
     const revision=await get('public-revision')||'initial',key='public-cache/'+pid;
     const cached=await get(key);if(cached?.revision===revision)return cached.items;
@@ -168,10 +173,9 @@ export default async function handle(req, context) {
       if(practiceName(m.name)||!membership||m.publication?.[pid]===false||(m.revoked&&!m.keepPublic)){
         if(base||membership)items.push({id,name:m.name,hidden:true});continue;
       }
-      const [profile,photo]=await Promise.all([get('profiles/'+m.id),store.getMetadata('photos/'+m.id)]),fallback=sharedBase(m);
-      const bio=profile?.bio??fallback?.bio??'',image=photo?'https://heidimikacfilms.com/.netlify/functions/portal?action=memberPhoto&id='+m.id+'&v='+(photo.metadata?.version||'original'):fallback?.photo;
       const approved=m.approvedProfiles?.[pid];
-      if(approved||bio.trim()&&image)items.push({id,name:m.name,role:membership.role??base?.role??'',bio:approved?.bio??bio,photo:approved?.photo??image});
+      const legacy=approved?.bio!=null&&approved?.photo!=null?null:await legacyPublicProfile(m);
+      if(approved||legacy.bio.trim()&&legacy.photo)items.push({id,name:m.name,role:membership.role??base?.role??'',bio:approved?.bio??legacy.bio,photo:approved?.photo??legacy.photo});
     }
     // Revision-keyed snapshots cannot overwrite a later profile edit.
     if((await get('public-revision')||'initial')===revision)await set(key,{revision,items,updated:Date.now()});
@@ -718,18 +722,62 @@ export default async function handle(req, context) {
     const fallback=sharedBase(m),bio=m.draftProfile?.bio??draft?.bio??fallback?.bio??'';
     const imageVersion=m.draftProfile?.imageVersion||'';
     const photo=imageVersion||image?'uploaded':fallback?.photo||'';
-    const publicImage=photo==='uploaded'?'https://heidimikacfilms.com/.netlify/functions/portal?action=memberPhoto&id='+m.id+'&v='+(imageVersion||image.metadata?.version||'original'):photo;
+    const publicImage=photo==='uploaded'?memberPhotoUrl(m.id,imageVersion||image.metadata?.version||'original'):photo;
     return {bio,photo,imageVersion,publicImage,revision:hash(JSON.stringify([bio,imageVersion||image?.etag||photo]))};
   }
-  async function saveDraft(change){
+  async function saveProfileFields(change){
     const key='members/'+uid;
     for(let attempt=0;attempt<4;attempt++){
       const rec=await store.getWithMetadata(key,{type:'json'}),m=rec?.data;
       requireThat(active(m),'Account unavailable.',403);
       const pending={...m.productionRequests};
-      if(!practiceName(m.name))for(const pid of Object.keys(assignments(m)))pending[pid]??=randomUUID();
-      const updated={...m,draftProfile:{...m.draftProfile,...change},productionRequests:pending};
-      if((await store.setJSON(key,updated,{onlyIfMatch:rec.etag})).modified)return;
+      const draftProfile={...m.draftProfile,...change};
+      const assigned=practiceName(m.name)?[]:Object.keys(assignments(m));
+      const updated={...m,draftProfile,productionRequests:pending};
+      const publishedProductions=[];
+      const publish=admin&&assigned.length&&!m.pendingContact;
+      if(publish){
+        const approvedProfiles={...m.approvedProfiles};
+        let legacy;
+        let accounts;
+        for(const pid of assigned){
+          const base=findProfile(m,pid);
+          const prior=approvedProfiles[pid];
+          if(base&&!prior){
+            accounts??=await list('members/');
+            requireThat(!accounts.some(other=>active(other)&&other.id!==uid&&assignments(other)[pid]&&findProfile(other,pid)?.id===base.id),'This production profile is already assigned to someone else.',409);
+          }
+          // Copy the public counterpart only. The other field may contain a member's pending edit.
+          let fallback=base;
+          if((change.bio??prior?.bio)==null||(!change.imageVersion&&prior?.photo==null)){
+            if(!m.generalInvite){
+              legacy??=await legacyPublicProfile(m);
+              if(legacy.bio.trim()&&legacy.photo)fallback=legacy;
+            }else if(base&&pid==='written-in-the-dark')fallback=await get('published/'+base.id)||base;
+          }
+          const snapshot={
+            bio:change.bio??prior?.bio??fallback?.bio??'',
+            photo:change.imageVersion?memberPhotoUrl(uid,change.imageVersion):prior?.photo??fallback?.photo??'',
+            imageVersion:change.imageVersion??prior?.imageVersion??''
+          };
+          if(!prior&&!snapshot.bio.trim()&&!snapshot.photo)continue;
+          approvedProfiles[pid]=snapshot;
+          if(pending[pid]){
+            const pendingBio=draftProfile.bio!==undefined&&draftProfile.bio!==snapshot.bio;
+            const pendingPhoto=draftProfile.imageVersion&&draftProfile.imageVersion!==snapshot.imageVersion;
+            if(pendingBio||pendingPhoto||m.proposedCredits?.[pid])pending[pid]=randomUUID();
+            else delete pending[pid];
+          }
+          if(m.publication?.[pid]!==false)publishedProductions.push(pid);
+        }
+        updated.approvedProfiles=approvedProfiles;
+      }else if(!admin){
+        for(const pid of assigned)pending[pid]??=randomUUID();
+      }
+      if((await store.setJSON(key,updated,{onlyIfMatch:rec.etag})).modified){
+        if(publish)await invalidate();
+        return admin?{publishedProductions}:{};
+      }
     }
     requireThat(false,'Your profile changed. Please save again.',409);
   }
@@ -913,7 +961,7 @@ export default async function handle(req, context) {
   }
   if(action==='bio'&&post){
     await target();requireThat(typeof body.bio==='string'&&body.bio.length<=5000,'Bio limit is 5,000 characters.');
-    await saveDraft({bio:body.bio.trim()});return json({ok:true});
+    return json({ok:true,...await saveProfileFields({bio:body.bio.trim()})});
   }
   async function storeHeadshot(bytes,filename){
     requireThat(bytes.length>0,'Choose a headshot file.');
@@ -942,13 +990,12 @@ export default async function handle(req, context) {
       change.imageVersion=await storeHeadshot(Buffer.from(await photo.arrayBuffer()),photo.name);
     }
     requireThat(Object.keys(change).length,'Choose a headshot or edit the biography first.');
-    await saveDraft(change);
-    return json({ok:true,imageVersion:change.imageVersion});
+    return json({ok:true,imageVersion:change.imageVersion,...await saveProfileFields(change)});
   }
   if(action==='photo'&&post){
     await target();
     const imageVersion=await storeHeadshot(Buffer.from(await req.arrayBuffer()),url.searchParams.get('filename')||'');
-    await saveDraft({imageVersion});return json({ok:true,imageVersion});
+    return json({ok:true,imageVersion,...await saveProfileFields({imageVersion})});
   }
   if(['resource','master'].includes(action)&&post){
     onlyAdmin();

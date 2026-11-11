@@ -232,7 +232,8 @@ function recordedDetails(record){
  return date?by+' · '+date+' ET':by;
 }
 function profile(m){
- return panel('Headshot &amp; biography · '+((m.hasPhoto||m.referencePhoto)?'photo received':'photo needed')+' · '+(m.profile?.bio?'bio received':'bio needed'),form('bio','<label>Biography<textarea name="bio" rows="5" maxlength="5000">'+escape(m.profile?.bio)+'</textarea></label>','Save biography',m.id)+form('photo',file('Headshot',headshotAccept),'Upload headshot',m.id)+(m.hasPhoto?'<button data-photo="'+m.id+'">View current headshot</button><div class="portrait"></div>':''));
+ const publishing=m.practice?'This practice account stays private.':m.pendingContact?'This saved contact stays private.':'Admin saves publish directly to the assigned film websites where this profile is set to show.';
+ return panel('Headshot &amp; biography · '+((m.hasPhoto||m.referencePhoto)?'photo received':'photo needed')+' · '+(m.profile?.bio?'bio received':'bio needed'),'<p>'+publishing+'</p>'+form('bio','<label>Biography<textarea name="bio" rows="5" maxlength="5000">'+escape(m.profile?.bio)+'</textarea></label>','Save biography',m.id)+form('photo',file('Headshot',headshotAccept),'Upload headshot',m.id)+(m.hasPhoto?'<button data-photo="'+m.id+'">View current headshot</button><div class="portrait"></div>':''));
 }
 function creditFields(value={},suffix=''){
  const field=(key,label)=>'<label>'+label+'<input maxlength="120" name="'+key+suffix+'" value="'+escape(value[key]||'')+'"></label>';
@@ -1046,9 +1047,20 @@ listen('submit',async e=>{
    const details=f.closest('details');
    if(a==='photo')showSavedHeadshot(f,id,result.imageVersion);
    if(details){const summary=details.querySelector('summary');summary.textContent=summary.textContent.replace(a==='photo'?'photo needed':'bio needed',a==='photo'?'photo received':data.bio.trim()?'bio received':'bio needed');}
-   if(a==='photo')profileStatus(f,'Headshot saved to the portal · '+data.file.name+'. Approve the profile in each production to update its website.');
-   if(a==='bio')profileStatus(f,f.elements.bio.value===data.bio?'Saved':'Unsaved changes');
-   message.textContent=(a==='photo'?'Headshot saved to the portal. Approve the pending profile for each film website.':'Bio saved. An admin reviews updates for each selected film.');
+   const field=a==='photo'?'Headshot':'Biography';
+   const newerBio=a==='bio'&&f.elements.bio.value!==data.bio;
+   if(newerBio)f.dataset.dirty='true';
+   if(lastState?.admin){
+    const productions=lastState.productionChoices||lastState.productions;
+    const published=(result.publishedProductions||[]).map(id=>productions.find(p=>p.id===id)?.name||id);
+    const status=published.length?field+' published on '+new Intl.ListFormat('en',{type:'conjunction'}).format(published)+'.':field+' saved in the portal.';
+    profileStatus(f,newerBio?'Unsaved changes':status);
+    await combined?.refresh();
+    message.textContent=status;
+    return;
+   }
+   profileStatus(f,newerBio?'Unsaved changes':field+' saved.');
+   message.textContent=field+' saved. An admin reviews updates for each selected film.';
    const member=await updateMemberPublishing(id);
    if(!member){message.textContent+=' Refresh to check website status.';return;}
    message.textContent+=' '+Object.entries(member.publication||{}).map(([pid,p])=>(lastState.productions.find(x=>x.id===pid)?.name||pid)+': '+publicationLabel(member,pid,p.state)).join(' · ');

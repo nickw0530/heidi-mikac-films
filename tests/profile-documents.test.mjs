@@ -134,6 +134,113 @@ test('bad headshots produce a specific error without saving the accompanying bio
  assert.deepEqual(saved.productionRequests,{});
 });
 
+test('admin biography and headshot saves publish to both assigned films without creating reviews',async()=>{
+ const {store}=await fixture();
+ const original=await store.get('members/'+actor);
+ const darkPhoto='https://example.invalid/dark-approved.jpg';
+ const liesPhoto='https://example.invalid/lies-approved.jpg';
+ await store.setJSON('members/'+actor,{...original,approvedProfiles:{
+  [dark]:{bio:'Previously published for Written in the Dark.',photo:darkPhoto},
+  [lies]:{bio:'Previously published for Wherein Lies Continue.',photo:liesPhoto}
+ }});
+ const publicProfile=async production=>{
+  const response=await call('published',{who:null,production});
+  assert.equal(response.status,200);
+  return response.data.find(item=>item.name===original.name);
+ };
+ assert.match((await publicProfile(dark)).bio,/Previously published/);
+ assert.match((await publicProfile(lies)).bio,/Previously published/);
+ const saveBio=await call('bio',{who:'Heidi',body:{bio:'  Updated by production.  '}});
+ assert.equal(saveBio.status,200);
+ assert.deepEqual([...saveBio.data.publishedProductions].sort(),[dark,lies].sort());
+ assert.equal((await publicProfile(dark)).bio,'Updated by production.');
+ assert.equal((await publicProfile(lies)).bio,'Updated by production.');
+ assert.equal((await publicProfile(dark)).photo,darkPhoto);
+ assert.equal((await publicProfile(lies)).photo,liesPhoto);
+
+ const jpeg=await sharp({create:{width:12,height:16,channels:3,background:'#a1805e'}}).jpeg().toBuffer();
+ const savePhoto=await call('photo',{body:new Blob([jpeg],{type:'image/jpeg'}),params:{filename:'Studio headshot.jpg'}});
+ assert.equal(savePhoto.status,200);
+ assert.deepEqual([...savePhoto.data.publishedProductions].sort(),[dark,lies].sort());
+ const imageVersion=digest(jpeg);
+ assert.equal(savePhoto.data.imageVersion,imageVersion);
+ const member=await store.get('members/'+actor);
+ assert.deepEqual(member.draftProfile,{bio:'Updated by production.',imageVersion});
+ assert.deepEqual(member.productions,original.productions);
+ assert.deepEqual(member.productionRequests??{},{});
+ const publicDark=await publicProfile(dark),publicLies=await publicProfile(lies);
+ assert.equal(publicDark.bio,'Updated by production.');
+ assert.equal(publicLies.bio,'Updated by production.');
+ assert.equal(publicDark.photo,publicLies.photo);
+ const photoUrl=new URL(publicDark.photo);
+ assert.equal(photoUrl.searchParams.get('v'),imageVersion);
+ const downloaded=await call('memberPhoto',{who:null,params:Object.fromEntries(photoUrl.searchParams)});
+ assert.equal(downloaded.status,200);
+ assert.equal(downloaded.response.headers.get('content-type'),'image/webp');
+ assert.equal((await sharp(downloaded.data).metadata()).width,12);
+});
+
+test('an admin save supersedes only its field and preserves unrelated member reviews and credits',async()=>{
+ const {store}=await fixture();
+ const original=await store.get('members/'+actor);
+ const livePhoto='https://example.invalid/approved-headshot.jpg';
+ const approved={bio:'The original public biography.',photo:livePhoto};
+ const proposedCredits={[lies]:{character:'A proposed character',crewTitle:''}};
+ await store.setJSON('members/'+actor,{...original,approvedProfiles:{[dark]:approved,[lies]:approved},proposedCredits});
+ const draftPhoto=await sharp({create:{width:12,height:16,channels:3,background:'#aaccff'}}).png().toBuffer();
+ const draft=new FormData();
+ draft.set('bio','The member’s unpublished biography.');
+ draft.set('file',new Blob([draftPhoto],{type:'image/png'}),'Member draft.png');
+ assert.equal((await call('memberProfile',{who:'member',body:draft})).status,200);
+ const publicProfile=async production=>(await call('published',{who:null,production})).data.find(item=>item.name===original.name);
+ assert.equal((await publicProfile(dark)).bio,approved.bio);
+ assert.equal((await publicProfile(lies)).photo,livePhoto);
+
+ assert.equal((await call('bio',{body:{bio:'The administrator’s biography.'}})).status,200);
+ const withAdminBio=await store.get('members/'+actor);
+ assert.equal(withAdminBio.draftProfile.imageVersion,digest(draftPhoto));
+ assert.deepEqual(Object.keys(withAdminBio.productionRequests).sort(),[dark,lies].sort(),'The member’s photo still needs review in both films.');
+ assert.equal((await publicProfile(dark)).bio,'The administrator’s biography.');
+ assert.equal((await publicProfile(dark)).photo,livePhoto);
+ assert.equal((await publicProfile(lies)).photo,livePhoto);
+
+ const adminPhoto=await sharp({create:{width:12,height:16,channels:3,background:'#eeeaaa'}}).png().toBuffer();
+ assert.equal((await call('photo',{body:new Blob([adminPhoto],{type:'image/png'})})).status,200);
+ const saved=await store.get('members/'+actor);
+ assert.equal(saved.draftProfile.imageVersion,digest(adminPhoto));
+ assert.deepEqual(Object.keys(saved.productionRequests),[lies],'Only the outstanding credit proposal still needs review.');
+ assert.deepEqual(saved.proposedCredits,proposedCredits);
+ assert.deepEqual(saved.productions,original.productions);
+ assert.equal((await publicProfile(lies)).role,original.productions[lies].role);
+ assert.ok((await publicProfile(dark)).photo.endsWith('v='+digest(adminPhoto)));
+});
+
+test('admin saves respect hidden films and do not publish to unassigned films',async()=>{
+ const {store}=await fixture();
+ const original=await store.get('members/'+other);
+ await store.setJSON('members/'+other,{...original,generalInvite:true,publication:{[lies]:false}});
+ const emptySave=await call('bio',{id:other,body:{bio:''}});
+ assert.deepEqual(emptySave.data.publishedProductions,[]);
+ assert.equal((await call('published',{who:null,production:dark})).data.some(item=>item.name===original.name),false);
+ const options={id:other,body:{bio:'First production biography.'}};
+ const hiddenSave=await call('bio',options);
+ assert.equal(hiddenSave.status,200);
+ assert.deepEqual(hiddenSave.data.publishedProductions,[dark]);
+ const publicProfile=async production=>(await call('published',{who:null,production})).data.find(item=>item.name===original.name);
+ assert.equal((await publicProfile(dark)).bio,options.body.bio);
+ assert.equal(await publicProfile(lies),undefined);
+ assert.equal((await store.get('members/'+other)).publication[lies],false);
+
+ const assigned=await store.get('members/'+other);
+ await store.setJSON('members/'+other,{...assigned,productions:{[dark]:original.productions[dark]},approvedProfiles:{[dark]:assigned.approvedProfiles[dark]}});
+ const unassignedSave=await call('bio',{id:other,production:lies,body:{bio:'Saved for the assigned film only.'}});
+ assert.equal(unassignedSave.status,200);
+ assert.deepEqual(unassignedSave.data.publishedProductions,[dark]);
+ assert.equal((await publicProfile(dark)).bio,'Saved for the assigned film only.');
+ assert.equal(await publicProfile(lies),undefined);
+ assert.equal((await store.get('members/'+other)).approvedProfiles[lies],undefined);
+});
+
 test('only administrators can change an active assigned member document requirement',async()=>{
  const context=await fixture();
  assert.equal((await row()).paperworkStatus,'No agreement on file','Historical hard-copy waivers do not satisfy this signing round.');
