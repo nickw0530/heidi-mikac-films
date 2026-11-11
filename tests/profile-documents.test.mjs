@@ -142,8 +142,12 @@ test('manual agreement completion and N/A are reversible, scoped, and never sign
 test('resource tracking separates Complete and Document N/A for each person and production',async()=>{
  const context=await fixture();
  assert.equal((await call('trackPaperwork',{body:{document:pdfId,reason:'complete'}})).status,200);
- assert.equal((await row()).documentTracking[pdfId],'complete');
- assert.equal((await row(dark,'member')).documentTracking[pdfId],'complete','Members see the same resource disposition.');
+ const adminRow=await row(),memberRow=await row(dark,'member');
+ assert.equal(adminRow.documentTracking[pdfId],'complete');
+ assert.equal(adminRow.documentTrackingDetails[pdfId].by,'Nick');
+ assert.ok(Number.isFinite(adminRow.documentTrackingDetails[pdfId].at));
+ assert.equal(memberRow.documentTracking[pdfId],'complete','Members see the same resource disposition.');
+ assert.equal(memberRow.documentTrackingDetails,undefined,'Members do not receive internal override audit details.');
  assert.equal((await row(dark,'Nick',other)).documentTracking[pdfId],undefined);
  assert.equal((await row(lies)).documentTracking[pdfId],undefined);
  assert.equal((await call('trackPaperwork',{body:{document:privatePdfId,reason:'complete'}})).status,404,'An admin cannot attach someone else’s resource to this person.');
@@ -166,8 +170,11 @@ test('manual disposition survives provider refresh and suppresses obsolete count
  await refreshAgreement(context.store,currentAgreementKey(dark,actor),true);
  assert.equal((await context.store.get(currentAgreementKey(dark,actor))).status,'Waiting on Heidi');
  assert.equal((await row()).paperworkStatus,'Complete','Provider polling cannot overwrite the manual portal disposition.');
+ const active=(await adminActions(context.store,dark)).find(action=>action.member===actor&&action.signature);
+ assert.equal(active?.owner,'any','Both admins can still find the active countersignature.');
+ assert.equal(active?.suppressNotice,true,'An override still suppresses the automatic notice.');
  assert.equal((await call('trackPaperwork',{body:{document:'agreement',reason:'reopen'}})).status,200);
- assert.ok((await adminActions(context.store,dark)).some(action=>action.member===actor&&action.signature),'Reopening restores the actual waiting-on-Heidi action.');
+ assert.equal((await adminActions(context.store,dark)).find(action=>action.member===actor&&action.signature)?.suppressNotice,undefined);
 });
 
 test('a queued portal notice is suppressed when its document requirement is completed before delivery',async()=>{
@@ -234,22 +241,34 @@ test('draft sending rejects mismatched identities, signed recipients, and manual
  assert.equal(context.notifications.length,0);
 });
 
-test('only Heidi’s own sign-in receives the countersignature link',async()=>{
- const context=await fixture();await setAgreement(context,{status:'Waiting on Heidi'});
+test('active signing access is separate from manual tracking and scoped to the designated recipient',async()=>{
+ const context=await fixture();await setAgreement(context);
  const document=context.documents.get('active-doc');
- document.recipients[0].status='signed';
  document.recipients[0].embedded_signing_url='https://www.signwell.com/sign/actor';
  document.recipients[1].embedded_signing_url='https://www.signwell.com/sign/heidi';
  const params={document:'active-doc'};
+ assert.equal((await call('trackPaperwork',{body:{document:'agreement',reason:'not-required'}})).status,200);
+ const member=await call('status',{who:'member',params});
+ assert.equal(member.data.status,'Waiting on actor');
+ assert.equal(member.data.paperworkStatus,'Document N/A');
+ assert.equal(member.data.url,'https://www.signwell.com/sign/actor','An override does not hide a pending signature.');
+ assert.equal((await call('status',{who:'Nick',params})).data.url,null,'Admins cannot sign as the cast or crew recipient.');
+ assert.equal((await call('status',{who:'member',id:other,params})).status,403);
+ document.recipients[0].status='signed';
  const nick=await call('status',{who:'Nick',params});
  assert.equal(nick.status,200);assert.equal(nick.data.status,'Waiting on Heidi');
- assert.equal(nick.data.url,null,'Another administrator must not be handed Heidi’s signing link.');
+ assert.equal(nick.data.url,'https://www.signwell.com/sign/heidi');
+ assert.equal(nick.data.recipientName,'Heidi Mikac');
  assert.equal((await call('status',{who:'member',params})).data.url,null,'The member has no link once their part is signed.');
  assert.equal((await call('status',{who:'Heidi',params})).data.url,'https://www.signwell.com/sign/heidi');
  const actions=await adminActions(context.store,dark);
- assert.deepEqual(actions.filter(action=>action.signature).map(action=>action.owner),['Heidi'],'The countersignature is queued for Heidi only.');
- assert.ok(!(await call('home',{who:'Nick'})).data.waiting.some(action=>action.signature));
+ assert.deepEqual(actions.filter(action=>action.signature).map(action=>action.owner),['any']);
+ assert.ok((await call('home',{who:'Nick'})).data.waiting.some(action=>action.signature));
  assert.ok((await call('home',{who:'Heidi'})).data.waiting.some(action=>action.signature));
+ document.recipients[1].email='wrong@example.invalid';
+ const mismatched=await call('status',{who:'Nick',params});
+ assert.equal(mismatched.status,409);assert.equal(mismatched.data.url,undefined);
+ assert.ok(context.calls.every(call=>call.method==='GET'),'Opening a request does not modify SignWell.');
 });
 
 test('the public feed never names hidden people who have no card on a film website',async()=>{

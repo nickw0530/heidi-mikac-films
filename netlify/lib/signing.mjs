@@ -1,8 +1,8 @@
 export const COUNTERSIGN_EMAIL = 'hello@heidimikacfilms.com';
 
-export async function signwell(path, body) {
+export async function signwell(path, body, timeoutMs=15000) {
  if(!process.env.SIGNWELL_API_KEY)throw Object.assign(Error('Signing setup required.'),{status:503});
- const response=await fetch('https://www.signwell.com/api/v1/'+path,{method:body?'POST':'GET',signal:AbortSignal.timeout(15000),headers:{'X-Api-Key':process.env.SIGNWELL_API_KEY,'Content-Type':'application/json'},body:body&&JSON.stringify(body)});
+ const response=await fetch('https://www.signwell.com/api/v1/'+path,{method:body?'POST':'GET',signal:AbortSignal.timeout(timeoutMs),headers:{'X-Api-Key':process.env.SIGNWELL_API_KEY,'Content-Type':'application/json'},body:body&&JSON.stringify(body)});
  if(!response.ok)throw Object.assign(Error('SignWell could not confirm this request. Check the SignWell dashboard.'),{status:502,providerStatus:response.status});
  return response.json();
 }
@@ -20,14 +20,21 @@ export function documentStatus(d){
  if(!['created','draft'].includes(status)&&hasSigned(actor)&&hasSigned(producer)&&recipients.every(hasSigned))return 'Complete';
  return hasSigned(actor)?'Waiting on Heidi':'Waiting on actor';
 }
-export async function refreshAgreement(store,key,force=false){
+export const SIGNING_REFRESH_INTERVAL=300000;
+
+export async function refreshAgreement(store,key,force=false,timeoutMs=15000){
  const record=await store.getWithMetadata(key,{type:'json'}),a=record?.data;
- if(!a?.id||a.status==='Complete'||(!force&&Date.now()-(a.checkedAt||0)<300000))return a;
+ if(!a?.id||a.cleared||a.status==='Complete'||a.sendLeaseUntil>Date.now()||(!force&&Date.now()-(a.checkedAt||0)<SIGNING_REFRESH_INTERVAL))return a;
+ let next;
  try{
-  const d=await signwell('documents/'+encodeURIComponent(a.id)+'/');
-  const next={...a,status:documentStatus(d),providerStatus:String(d.status||'').toLowerCase(),...(typeof d.test_mode==='boolean'?{testMode:d.test_mode}:{}),checkedAt:Date.now(),syncError:null};
-  await store.setJSON(key,next,{onlyIfMatch:record.etag});return next;
- }catch{const next={...a,checkedAt:Date.now(),syncError:'Status could not be refreshed. Last known status shown.'};await store.setJSON(key,next,{onlyIfMatch:record.etag});return next;}
+  const d=await signwell('documents/'+encodeURIComponent(a.id)+'/',undefined,timeoutMs);
+  if(d.id&&d.id!==a.id)throw Error('SignWell returned a different agreement.');
+  next={...a,status:documentStatus(d),providerStatus:String(d.status||'').toLowerCase(),...(typeof d.test_mode==='boolean'?{testMode:d.test_mode}:{}),checkedAt:Date.now(),syncError:null};
+ }catch{
+  next={...a,checkedAt:Date.now(),syncError:'Status could not be refreshed. Last known status shown.'};
+ }
+ const saved=await store.setJSON(key,next,{onlyIfMatch:record.etag});
+ return saved.modified?next:await store.get(key,{type:'json'});
 }
 
 export async function completedAgreementPdf(id){

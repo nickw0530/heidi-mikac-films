@@ -35,10 +35,34 @@ function publicCredit(profile) {
   return {...profile, role: titles.join(' · ')};
 }
 function credits(value={}){
+ requireThat(value&&typeof value==='object'&&!Array.isArray(value),'Enter valid character and crew titles.');
  const field=k=>{const v=value[k]??'';requireThat(typeof v==='string'&&v.trim().length<=120,'Keep each character or crew title within 120 characters.');return v.trim();};
  return {character:field('character'),crewTitle:field('crewTitle')};
 }
 const creditLine=c=>[c.character,c.crewTitle].filter(Boolean).join(' · ');
+const creditSnapshot=assignment=>JSON.stringify([assignment?.role||'',assignment?.character||'',assignment?.crewTitle||'']);
+const profileActivityLabels={
+ 'credits-updated':'Production credits updated',
+ 'production-added':'Added to production',
+ 'production-removed':'Removed from production',
+ 'profile-approved':'Profile approved for publication',
+ 'profile-declined':'Profile approval declined',
+ 'agreement-complete':'Agreement requirement marked complete',
+ 'agreement-not-required':'Agreement marked not required',
+ 'agreement-reopened':'Agreement requirement reopened',
+ 'document-complete':'Document requirement marked complete',
+ 'document-not-required':'Document marked not required',
+ 'document-reopened':'Document requirement reopened'
+};
+const profileActivityKey=(production,member)=>'profile-activity/'+production+'/'+member;
+const profileActivityLimit=40;
+function editProductionCredits(previous={role:''},value){
+ // Older profiles have only a combined role. Keep it until an admin supplies
+ // a replacement, since that text cannot reliably be classified by role type.
+ if(value?.character===(previous.character||'')&&value?.crewTitle===(previous.crewTitle||''))return previous;
+ const fields=credits(value);
+ return {...previous,...fields,role:creditLine(fields)||(!previous.character&&!previous.crewTitle?previous.role||'':'')};
+}
 const assignments=m=>m.productions??{'written-in-the-dark':{role:m.role,filmProfile:m.filmProfile||''}};
 const findProfile=(m,productionId)=>{
  const assigned=assignments(m)[productionId];
@@ -364,7 +388,44 @@ export default async function handle(req, context) {
     if(action==='calendarConnect'){onlyAdmin();requireThat(post,'Use the connect button.',405);return await beginCalendar(store,sessionKey);}
     return await calendarEvents(store,admin,url.searchParams.get('event'),account);
   }
-  const target=async()=>{requireThat(uuid.test(uid)&& (admin||uid===self),'Access denied.',403);const m=await get('members/'+uid);requireThat(m,'Member unavailable.',404);if(!['bio','photo','revoke','enrollments','resend'].includes(action))requireThat(assignments(m)[productionId],'Member is not assigned to this production.',403);return m};
+  const target=async({withMetadata=false}={})=>{
+    requireThat(uuid.test(uid)&&(admin||uid===self),'Access denied.',403);
+    const key='members/'+uid;
+    const record=withMetadata?await store.getWithMetadata(key,{type:'json'}):null;
+    const member=withMetadata?record?.data:await get(key);
+    requireThat(member,'Member unavailable.',404);
+    if(!['bio','photo','revoke','enrollments','resend'].includes(action))requireThat(assignments(member)[productionId],'Member is not assigned to this production.',403);
+    return withMetadata?record:member;
+  };
+  async function saveTarget(record,member){
+    const saved=await store.setJSON('members/'+uid,member,{onlyIfMatch:record.etag});
+    requireThat(saved.modified,'This profile changed. Reload before saving again.',409);
+  }
+  async function recordProfileActivity(pid,action){
+    const key=profileActivityKey(pid,uid);
+    const item={action,by:self,at:Date.now()};
+    try{
+      for(let attempt=0;attempt<4;attempt++){
+        const record=await rawStore.getWithMetadata(key,{type:'json'});
+        const history=Array.isArray(record?.data)?record.data:[];
+        const items=[item,...history].sort((a,b)=>b.at-a.at).slice(0,profileActivityLimit);
+        const saved=await rawStore.setJSON(key,items,record?{onlyIfMatch:record.etag}:{onlyIfNew:true});
+        if(saved.modified)return;
+      }
+    }catch{
+      // History is supplemental. A failed history write does not undo a saved change.
+    }
+  }
+  if(action==='profileActivity'){
+    onlyAdmin();
+    requireThat(!post,'Use GET to read activity history.',405);
+    const member=await target();
+    requireThat(active(member),'Member unavailable.',404);
+    const history=await rawStore.get(profileActivityKey(productionId,uid),{type:'json'});
+    const items=Array.isArray(history)?history:[];
+    return json({items:items.filter(item=>item&&Object.hasOwn(profileActivityLabels,item.action)&&['Nick','Heidi'].includes(item.by)&&Number.isFinite(item.at))
+      .slice(0,profileActivityLimit).map(item=>({label:profileActivityLabels[item.action],by:item.by,at:item.at}))});
+  }
   if(action==='choosePassword'&&post){
     const pass=await credential(body.password);
     const result=await store.setJSON('passwords/'+self,{...pass,adminDigest:session.adminDigest},{onlyIfNew:true});
@@ -500,15 +561,37 @@ export default async function handle(req, context) {
       if(!offlineRequests.has(profileId))offlineRequests.set(profileId,rawStore.get(offlineSigningKey(profileId,productionId),{type:'json'}));
       return offlineRequests.get(profileId);
     };
-    const rows=await Promise.all(members.filter(Boolean).map(async m=>({...m,needsEmail:!m.email,role:assignments(m)[productionId]?.role||'',filmProfile:assignments(m)[productionId]?findProfile(m,productionId)?.id||'':'',productions:assignments(m),profile:m.draftProfile?.bio!==undefined?{bio:m.draftProfile.bio}:await get('profiles/'+m.id),...(await (async()=>{const photo=await store.getMetadata(m.draftProfile?.imageVersion?'profile-images/'+m.id+'/'+m.draftProfile.imageVersion:'photos/'+m.id);return {hasPhoto:!!photo,photoName:photo?.metadata?.filename||''};})()),agreement:assignments(m)[productionId]?await refreshAgreement(store,'agreements/'+m.id):null,tasks:assignments(m)[productionId]?(await list('tasks/'+m.id+'/')).filter(Boolean):[],activated:!!await get('passwords/'+m.id)})));
-    for(const row of rows){
+    const publicationChecks=new Map();
+    const publicationFor=pid=>{
+      if(!publicationChecks.has(pid))publicationChecks.set(pid,publicItems(pid));
+      return publicationChecks.get(pid);
+    };
+    const rows=await Promise.all(members.filter(Boolean).map(async member=>{
+      const memberAssignments=assignments(member),assignment=memberAssignments[productionId];
+      const agreementKey='agreements/'+member.id;
+      const imageKey=member.draftProfile?.imageVersion?'profile-images/'+member.id+'/'+member.draftProfile.imageVersion:'photos/'+member.id;
+      // The scheduled sweep refreshes saved status. Signing and downloads check the selected document directly.
+      const [profile,photo,agreement,tasks,password]=await Promise.all([
+        member.draftProfile?.bio!==undefined?{bio:member.draftProfile.bio}:get('profiles/'+member.id),
+        store.getMetadata(imageKey),
+        assignment?(admin?get(agreementKey):refreshAgreement(store,agreementKey)):null,
+        assignment?list('tasks/'+member.id+'/'):[],
+        get('passwords/'+member.id),
+      ]);
+      return {...member,needsEmail:!member.email,role:assignment?.role||'',filmProfile:assignment?findProfile(member,productionId)?.id||'':'',
+        productions:memberAssignments,profile,hasPhoto:!!photo,photoName:photo?.metadata?.filename||'',agreement,tasks:tasks.filter(Boolean),activated:!!password};
+    }));
+    await Promise.all(rows.map(async row=>{
       const original=accounts.find(m=>m.id===row.id);
       const base=sharedBase(original);
       row.paperworkExempt=false;
-      const published=base?await get('published/'+base.id):null;
-      row.previousOfflineStatus=assignments(original)[productionId]&&row.filmProfile?(await store.getMetadata("offline/"+row.filmProfile))?.metadata?.status||null:null;
+      const [published,offlineMetadata,previous]=await Promise.all([
+        base?get('published/'+base.id):null,
+        assignments(original)[productionId]&&row.filmProfile?store.getMetadata('offline/'+row.filmProfile):null,
+        rawStore.get(legacyScoped('agreements/'+row.id),{type:'json'}),
+      ]);
+      row.previousOfflineStatus=offlineMetadata?.metadata?.status||null;
       row.offlineStatus=null;
-      const previous=await rawStore.get(legacyScoped('agreements/'+row.id),{type:'json'});
       row.previousAgreement=previous?.id?{status:previous.status,completed:previous.status==='Complete'}:null;
       {
         const profile=await ownedProfile(original,accounts);
@@ -517,9 +600,8 @@ export default async function handle(req, context) {
         if(previous?.id&&previous.status==='Complete')row.documents.push({kind:'previous-signed',title:'Previous signed agreement and audit record · replaced'});
         if(profile){
           if(row.previousOfflineStatus)row.documents.push({kind:'uploaded',title:'Previous paper agreement · replaced'});
-          const signed=await offlineFor(profile);
+          const [signed,history]=await Promise.all([offlineFor(profile),store.list({prefix:'offline-history/'+profile+'/'})]);
           if(signed?.id&&!signed.sourceChanged&&signed.status==='Complete')row.documents.push({kind:'previous-countersigned',title:'Previous countersigned agreement and audit record · replaced'});
-          const history=await store.list({prefix:'offline-history/'+profile+'/'});
           for(const file of history.blobs){
             const version=file.key.split('/').pop();
             if(/^[a-f0-9]{64}$/.test(version))row.documents.push({kind:'previous',version,title:'Previous filed agreement · '+version.slice(0,8)});
@@ -532,7 +614,9 @@ export default async function handle(req, context) {
       const tracking=await readAgreementTracking(rawStore,productionId,row.id);
       row.paperworkTracking=tracking?{reason:tracking.reason,at:tracking.at,...(admin?{by:tracking.by}:{})}:null;
       row.tracking=row.paperworkTracking;
-      row.documentTracking=Object.fromEntries((await list('document-tracking/'+productionId+'/'+row.id+'/')).filter(item=>item&&uuid.test(item.document)&&normalizePaperworkReason(item.reason)).map(item=>[item.document,normalizePaperworkReason(item.reason)]));
+      const documentTracking=(await list('document-tracking/'+productionId+'/'+row.id+'/')).filter(item=>item&&uuid.test(item.document)&&normalizePaperworkReason(item.reason));
+      row.documentTracking=Object.fromEntries(documentTracking.map(item=>[item.document,normalizePaperworkReason(item.reason)]));
+      if(admin)row.documentTrackingDetails=Object.fromEntries(documentTracking.map(({document,at,by})=>[document,{at,by}]));
       row.paperworkStatus=manualPaperworkStatus(tracking)||memberPaperwork;
       row.memberPaperworkStatus=row.paperworkStatus;
       row.publication=Object.fromEntries(await Promise.all(Object.keys(assignments(original)).map(async pid=>{
@@ -541,16 +625,16 @@ export default async function handle(req, context) {
         const hidden=practiceName(row.name)||original.publication?.[pid]===false;
         if(original.generalInvite&&!original.approvedProfiles?.[pid])return [pid,{state:'Awaiting approval',visible:false}];
         let state=hidden?'Hidden from website':ready?'Sync failed':'Needs bio and headshot';
-        if(!hidden&&ready){try{state=(await publicItems(pid)).some(x=>x.id===id&&!x.hidden)?'Published':'Sync failed';}catch{}}
+        if(!hidden&&ready){try{state=(await publicationFor(pid)).some(x=>x.id===id&&!x.hidden)?'Published':'Sync failed';}catch{}}
         return [pid,{state,visible:!hidden}];
       })));
 
-    }
+    }));
     const adminCatalog=admin?await Promise.all(rosterCatalog.map(async x=>{
       const previousOffline=(await store.getMetadata('offline/'+x.id))?.metadata?.status||null;
       return {...x,offline:null,previousOffline,offlineSigning:null,paperworkStatus:rows.find(row=>row.filmProfile===x.id)?.paperworkStatus||'No agreement on file'};
     })):[];
-    const waiting=admin?(await adminActions(rawStore,productionId)).filter(a=>a.owner==='any'||a.owner===self):[];
+    const waiting=admin?(await adminActions(rawStore,productionId,{members:accounts,memberRows:rows})).filter(a=>a.owner==='any'||a.owner===self):[];
     const productionReviews=admin?await Promise.all(accounts.filter(m=>m.productionRequests?.[productionId]).map(async m=>({id:m.id,name:m.name,role:assignments(m)[productionId]?.role||findProfile(m,productionId)?.role||'',credits:m.proposedCredits?.[productionId]||assignments(m)[productionId]||{},requestId:m.productionRequests[productionId],...await reviewProfile(m)}))):[];
     const tracking=admin?await get('mail-status/tracking'):null,mailTracking=tracking?.blocked?{status:tracking.status}:null;
     const pendingPeople=admin?await Promise.all((await globalRecords('portal-pending/')).filter(p=>!p.archived).map(async p=>{
@@ -604,12 +688,15 @@ export default async function handle(req, context) {
           requireThat(saved.modified,'The invitation record changed. Refresh and use Resend invitation if needed.',409);
         }
       }else m=await target();
+      requireThat(active(m),'Member unavailable.',404);
+      if(action==='resend'&&body.expectedEmail!==undefined)
+        requireThat(body.expectedEmail===m.email,'The account email changed. Review this recipient again.',409);
       requireThat(m.email,'Add an email address before sending an invitation.',409);
       requireThat(!await get('passwords/'+m.id),'This person already has a password.');
       const ticket=token(),expires=Date.now()+7*86400000;
       await set('tickets/'+hash(ticket),{id:m.id,expires});
       const current=await store.getWithMetadata('members/'+m.id,{type:'json'});
-      requireThat(current?.data?.email===m.email,'This person’s profile changed. Refresh before inviting them.',409);
+      requireThat(active(current?.data)&&current.data.email===m.email,'This person’s profile changed. Refresh before inviting them.',409);
       requireThat((await store.setJSON('members/'+m.id,{...current.data,ticket:hash(ticket)},{onlyIfMatch:current.etag})).modified,'This person’s profile changed. Refresh and use Resend invitation.',409);await invalidate();
       await enqueue(store,m,'invite/'+hash(ticket),'Heidi Mikac Films — your cast & crew invitation','Hi '+m.name+',\n\nCreate your cast and crew account, choose your productions, and add your biography, headshot and credits here:\n'+portalUrl+'#invite='+ticket+'\n\nThis invitation expires in seven days.',expires);
       return json({ok:true});
@@ -681,25 +768,74 @@ export default async function handle(req, context) {
       next.publication={...m.publication,[productionId]:m.publication?.[productionId]!==false};
     }else requireThat(body.decision==='decline','Choose an approval decision.');
     requireThat((await store.setJSON('members/'+uid,next,{onlyIfMatch:record.etag})).modified,'The request changed. Reload and try again.',409);
+    await recordProfileActivity(productionId,body.decision==='approve'?'profile-approved':'profile-declined');
     await invalidate();return json({ok:true});
   }
-  if(action==='enrollments'&&post){
-    onlyAdmin();const m=await target();
-    requireThat(Array.isArray(body.productions)&&body.productions.every(id=>catalogs[id]),'Choose valid productions.');
-    const next={};
-    for(const id of new Set(body.productions)){
-      const role=(body.roles?.[id]||'').trim().slice(0,240);
-      const base=findProfile(m,id);
-      if(base)requireThat(!(await list('members/')).some(other=>active(other)&&other.id!==m.id&&assignments(other)[id]&&findProfile(other,id)?.id===base.id),'This film profile is already assigned to another account.',409);
-      const prev=assignments(m)[id];next[id]={...prev,...(prev&&prev.role!==role?{character:'',crewTitle:role}:{}),role,filmProfile:base?.id||''};
+  if((action==='enrollments'||action==='saveProductionCredits')&&post){
+    onlyAdmin();
+    requireThat(uuid.test(uid),'Invalid member.');
+    const key='members/'+uid,record=await store.getWithMetadata(key,{type:'json'}),member=record?.data;
+    requireThat(active(member),'Member unavailable.',404);
+    const previous=assignments(member),requests={...member.productionRequests},proposed={...member.proposedCredits};
+    const applyCredits=(id,fields)=>{
+      const assignment=editProductionCredits(previous[id],fields);
+      if(assignment!==previous[id]&&requests[id]&&(previous[id]||assignment.character||assignment.crewTitle)){
+        proposed[id]={character:assignment.character||'',crewTitle:assignment.crewTitle||''};
+        requests[id]=randomUUID();
+      }
+      return assignment;
+    };
+    let next;
+    const profileLinks={...member.profileLinks};
+    if(action==='saveProductionCredits'){
+      requireThat(previous[productionId],'Member is not assigned to this production.',403);
+      requireThat(body.expectedCredit===undefined||body.expectedCredit===creditSnapshot(previous[productionId]),'The saved credit changed. Reload before saving credits.',409);
+      const assignment=applyCredits(productionId,body);
+      if(assignment===previous[productionId])return json({ok:true,role:assignment.role||'',creditSnapshot:creditSnapshot(assignment)});
+      next={...previous,[productionId]:assignment};
+    }else{
+      requireThat(Array.isArray(body.productions)&&body.productions.every(id=>Object.hasOwn(catalogs,id)),'Choose valid productions.');
+      const expected=body.expectedAssignments;
+      requireThat(expected===undefined||expected&&typeof expected==='object'&&!Array.isArray(expected)&&
+        Object.keys(expected).length===Object.keys(previous).length&&Object.entries(previous).every(([id,assignment])=>expected[id]===creditSnapshot(assignment)),
+        'The saved assignments or credits changed. Reload before saving productions.',409);
+      next={};
+      for(const [id,assignment] of Object.entries(previous))if(assignment.filmProfile)profileLinks[id]=assignment.filmProfile;
+      for(const id of new Set(body.productions)){
+        const base=findProfile(member,id);
+        if(base)requireThat(!(await list('members/')).some(other=>active(other)&&other.id!==uid&&assignments(other)[id]&&findProfile(other,id)?.id===base.id),'This film profile is already assigned to another account.',409);
+        const existing=previous[id]||{};
+        let assignment;
+        if(Object.hasOwn(body.credits||{},id))assignment=applyCredits(id,body.credits[id]);
+        else{
+          const legacyRole=body.roles?.[id]??existing.role??'';
+          requireThat(typeof legacyRole==='string'&&legacyRole.trim().length<=240,'Keep the credit within 240 characters.');
+          requireThat(legacyRole.trim()===(existing.role||'')||(!existing.character&&!existing.crewTitle),'Refresh the portal to edit character and crew title separately.',409);
+          assignment={...existing,role:legacyRole.trim()};
+        }
+        const filmProfile=base?.id||existing.filmProfile||'';
+        next[id]={...assignment,filmProfile};
+        if(filmProfile)profileLinks[id]=filmProfile;
+        if(member.generalInvite&&!member.approvedProfiles?.[id])requests[id]??=randomUUID();
+      }
     }
-    const requests={...m.productionRequests};for(const pid of Object.keys(next))if(m.generalInvite&&!m.approvedProfiles?.[pid])requests[pid]??=randomUUID();
-    await set('members/'+m.id,{...m,productions:next,productionRequests:requests,profileLinks:{...m.profileLinks,...Object.fromEntries(Object.entries(assignments(m)).filter(([,value])=>value.filmProfile).map(([id,value])=>[id,value.filmProfile])),...Object.fromEntries(Object.entries(next).filter(([,value])=>value.filmProfile).map(([id,value])=>[id,value.filmProfile]))}});await invalidate();return json({ok:true});
+    const saved=await store.setJSON(key,{...member,productions:next,productionRequests:requests,proposedCredits:proposed,profileLinks},{onlyIfMatch:record.etag});
+    requireThat(saved.modified,'This profile changed. Reload before saving credits or production assignments.',409);
+    const changes=[];
+    for(const id of new Set([...Object.keys(previous),...Object.keys(next)])){
+      const oldAssignment=previous[id],newAssignment=next[id];
+      if(!oldAssignment)changes.push(recordProfileActivity(id,'production-added'));
+      else if(!newAssignment)changes.push(recordProfileActivity(id,'production-removed'));
+      else if(['role','character','crewTitle'].some(field=>(oldAssignment[field]||'')!==(newAssignment[field]||'')))changes.push(recordProfileActivity(id,'credits-updated'));
+    }
+    await Promise.all(changes);
+    await invalidate();
+    return json({ok:true,role:next[productionId]?.role||'',creditSnapshot:creditSnapshot(next[productionId])});
   }
   if(action==='linkProfile'&&post){
-    onlyAdmin();const m=await target();allowPublicProfile(m);const base=entry(body.filmProfile);requireThat(base&&!assignments(m)[productionId]?.filmProfile,'Choose an unlinked member and a valid film profile.');
+    onlyAdmin();const record=await target({withMetadata:true}),m=record.data;allowPublicProfile(m);const base=entry(body.filmProfile);requireThat(base&&!assignments(m)[productionId]?.filmProfile,'Choose an unlinked member and a valid film profile.');
     requireThat(!(await list('members/')).some(x=>active(x)&&assignments(x)[productionId]?.filmProfile===base.id),'Profile already linked.');
-    await set('members/'+uid,{...m,...(productionId==='written-in-the-dark'?{filmProfile:base.id}:{}),productions:{...assignments(m),[productionId]:{...assignments(m)[productionId],filmProfile:base.id}}});await invalidate();return json({ok:true});
+    await saveTarget(record,{...m,...(productionId==='written-in-the-dark'?{filmProfile:base.id}:{}),productions:{...assignments(m),[productionId]:{...assignments(m)[productionId],filmProfile:base.id}}});await invalidate();return json({ok:true});
   }
   if(action==='publishProfile'&&post){
     requireThat(productionId==='written-in-the-dark','Profiles now synchronize automatically.');
@@ -738,6 +874,7 @@ export default async function handle(req, context) {
     const reason=normalizePaperworkReason(body.reason);
     requireThat(body.reason==='reopen'||reason,'Choose Complete, Document N/A, or Reopen.');
     if(body.reason==='reopen')await rawStore.delete(key);else await rawStore.setJSON(key,{document,reason,by:self,at:Date.now(),...(document==='agreement'?{agreementCycle:AGREEMENT_CYCLE}:{})});
+    await recordProfileActivity(productionId,(document==='agreement'?'agreement':'document')+'-'+(reason||'reopened'));
     if(document==='agreement'&&reason){
       // Suppress exact, already queued portal notices from the earlier build.
       // SignWell's independent request and signed bytes remain untouched.
@@ -758,8 +895,21 @@ export default async function handle(req, context) {
     const key='tasks/'+uid+'/'+body.task,item=await get(key);requireThat(item,'Task unavailable.');
     await set(key,{...item,done:true});return json({ok:true});
   }
-  if(action==='revoke'&&post){onlyAdmin();const m=await target();await set('members/'+uid,{...m,revoked:true,revokedAt:Date.now(),keepPublic:body.keepPublic===true});if(m.email)await store.delete('active-email/'+hash(m.email));await invalidate();return json({ok:true});}
-  if(action==='publication'&&post){onlyAdmin();const m=await target();if(body.visible)allowPublicProfile(m);await set('members/'+uid,{...m,...(m.revoked&&body.visible?{keepPublic:true}:{}),publication:{...m.publication,[productionId]:body.visible===true}});await invalidate();return json({ok:true});} 
+  if(action==='revoke'&&post){
+    onlyAdmin();const record=await target({withMetadata:true}),m=record.data;
+    await saveTarget(record,{...m,revoked:true,revokedAt:Date.now(),keepPublic:body.keepPublic===true});
+    if(m.email&&!m.revoked){
+      const emailKey='active-email/'+hash(m.email);
+      if((await get(emailKey))?.id===m.id)await store.delete(emailKey);
+    }
+    await invalidate();return json({ok:true});
+  }
+  if(action==='publication'&&post){
+    onlyAdmin();const record=await target({withMetadata:true}),m=record.data;
+    if(body.visible)allowPublicProfile(m);
+    await saveTarget(record,{...m,...(m.revoked&&body.visible?{keepPublic:true}:{}),publication:{...m.publication,[productionId]:body.visible===true}});
+    await invalidate();return json({ok:true});
+  }
   if(action==='bio'&&post){
     await target();requireThat(typeof body.bio==='string'&&body.bio.length<=5000,'Bio limit is 5,000 characters.');
     await saveDraft({bio:body.bio.trim()});return json({ok:true});
@@ -798,7 +948,6 @@ export default async function handle(req, context) {
     requireThat(r,'File unavailable.',404);return new Response(r.data,{headers:{...headers,'Content-Type':r.metadata?.mime||'application/pdf','Content-Disposition':action==='photo'?'inline':attachment(resource.title)}});
   }
   if(action==='agreement'&&post){
-
     onlyAdmin();const m=await target(),t={};
     requireThat(body.preview||m.email,'Add an email address and invite this person before sending a contract.',409);
     requireThat(active(m),'Member unavailable.',404);
@@ -810,20 +959,13 @@ export default async function handle(req, context) {
     requireThat(/^\d{1,5}(\.\d{1,2})?$/.test(t.rate),'Enter a daily rate.');
     requireThat(/^\d{4}-\d{2}-\d{2}$/.test(t.date)&&!Number.isNaN(Date.parse(t.date))&&new Date(t.date).toISOString().slice(0,10)===t.date,'Enter a valid agreement date.');
     const heidi=COUNTERSIGN_EMAIL;
-    requireThat(heidi!==m.email,'Actor and countersigner need separate addresses.');
+    requireThat(body.preview||heidi!==m.email,'Actor and countersigner need separate addresses.');
     const master=await store.get('contract/master',{type:'arrayBuffer'});requireThat(master,'Upload the private agreement master first.');
     const bytes=await packet(master,t);
-    const memberKey='members/'+uid,record=await store.getWithMetadata(memberKey,{type:'json'}),current=record?.data;
-    requireThat(active(current)&&assignments(current)[productionId]&&JSON.stringify(assignments(current)[productionId])===JSON.stringify(assignments(m)[productionId]),'Credits changed. Reload before drafting.',409);
-    const updated={...current,productions:{...assignments(current),[productionId]:{...assignments(current)[productionId],...fields,role:t.character}}};
-    if(current.productionRequests?.[productionId]){
-      updated.proposedCredits={...current.proposedCredits,[productionId]:fields};
-      updated.productionRequests={...current.productionRequests,[productionId]:randomUUID()};
-    }
-    requireThat((await store.setJSON(memberKey,updated,{onlyIfMatch:record.etag})).modified,'Member updated. Reload before drafting.',409);
-    await invalidate();
     if(body.preview)return new Response(bytes,{headers:{...headers,'Content-Type':'application/pdf'}});
     requireThat(process.env.SIGNWELL_API_KEY,'Signing setup required.',503);
+    const current=await get('members/'+uid);
+    requireThat(active(current)&&current.email===m.email&&assignments(current)[productionId]&&JSON.stringify(assignments(current)[productionId])===JSON.stringify(assignments(m)[productionId]),'This profile changed. Reload before drafting.',409);
     const key='agreements/'+uid;
     const existing=await store.getWithMetadata(key,{type:'json'});
     const lock=await store.setJSON(key,{cycle:AGREEMENT_CYCLE,status:'Preparing — check SignWell before retrying',created:Date.now(),recipientEmail:heidi,name:film+' — '+t.legal+' · '+AGREEMENT_CYCLE},existing?.data?.cleared?{onlyIfMatch:existing.etag}:{onlyIfNew:true});
@@ -899,21 +1041,32 @@ export default async function handle(req, context) {
     return json({ok:true});
   }
   if(action==='status'){
-    await target();
+    requireThat(req.method==='GET','Use GET to check signing status.',405);
+    const member=await target();
+    requireThat(active(member),'Member unavailable.',404);
     const tracking=await readAgreementTracking(rawStore,productionId,uid);
     const key='agreements/'+uid,record=await store.getWithMetadata(key,{type:'json'}),a=record?.data;
-    requireThat(a?.id,'No new signing request has been prepared yet.');
+    requireThat(a?.id&&!a.cleared,'No new signing request has been prepared yet.');
     requireThat(url.searchParams.get('document')===a.id,'This agreement changed. Reload the portal before opening it.',409);
     if(a.status==='Complete')return json({status:'Complete',paperworkStatus:manualPaperworkStatus(tracking)||'Complete',url:null});
     const d=await signwell('documents/'+encodeURIComponent(a.id)+'/');
+    requireThat(!d.id||d.id===a.id,'SignWell returned a different agreement.',409);
     const [actor,producer]=['1','2'].map(id=>d.recipients?.find(r=>String(r.id)===id));
     const status=documentStatus(d);
     const saved=await store.setJSON(key,{...a,status,providerStatus:String(d.status||'').toLowerCase(),...(typeof d.test_mode==='boolean'?{testMode:d.test_mode}:{}),checkedAt:Date.now(),syncError:null},{onlyIfMatch:record.etag});
     if(!saved.modified){const latestStatus=(await get(key))?.status||status,latestTracking=await readAgreementTracking(rawStore,productionId,uid);return json({status:latestStatus,paperworkStatus:manualPaperworkStatus(latestTracking)||latestStatus,url:null});}
-    // The countersignature is Heidi's alone: no other session, admin or not, receives her signing link.
-    const signer=admin?(self==='Heidi'&&status==='Waiting on Heidi'?producer:null):(status==='Waiting on actor'?actor:null);
+    // Either administrator can open the existing countersignature. The provider
+    // still assigns that signature to Heidi, and a member receives only their own link.
+    const countersign=admin&&status==='Waiting on Heidi';
+    const signer=countersign?producer:(!admin&&status==='Waiting on actor'?actor:null);
     const latestTracking=await readAgreementTracking(rawStore,productionId,uid);
-    return json({status,paperworkStatus:manualPaperworkStatus(latestTracking)||status,url:latestTracking?null:signer?.embedded_signing_url||null});
+    const signingUrl=signer?.embedded_signing_url||null;
+    if(signingUrl){
+      const latestMember=await target(),address=value=>String(value||'').trim().toLowerCase();
+      requireThat(active(latestMember),'Member unavailable.',404);
+      requireThat(latestMember.email&&address(actor?.email)===address(latestMember.email)&&address(producer?.email)===address(a.recipientEmail||COUNTERSIGN_EMAIL),'SignWell recipients do not match this agreement. Ask production to review it.',409);
+    }
+    return json({status,paperworkStatus:manualPaperworkStatus(latestTracking)||status,url:signingUrl,...(signingUrl&&countersign?{recipientName:'Heidi Mikac'}:{})});
   }
   return json({error:'Unknown action.'});
  }catch(e){return Response.json({error:e.status?e.message:'The request could not be completed.'},{status:e.status||500,headers});}

@@ -1,26 +1,29 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import {createHash} from 'node:crypto';
-import {fileURLToPath} from 'node:url';
-const root=fileURLToPath(new URL('../',import.meta.url)).replace(/\/$/,'');
+const portalFile=new URL('../netlify/functions/portal.mjs',import.meta.url);
 const records=new Map(), metadata=new Map();
 const mockStore={
  async get(k,o){return records.get(k)??null;},
  async getMetadata(k){return records.has(k)?{metadata:metadata.get(k)||{}}:null;},
  async getWithMetadata(k){return records.has(k)?{data:records.get(k),metadata:metadata.get(k)||{},etag:'1'}:null;},
- async list({prefix}){return {blobs:[...records.keys()].filter(k=>k.startsWith(prefix)).map(key=>({key}))};},
+ list({prefix,paginate}){
+  const page={blobs:[...records.keys()].filter(k=>k.startsWith(prefix)).map(key=>({key}))};
+  return paginate?(async function*(){yield page;})():Promise.resolve(page);
+ },
  async setJSON(k,v,opts){if(opts?.onlyIfNew&&records.has(k))return {modified:false};records.set(k,structuredClone(v));return {modified:true};},
  async set(k,v,opts){records.set(k,v);metadata.set(k,opts?.metadata||{});return {modified:true};},
  async delete(k){records.delete(k);metadata.delete(k);}
 };
 globalThis.__store=mockStore;
-let source=await fs.readFile(root+'/netlify/functions/portal.mjs','utf8');
+let source=await fs.readFile(portalFile,'utf8');
 source=source.replace("import {begin as beginCalendar,events as calendarEvents} from './calendar-callback.mjs';",'const beginCalendar=()=>{},calendarEvents=()=>{};')
  .replace("import { getStore } from '@netlify/blobs';",'const getStore=()=>globalThis.__store;')
  .replace("import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';",'const PDFDocument={},StandardFonts={},rgb=()=>{};')
  .replace("import {enqueue, mailReady, portalUrl} from '../lib/mail.mjs';","const enqueue=async()=>{},mailReady=()=>true,portalUrl='https://heidimikacfilms.com/members/';");
-await fs.writeFile(root+'/netlify/functions/test-handle.mjs',source);
-const {default:handle}=await import(root+'/netlify/functions/test-handle.mjs');
+source=source.replace("import sharp from 'sharp';",'const sharp=()=>{throw Error("Unexpected image operation");};')
+ .replace(/from (['"])(\.\.?\/[^'"]+)\1/g,(_match,_quote,path)=>'from '+JSON.stringify(new URL(path,portalFile).href));
+export const {default:handle}=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
 const adminKey='a'.repeat(64),memberKey='b'.repeat(64),secondKey='c'.repeat(64);
 const harpa='00000000-0000-4000-8000-000000000001',second='00000000-0000-4000-8000-000000000002',test='00000000-0000-4000-8000-000000000003';
 process.env.HMF_NICK_LOGIN_SHA256='admin-digest';

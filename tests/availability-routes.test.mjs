@@ -3,6 +3,7 @@ import {readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {test} from 'node:test';
 import {emptyAvailability} from '../netlify/lib/availability.mjs';
+import {currentAgreementKey} from '../netlify/lib/agreement-cycle.mjs';
 
 // Run the actual portal routes with private, isolated storage and no network.
 const portalFile=new URL('../netlify/functions/portal.mjs',import.meta.url);
@@ -52,6 +53,42 @@ async function call(action,{body,who='Nick',production=dark,id='',origin,method,
 }
 function monday(...windows){const record=emptyAvailability();record.weekly[1]={status:'available',windows:windows.map(([start,end])=>({start,end}))};return record;}
 const save=(id,record,options={})=>call('saveAvailability',{id,body:{...record,revision:null},...options});
+
+test('admin home reads cached signing state and makes no provider requests',async()=>{
+ const context=await fixture();
+ const key=currentAgreementKey(dark,ids.a);
+ const checkedAt=Date.now()-3600000;
+ await context.store.setJSON(key,{id:'document-a',status:'Waiting on actor',checkedAt});
+ await context.store.setJSON('passwords/'+ids.a,{digest:'private-password-digest'});
+ await context.store.setJSON('outbox/example',{to:'a-private@example.invalid',subject:'Invitation',text:'private-setup-link',attempts:0});
+ process.env.SIGNWELL_API_KEY='mock-signing-key';
+ try{
+  const result=await call('home');
+  assert.equal(result.status,200);
+  assert.equal(result.data.members.find(member=>member.id===ids.a)?.agreement?.status,'Waiting on actor');
+  const serialized=JSON.stringify(result.data);
+  for(const secret of ['private-invitation-secret','private-password-digest','private-setup-link'])assert(!serialized.includes(secret));
+  assert.equal((await context.store.get(key)).checkedAt,checkedAt);
+  assert.equal(context.requests.length,0);
+ }finally{delete process.env.SIGNWELL_API_KEY;}
+});
+
+test('website visibility edits reject a competing member profile update',async()=>{
+ const context=await fixture(),key='members/'+ids.a;
+ const saveRecord=context.store.setJSON.bind(context.store);
+ context.store.setJSON=async(recordKey,value,options)=>{
+  if(recordKey===key){
+   const current=await context.store.get(key);
+   await saveRecord(key,{...current,draftProfile:{bio:'Latest profile edit'}});
+  }
+  return saveRecord(recordKey,value,options);
+ };
+ const result=await call('publication',{id:ids.a,body:{visible:false}});
+ assert.equal(result.status,409);
+ const record=await context.store.get(key);
+ assert.equal(record.draftProfile.bio,'Latest profile edit');
+ assert.equal(record.publication,undefined);
+});
 
 test('availability is authenticated and shared only with the current production roster',async()=>{
  const context=await fixture();

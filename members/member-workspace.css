@@ -1,0 +1,51 @@
+main:has(>.member-workspace) { max-width: 1050px; }
+main:has(>.member-workspace)>h1 { font-size: clamp(32px, 5vw, 46px); }
+.member-workspace .member-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.member-header .production-picker { margin: 0; flex: 1; max-width: 310px; }
+.member-header .member-production { margin: 0; color: #e8cbd1; }
+.member-header form { margin-left: auto; flex: none; }
+.member-header form button { margin-right: 0; }
+.member-workspace .member-nav { margin: 16px 0 22px; }
+.member-workspace [data-member-view] h2 { scroll-margin-top: 62px; }
+.member-workspace [data-member-view] h2:focus { outline: none; }
+.member-workspace .member-home-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 12px; }
+.member-workspace .member-home-grid section { margin: 0; }
+.member-workspace .member-home-grid h3 { margin: 0 0 8px; font-size: 21px; }
+.member-workspace .member-home-grid p { margin: 0 0 8px; color: #ddcbd3; }
+.member-workspace .member-productions { border: 0; margin: 18px 0 0; padding: 0; min-width: 0; }
+.member-productions>legend { font-weight: 700; }
+.member-productions>fieldset { border: 1px solid #65525d; border-radius: 7px; margin: 12px 0; padding: 0 12px; min-width: 0; }
+.member-productions [data-credit-fields] { border-top: 1px solid #53444c; }
+.member-workspace .member-publishing { padding: 14px; background: #241d22; border: 1px solid #65525d; border-radius: 7px; }
+.member-publishing h3 { margin: 0; font-size: 20px; }
+.member-publishing p { margin: 8px 0 0; }
+.member-publishing ul { list-style: none; padding: 0; margin: 8px 0 0; }
+.member-publishing li { display: flex; flex-wrap: wrap; gap: 4px 12px; justify-content: space-between; padding: 8px 0; }
+.member-publishing li + li { border-top: 1px solid #53444c; }
+.member-publishing strong { color: #f4c9d2; }
+.member-workspace #calendar-slot .exchange-calendar { position: static; max-height: none; }
+.member-workspace .member-availability { margin-top: 12px; }
+.member-workspace .member-availability .availability-calendar { background: transparent; border: none; padding: 0; }
+.member-workspace .member-availability .availability-widget>p:empty { margin: 0; }
+.member-workspace .member-availability .availability-date:focus-visible { outline-offset: -3px; }
+.member-workspace .availability-month-summary { font-size: .88rem; color: #ead8df; }
+.member-workspace .availability-production-day { padding: 12px; }
+.member-workspace .availability-production-day>summary { padding: 4px 0; }
+.member-workspace .availability-production-day[open]>summary { margin-bottom: 10px; }
+[data-headshot-preview] { padding: 12px; margin: 12px 0; border: 1px solid #66535e; border-radius: 7px; background: #211b20; }
+[data-headshot-preview] canvas { display: block; width: auto; max-width: 100%; height: auto; max-height: 220px; border-radius: 4px; }
+[data-headshot-preview] label { margin-bottom: 0; }
+[data-headshot-preview] p { margin: 8px 0 0; }
+[data-headshot-preview] p:empty { display: none; }
+form output.profile-save-error { color: #ffc4cb; }
+@media (max-width: 600px) {
+ .member-workspace .member-header { flex-wrap: wrap; }
+ .member-workspace .member-nav button { min-height: 44px; }
+ .member-workspace .member-panel { padding: 14px; margin: 14px 0; }
+ .member-workspace .member-availability { padding: 10px; }
+ .member-workspace .availability-month-nav { gap: 4px; }
+ .member-workspace .availability-month-nav h4 { font-size: 20px; }
+ .member-workspace .availability-month-nav button { min-height: 44px; margin: 6px 0; padding: 6px; }
+ .member-workspace .availability-month-grid { gap: 3px; }
+ .member-workspace .availability-date { min-height: 56px; }
+}

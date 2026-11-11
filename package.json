@@ -6,6 +6,6 @@
     "sharp": "^0.35.5"
   },
   "scripts": {
-    "test": "node tests/recovery.test.mjs && node tests/services.test.mjs && node tests/signing-notices.test.mjs"
+    "test": "node --test tests/*.test.mjs"
   }
 }

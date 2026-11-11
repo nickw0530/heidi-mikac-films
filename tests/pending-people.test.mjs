@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {test} from 'node:test';
+import {comparePeople} from '../members/people-order.mjs';
 
 // Exercise the real portal routes without using production storage or email.
 const portalFile=new URL('../netlify/functions/portal.mjs',import.meta.url);
@@ -30,7 +31,7 @@ test('the shared people list keeps private profiles discoverable across producti
  const frontend=await readFile(new URL('../members/portal.js',import.meta.url),'utf8');
  const start=frontend.indexOf('function combinedPeople('),end=frontend.indexOf('\nfunction productionAssignments(',start);
  assert.ok(start>=0&&end>start);
- const combinedPeople=new Function(frontend.slice(start,end)+'\nreturn combinedPeople;')();
+ const combinedPeople=new Function('comparePeople',frontend.slice(start,end)+'\nreturn combinedPeople;')(comparePeople);
  const profile={id:'shared-profile',name:'Shared Private Person',role:'Crew'};
  const unassigned={id:'unassigned-private',name:'Unassigned Private Person',needsEmail:true,productions:{}};
  const states=[{productionId:dark,film:'Written in the Dark',catalog:[profile],members:[],unassignedProfiles:[unassigned]},{productionId:lies,film:'Wherein Lies Continue',catalog:[profile],members:[{id:'private-person',name:profile.name,filmProfile:profile.id,needsEmail:true,role:'Crew'}],unassignedProfiles:[unassigned]}];

@@ -6,11 +6,17 @@ export const mailReady=()=>Boolean(process.env.RESEND_API_KEY&&process.env.HMF_M
 export const portalUrl='https://heidimikacfilms.com/members/';
 export const TRACKING_KEY='mail-status/tracking';
 const TRACKING_PAUSE=6*3600000;
+const mailKey=(member,event)=>createHash('sha256').update(member.id+'/'+event).digest('hex');
+export async function calendarInvitationAccepted(store,member,eventKey){
+ const log=await store.get('mail-log/'+mailKey(member,'calendar/'+eventKey),{type:'json'});
+ return log?.to===member.email&&['Accepted by email provider','delivered','delivery_delayed'].includes(log.status);
+}
 export async function enqueue(store, member, event, subject, text, expires=0, options={}){
  if(!member?.email)return;
- const key='outbox/'+createHash('sha256').update(member.id+'/'+event).digest('hex');
- if(event.startsWith('calendar/')&&(await store.getMetadata('mail-log/'+key.split('/')[1])||await store.getMetadata('failed-mail/'+key.split('/')[1])))return;
- await store.setJSON(key,{id:member.id,to:member.email,...(event.startsWith('calendar/')?{calendarEvent:event.slice(9)}:{}),subject,text,expires,...(options.agreementCycle?{agreementCycle:options.agreementCycle}:{}),...(options.requirementKey?{requirementKey:options.requirementKey}:{}),created:Date.now(),attempts:0,nextAttempt:0},{onlyIfNew:true});
+ const id=mailKey(member,event),key='outbox/'+id;
+ const [,calendarEvent,notice]=event.startsWith('calendar/')?event.split('/'):[];
+ if(calendarEvent&&(await store.getMetadata('mail-log/'+id)||await store.getMetadata('failed-mail/'+id)))return;
+ await store.setJSON(key,{id:member.id,to:member.email,...(calendarEvent?{calendarEvent,...(notice==='cancelled'?{calendarCancellation:true}:{})}:{}),subject,text,expires,...(options.agreementCycle?{agreementCycle:options.agreementCycle}:{}),...(options.requirementKey?{requirementKey:options.requirementKey}:{}),created:Date.now(),attempts:0,nextAttempt:0},{onlyIfNew:true});
 }
 
 const escapeHtml=value=>String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -41,7 +47,9 @@ export async function deliver(store){
   if(msg.requirementKey&&manualPaperworkStatus(await store.get(msg.requirementKey,{type:'json'}))){await log('Not sent — document requirement completed');await store.delete(key);continue;}
   if((msg.expires&&msg.expires<Date.now())||!member||member.revoked){await log('Not sent — expired or access revoked');await store.delete(key);continue;}
   if(msg.calendarEvent||msg.subject==='New event on the production calendar'){
-   const audience=msg.calendarEvent&&await store.get('calendar/audiences/'+msg.calendarEvent,{type:'json'});
+   const state=msg.calendarEvent&&await store.get('calendar/event-state/'+msg.calendarEvent,{type:'json'});
+   const audience=msg.calendarCancellation?(state?.cancelled?state.cancelledAudience:[]):
+    (state?.audience??(msg.calendarEvent&&await store.get('calendar/audiences/'+msg.calendarEvent,{type:'json'})));
    if(!Array.isArray(audience)||!includesMember(audience,member)||member.email!==msg.to){await store.delete(key);continue;}
   }
   // Lease the queue item; overlapping workers still share the provider idempotency key.

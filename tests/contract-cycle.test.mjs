@@ -97,6 +97,12 @@ const currentKey=currentAgreementKey(dark,id);
 await store.set('contract/master',Buffer.from('%PDF-approved-master'));
 await store.set('productions/'+lies+'/contract/master',Buffer.from('%PDF-approved-master-lies'));
 const terms={legal:'Rachel DeMicco',character:'Megan',crewTitle:'',credit:'Rachel DeMicco',rate:'100',date:'2026-11-09'};
+const creditKey='members/'+id;
+await store.setJSON(creditKey,{...await store.get(creditKey),
+ productionRequests:{[dark]:'existing-review'},proposedCredits:{[dark]:{character:'Proposed character',crewTitle:'Editor'}},
+ approvedProfiles:{[dark]:{bio:'Approved test biography',photo:'https://example.invalid/headshot.jpg'}}
+});
+const beforePreview=clone([...data]);
 for(const production of [dark,lies]){
  const packetsBefore=globalThis.__contractCyclePackets.length;
  for(const invalid of [{date:'2026-02-30'},{rate:'not agreed'},{character:'',crewTitle:''}]){
@@ -116,13 +122,39 @@ for(const production of [dark,lies]){
 }
 assert.equal(providerCreates.length,0,'Preview cannot create a SignWell document.');
 assert.equal(providerReads.length,0,'Preview does not contact SignWell.');
+assert.deepEqual([...data],beforePreview,'Preview performs no writes, including saved credits, pending approvals, and publication state.');
 for(const [key,record] of before)if(key.startsWith('agreements/')||key.startsWith('offline/')||key.startsWith('offline-signing/')||key.startsWith('paperwork/'))assert.deepEqual(data.get(key),record,'Preview preserves prior contract records at '+key);
+const explicitCredits={character:'Website character',crewTitle:'Editor'};
+result=await call('saveProductionCredits',explicitCredits,dark,memberToken);
+assert.equal(result.response.status,403,'Only an admin can directly change production credits.');
+result=await call('saveProductionCredits',explicitCredits);
+assert.equal(result.response.status,200);
+const creditRecord=await store.get(creditKey);
+assert.deepEqual(creditRecord.productions[dark],{...explicitCredits,role:'Website character · Editor',filmProfile:profile.id});
+assert.deepEqual(creditRecord.proposedCredits[dark],explicitCredits);
+assert.notEqual(creditRecord.productionRequests[dark],'existing-review','A stale approval cannot restore the previous credits.');
+const staleCredit=JSON.stringify(['Actor','','']);
+result=await call('saveProductionCredits',{...explicitCredits,character:'Stale character',expectedCredit:staleCredit});
+assert.equal(result.response.status,409,'An open agreement form cannot overwrite credits saved after it loaded.');
+result=await call('enrollments',{productions:[dark,lies],expectedAssignments:{[dark]:staleCredit,[lies]:JSON.stringify(['Producer','',''])}});
+assert.equal(result.response.status,409,'An old assignment form cannot overwrite newer assignments or credits.');
+assert.deepEqual(await store.get(creditKey),creditRecord);
+result=await call('published');
+assert.equal(result.data.find(person=>person.id===profile.id).role,'Website character · Editor');
+const changedCredits={...explicitCredits,character:'Revised character'};
+result=await call('enrollments',{productions:[dark,lies],credits:{[dark]:changedCredits,[lies]:{character:'',crewTitle:''}}});
+assert.equal(result.response.status,200);
+const savedCredits=await store.get(creditKey);
+assert.deepEqual(savedCredits.productions[dark],{...changedCredits,role:'Revised character · Editor',filmProfile:profile.id});
+assert.equal(savedCredits.productions[lies].role,'Producer','Saving assignments preserves an untouched legacy credit.');
+assert.ok(!Object.hasOwn(savedCredits.productions[lies],'character'),'An unstructured legacy credit is not guessed.');
 const sends=await Promise.all([call('agreement',terms),call('agreement',terms)]);
 assert.equal(sends.filter(result=>result.response.status===200).length,1,'One concurrent send creates the new agreement.');
 assert.ok(sends.some(result=>[400,409].includes(result.response.status)),'Concurrent duplicate is rejected.');
 assert.equal(providerCreates.length,1,'Legacy records allow one fresh provider request without duplicate sends.');
 assert.equal(providerCreates[0].body.name,'Written in the Dark — Rachel DeMicco · '+AGREEMENT_CYCLE);
 assert.equal(Buffer.from(providerCreates[0].body.files[0].file_base64,'base64').toString(),'%PDF-current');
+assert.deepEqual(await store.get(creditKey),savedCredits,'Contract creation preserves saved production credits and pending approvals.');
 let current=await store.get(currentKey);
 assert.equal(current.id,'new-dark');assert.equal(current.cycle,AGREEMENT_CYCLE);assert.equal(current.status,'Waiting on actor');
 result=await call('agreement',terms);assert.ok([400,409].includes(result.response.status));
@@ -149,4 +181,33 @@ assert.equal((await store.get('productions/'+lies+'/agreements/'+id)).id,'old-li
 result=await call('home',undefined,dark,memberToken);assert.equal(result.response.status,200);
 assert.ok(result.data.members[0].documents.some(document=>document.kind==='previous-signed'),'Members retain access to previously completed agreements.');
 assert.deepEqual(Buffer.from(await store.get('offline/'+profile.id)),oldPdf,'Reset preserves original PDF bytes.');
+
+assert.equal((await call('profileActivity',undefined,dark,memberToken)).response.status,403);
+assert.deepEqual((await call('profileActivity',undefined,lies)).data.items,[],'Activity stays with the production where it occurred.');
+const review=(await call('home')).data.productionReviews.find(row=>row.id===id);
+assert.equal((await call('reviewProduction',{...changedCredits,requestId:review.requestId,revision:review.revision,decision:'approve'})).response.status,200);
+const resourceId='00000000-0000-4000-8000-000000000014';
+await store.setJSON('resources/'+resourceId,{id:resourceId,type:'PDF',title:'Private document title',audience:[id]});
+assert.equal((await call('trackPaperwork',{document:resourceId,reason:'not-required'})).response.status,200);
+assert.equal((await call('trackPaperwork',{document:resourceId,reason:'reopen'})).response.status,200);
+result=await call('profileActivity');
+assert.equal(result.response.status,200);
+assert.deepEqual(result.data.items.map(item=>item.label),[
+ 'Document requirement reopened','Document marked not required','Profile approved for publication',
+ 'Production credits updated','Production credits updated'
+]);
+for(const item of result.data.items){
+ assert.deepEqual(Object.keys(item).sort(),['at','by','label']);
+ assert.equal(item.by,'Nick');
+ assert.ok(Number.isFinite(item.at));
+}
+const writeRecord=store.setJSON.bind(store);
+store.setJSON=async(key,value,options)=>{
+ if(key.startsWith('profile-activity/'))throw Error('Simulated activity storage failure');
+ return writeRecord(key,value,options);
+};
+try{
+ assert.equal((await call('trackPaperwork',{document:'agreement',reason:'complete'})).response.status,200,'Supplemental history failures do not undo the saved requirement.');
+ assert.equal((await call('home')).data.members.find(member=>member.id===id).paperworkTracking.reason,'complete');
+}finally{store.setJSON=writeRecord;}
 console.log('PASS: date-free previews/sends for both films, stale shoot dates ignored, required terms validated, old contract/waiver isolation, stale route protection, current-cycle provider polling, concurrent/repeated sends, per-film completion and historical files. No external requests or emails.');

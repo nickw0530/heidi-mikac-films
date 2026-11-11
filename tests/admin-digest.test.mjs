@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {notifyAdmins} from '../netlify/lib/admin-actions.mjs';
+import {adminActions,notifyAdmins} from '../netlify/lib/admin-actions.mjs';
 import {deliver,emailHtml,TRACKING_KEY} from '../netlify/lib/mail.mjs';
+import {currentAgreementKey} from '../netlify/lib/agreement-cycle.mjs';
 
 // Isolated storage and a mocked provider: nothing here sends email.
 function fixture(){
@@ -20,6 +21,38 @@ const outbox=store=>[...store.data].filter(([key])=>key.startsWith('outbox/')).m
 const action=(label,key,extra={})=>({owner:'any',label,key,view:'people',member:null,signature:false,...extra});
 const groups=(dark,lies=[])=>[{production:'written-in-the-dark',name:'Written in the Dark',actions:dark},{production:'wherein-lies-continue',name:'Wherein Lies Continue',actions:lies}];
 const hour=3600000;
+
+test('the signing sweep refreshes the oldest agreements in bounded batches',async()=>{
+ const store=fixture(),production='written-in-the-dark';
+ for(let i=0;i<7;i++){
+  const id='actor-'+i;
+  await store.setJSON('members/'+id,{id,name:'Actor '+i,email:id+'@example.invalid',productions:{[production]:{role:'Actor'}}});
+  await store.setJSON(currentAgreementKey(production,id),{
+   id:'doc-'+i,status:i===0?'Complete':'Waiting on actor',checkedAt:Date.now()-hour+i*1000,
+  });
+ }
+ process.env.SIGNWELL_API_KEY='mock-signing-key';
+ const originalFetch=globalThis.fetch,requests=[];
+ let active=0,maxActive=0;
+ globalThis.fetch=async input=>{
+  requests.push(String(input).split('/').filter(Boolean).at(-1));
+  maxActive=Math.max(maxActive,++active);
+  await Promise.resolve();
+  active--;
+  return Response.json({status:'sent',recipients:[{id:'1',status:'signed'},{id:'2',status:'sent'}]});
+ };
+ try{
+  const actions=await adminActions(store,production,{refresh:true});
+  assert.deepEqual(requests,['doc-1','doc-2','doc-3','doc-4']);
+  assert.equal(maxActive,2);
+  assert.deepEqual(actions.filter(action=>action.signature).map(action=>action.member),['actor-1','actor-2','actor-3','actor-4']);
+  await adminActions(store,production,{refresh:true});
+  assert.deepEqual(requests.slice(4),['doc-5','doc-6'],'Unprocessed agreements are checked first on the next sweep.');
+ }finally{
+  globalThis.fetch=originalFetch;
+  delete process.env.SIGNWELL_API_KEY;
+ }
+});
 
 test('new items arrive as one email per administrator, about once a day',async()=>{
  const store=fixture(),start=Date.UTC(2026,10,10,15);
@@ -57,7 +90,9 @@ test('a task assigned by name goes out at once and only to that administrator',a
 
 test('Heidi’s countersignature keeps its own immediate notice to the signing inbox',async()=>{
  const store=fixture(),start=Date.UTC(2026,10,10,15);
- const sign=action('Open for Heidi’s signature · Ada','k/ada/countersign/doc',{owner:'Heidi',signature:true,member:'m1'});
+ const sign=action('Open for Heidi’s signature · Ada','k/ada/countersign/doc',{owner:'any',signature:true,member:'m1'});
+ await notifyAdmins(store,groups([{...sign,suppressNotice:true}]),start);
+ assert.equal(outbox(store).length,0);
  await notifyAdmins(store,groups([sign]),start);await notifyAdmins(store,groups([sign]),start+hour);
  const mail=outbox(store);
  assert.equal(mail.length,1);assert.equal(mail[0].to,'hello@heidimikacfilms.com');assert.equal(mail[0].id,'Heidi');

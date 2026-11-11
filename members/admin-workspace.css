@@ -1,0 +1,95 @@
+main:has(.admin-workspace) > h1 {
+  font-size: clamp(32px, 5vw, 52px);
+  margin: 6px 0 20px;
+}
+
+.admin-workspace .production-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 18px;
+  margin: 0;
+  padding: 4px 14px 10px;
+  border: 1px solid #67545d;
+  border-radius: 8px;
+}
+
+.admin-workspace .production-picker label {
+  margin: 3px 0;
+  min-width: 0;
+  width: auto;
+  padding: 5px 0;
+}
+
+.admin-workspace .office-header { align-items: center; }
+.admin-workspace .office-nav { margin: 18px 0; }
+.admin-workspace .office-nav button { min-height: 44px; }
+.admin-workspace .office-layout { display: block; }
+.admin-workspace .office-layout .exchange-calendar { position: static; max-height: none; }
+.admin-workspace h2 { margin: 0 0 14px; }
+.admin-workspace .action-inbox { border-top: 3px solid #ce8189; }
+.admin-workspace .action-group { padding: 12px 14px; margin: 8px 0; background: #1b171a; }
+.admin-workspace .action-group summary { padding: 6px 0; }
+.admin-workspace .action-group ul, .admin-workspace .people-directory { list-style: none; padding: 0; margin: 0; }
+.admin-workspace .action-row, .admin-workspace .directory-row {
+  display: grid;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 10px 4px;
+  border-bottom: 1px solid #4a4147;
+}
+.admin-workspace .action-row { grid-template-columns: minmax(0, 1fr) auto; }
+.admin-workspace .action-row:last-child, .admin-workspace .directory-row:last-child { border-bottom: 0; }
+.admin-workspace .action-row > div { display: grid; gap: 3px; overflow-wrap: anywhere; }
+.admin-workspace .directory-row { grid-template-columns: minmax(130px, 1.15fr) minmax(0, 1.4fr) minmax(0, 1.25fr); }
+.admin-workspace .directory-row > button:first-child,
+.admin-workspace .audit-group li > button {
+  justify-self: start;
+  margin: 0;
+  text-align: left;
+  border-color: transparent;
+  background: transparent;
+  color: #f6c7c4;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.admin-workspace .directory-count { color: #e0cbd4; margin: 4px 0 12px; }
+.admin-workspace .directory-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.admin-workspace .directory-heading h2 { margin: 0; }
+.admin-workspace .production-badges, .admin-workspace .directory-status { display: flex; flex-wrap: wrap; gap: 5px; }
+.admin-workspace .production-badges span, .admin-workspace .directory-status span {
+  padding: 3px 8px;
+  border-radius: 5px;
+  color: #f1dee2;
+  background: #31262b;
+  font-size: .85rem;
+}
+.admin-workspace .directory-status span { background: #282429; }
+.admin-workspace .person-editor-heading { background: #201b20; padding: 16px 18px; margin-bottom: 0; }
+.admin-workspace .person-editor-heading h2 { margin: 8px 0 12px; }
+.admin-workspace .person-editor-tabs { display: flex; flex-wrap: wrap; gap: 7px; }
+.admin-workspace .person-editor-tabs button { margin: 0; min-height: 44px; background: #262127; }
+.admin-workspace .person-editor-tabs button[aria-current] { background: #803d48; border-color: #efaab2; }
+.admin-workspace .quiet-button { background: transparent; border-color: #67545d; margin: 0; }
+.admin-workspace .production-person-editor { margin-top: 0; border-top: 0; border-radius: 0 0 8px 8px; }
+.admin-workspace .production-person-editor > h2 { display: none; }
+.admin-workspace .film-credits { color: #edc3c5; margin-top: 0; }
+.admin-workspace .shared-profile-contact { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.admin-workspace .shared-profile-contact .account-email { margin: 0; }
+.admin-workspace .profile-bio { white-space: pre-line; }
+.admin-workspace [data-film-person] .member-paperwork { margin-top: 8px; padding: 16px; }
+.admin-workspace :is(.person-editor-heading, .member-paperwork, .production-workspace) { scroll-margin-top: 60px; }
+.admin-workspace .audit { margin-bottom: 0; }
+.admin-workspace .audit-group li > button { padding-left: 0; }
+
+@media (max-width: 640px) {
+  .admin-workspace .office-header { align-items: flex-start; gap: 4px; }
+  .admin-workspace .office-nav { gap: 5px; margin: 12px 0; }
+  .admin-workspace .office-nav button { padding: 8px 10px; }
+  .admin-workspace .directory-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .admin-workspace .directory-row > button:first-child { padding-left: 0; }
+  .admin-workspace .action-row { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .admin-workspace .action-row button { justify-self: start; min-height: 44px; }
+  .admin-workspace .person-editor-heading, .admin-workspace .production-workspace { padding: 12px; }
+  .admin-workspace .action-inbox { padding: 12px; }
+}

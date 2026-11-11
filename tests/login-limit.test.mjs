@@ -17,6 +17,8 @@ const {default:handle}=await import('data:text/javascript;base64,'+Buffer.from(s
 
 const member='00000000-0000-4000-8000-000000000051',password='correct horse battery';
 process.env.HMF_HEIDI_LOGIN_SHA256='heidi-digest';
+// Keep the attempts within one production rate-limit window.
+test.beforeEach(context=>context.mock.method(Date,'now',()=>Date.UTC(2026,10,11,15,5)));
 function fixture(){
  const data=new Map();let revision=0;
  const store={data,

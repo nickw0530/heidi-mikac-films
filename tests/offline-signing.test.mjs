@@ -42,7 +42,7 @@ test('creates an unsent Heidi-only draft from exact original bytes without requi
   }});
   assert.equal(result.created, true);
   assert.equal(payload.draft, true);
-  assert.equal(payload.with_signature_page, true);
+  assert.equal(payload.with_signature_page, false,'The existing document gets inline fields rather than an appended page.');
   assert.equal(payload.embedded_signing, true);
   assert.equal(payload.test_mode, false);
   assert.deepEqual(payload.recipients, [{id: '2', name: 'Heidi Mikac', email: HEIDI_COUNTERSIGN_EMAIL, send_email: true}]);
@@ -50,7 +50,7 @@ test('creates an unsent Heidi-only draft from exact original bytes without requi
   assert.equal(result.agreement.sourceHash, createHash('sha256').update(original).digest('hex'));
   assert.equal(result.agreement.status, 'Draft prepared');
   assert.equal(result.agreement.mode, 'offline-countersign');
-  assert.equal(result.agreement.recipientEmail, 'heidi@heidimikacfilms.com');
+  assert.equal(result.agreement.recipientEmail, HEIDI_COUNTERSIGN_EMAIL);
   const snapshot = await options.store.getWithMetadata(result.agreement.sourceKey);
   assert.deepEqual(Buffer.from(snapshot.data), original);
   assert.deepEqual(Buffer.from((await options.store.getWithMetadata('offline/' + profile.id)).data), original);
@@ -153,7 +153,7 @@ test('refresh follows provider state, preserves source metadata, and never sends
   await prepareOfflineCountersign({...options, signwell: async () => providerDraft});
   for (const [providerStatus, expected] of [
     ['draft', 'Draft prepared'], ['sent', 'Waiting on Heidi'], ['pending', 'Waiting on Heidi'],
-    ['canceled', 'canceled'], ['cancelled', 'cancelled'], ['bounced', 'Delivery failed'], ['completed', 'Complete'],
+    ['canceled', 'canceled'], ['cancelled', 'cancelled'], ['bounced', 'Delivery failed'],
     ['Created', 'Preparing draft'], [' Draft ', 'Draft prepared'], ['Sent', 'Waiting on Heidi'], [' Pending ', 'Waiting on Heidi'],
     ['Canceled', 'canceled'], ['Bounced', 'Delivery failed'], ['Completed', 'Complete']
   ]) {
@@ -167,6 +167,9 @@ test('refresh follows provider state, preserves source metadata, and never sends
     assert.equal(result.sourceHash, createHash('sha256').update(original).digest('hex'));
     assert.equal(result.sourceChanged, false);
   }
+  const completed=await refreshOfflineCountersign({store:options.store,profileId:profile.id,productionId,force:true,
+    signwell:async()=>{throw Error('A completed agreement must not be reopened.');}});
+  assert.equal(completed.status,'Complete');
 });
 
 test('refresh cannot accept the wrong provider document or an actor recipient', async () => {
