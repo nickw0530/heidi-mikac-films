@@ -598,6 +598,50 @@ test('either admin can set independent website placement without publishing priv
  assert.ok(!(await feed(dark)).some(item=>item.id===catalog.id),'Website default clears the layout override.');
 });
 
+test('admins can reuse approved film assets for a credited name with a middle name',async()=>{
+ const {store}=await fixture();
+ const original={id:actor,name:'Malakai Bisel',email:'cast@example.invalid',generalInvite:true,
+  productions:{[lies]:{role:'Sound Mixer',filmProfile:''}},
+  approvedProfiles:{[lies]:{bio:'',photo:'',imageVersion:''}},draftProfile:{bio:'Private draft'},
+  productionRequests:{[lies]:'pending-credit-review'},proposedCredits:{[lies]:{crewTitle:'Pending change'}}};
+ await store.setJSON('members/'+actor,original);
+ const key='website-placement/'+lies+'/member-'+actor;
+ await store.setJSON(key,{castPlacement:'crew',revision:'existing-placement'});
+ const existing=darkCatalog.find(person=>person.id==='malakai');
+ const before=(await call('reuseWebsiteProfile',{production:lies})).data;
+ assert.deepEqual(before.sources.map(({production,name,hasBio,hasPhoto})=>({production,name,hasBio,hasPhoto})),[
+  {production:'Written in the Dark',name:existing.name,hasBio:true,hasPhoto:true}
+ ]);
+ const body={source:before.sources[0].value};
+ assert.equal((await call('reuseWebsiteProfile',{who:'member',production:lies,body})).status,403);
+ assert.equal((await call('reuseWebsiteProfile',{who:'Heidi',production:lies,body:{source:'stale'}})).status,409);
+ assert.equal((await call('reuseWebsiteProfile',{who:'Heidi',production:lies,body})).status,200);
+ assert.deepEqual(await store.get('members/'+actor),{...original,approvedProfiles:{[lies]:{bio:existing.bio,photo:existing.photo,imageVersion:''}}});
+ const live=(await call('published',{who:null,production:lies})).data.find(item=>item.id==='member-'+actor);
+ assert.equal(live.bio,existing.bio);assert.equal(live.photo,existing.photo);
+ assert.equal(live.role,'Sound Mixer');assert.equal(live.castPlacement,'crew');
+ assert.equal((await call('reuseWebsiteProfile',{production:lies})).data.sources.length,0);
+});
+
+test('cross-film reuse preserves approved destination fields and never copies pending changes or hidden sources',async()=>{
+ const {store}=await fixture();
+ const original=await store.get('members/'+actor),imageVersion='a'.repeat(64),photo='https://heidimikacfilms.com/.netlify/functions/portal?action=memberPhoto&id='+actor+'&v='+imageVersion;
+ const member={...original,generalInvite:true,publication:{[dark]:false,[lies]:false},draftProfile:{bio:'Pending bio',imageVersion:'b'.repeat(64)},
+  approvedProfiles:{[dark]:{bio:'Approved source bio',photo,imageVersion},[lies]:{bio:'Keep the approved destination bio',photo:'',imageVersion:''}}};
+ await store.setJSON('members/'+actor,member);
+ assert.deepEqual((await call('reuseWebsiteProfile',{production:lies})).data.sources,[]);
+ await store.setJSON('members/'+actor,{...member,publication:{...member.publication,[dark]:true}});
+ const result=(await call('reuseWebsiteProfile',{production:lies})).data;
+ assert.equal(result.missingBio,false);assert.equal(result.missingPhoto,true);assert.equal(result.sources.length,1);
+ const saved=await call('reuseWebsiteProfile',{production:lies,body:{source:result.sources[0].value}});
+ assert.deepEqual(saved.data,{ok:true,visible:false});
+ const updated=await store.get('members/'+actor);
+ assert.deepEqual(updated.approvedProfiles[lies],{bio:member.approvedProfiles[lies].bio,photo,imageVersion});
+ assert.deepEqual(updated.draftProfile,member.draftProfile);
+ assert.equal(updated.publication[lies],false);
+ assert.ok(!(await call('published',{who:null,production:lies})).data.some(item=>item.id==='member-'+actor));
+});
+
 test('downloads use the posted title and administrators can remove a posted file or message',async()=>{
  const context=await fixture();
  await context.store.setJSON('resources/'+pdfId,{...(await context.store.get('resources/'+pdfId)),title:'Call sheet · Day 3 / rev 11/08: "final"?'});

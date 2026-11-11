@@ -33,6 +33,12 @@ const websitePlacementPrefix=pid=>'website-placement/'+pid+'/';
 const adminTaskOwners=['Nick','Heidi','any'];
 const normalizeName=name=>name.trim().toLowerCase().replace(/[^a-z0-9]/g,'');
 const normalizePendingName=name=>name.normalize('NFKC').toLocaleLowerCase('en-US').replace(/[^\p{L}\p{N}]/gu,'');
+function sameCreditName(first,second){
+  if(normalizePendingName(first)===normalizePendingName(second))return true;
+  const words=name=>name.trim().split(/\s+/).map(normalizePendingName).filter(Boolean);
+  const a=words(first),b=words(second);
+  return a.length>=2&&b.length>=2&&a[0]===b[0]&&a.at(-1)===b.at(-1);
+}
 function publicCredit(profile) {
   if (typeof profile.role !== 'string' || !profile.role.includes(',')) return profile;
   const titles = profile.role.split(/[,·]/).map(title => title.trim()).filter(Boolean);
@@ -50,6 +56,7 @@ const profileActivityLabels={
  'production-added':'Added to production',
  'production-removed':'Removed from production',
  'profile-approved':'Profile approved for publication',
+ 'profile-reused':'Reused approved website biography or headshot',
  'profile-declined':'Profile approval declined',
  'agreement-complete':'Agreement requirement marked complete',
  'agreement-not-required':'Agreement marked not required',
@@ -793,6 +800,52 @@ export default async function handle(req, context) {
     const photo=imageVersion||image?'uploaded':fallback?.photo||'';
     const publicImage=photo==='uploaded'?memberPhotoUrl(m.id,imageVersion||image.metadata?.version||'original'):photo;
     return {bio,photo,imageVersion,publicImage,revision:hash(JSON.stringify([bio,imageVersion||image?.etag||photo]))};
+  }
+  if(action==='reuseWebsiteProfile'){
+    onlyAdmin();
+    const record=await target({withMetadata:true}),member=record.data;
+    requireThat(active(member)&&!member.pendingContact,'Member unavailable.',404);
+    allowPublicProfile(member);
+    const approved=member.approvedProfiles||{};
+    const legacy=member.generalInvite?null:await legacyPublicProfile(member);
+    // Legacy profiles only entered the public feed when both assets were present.
+    const publishedLegacy=legacy?.bio.trim()&&legacy.photo?legacy:null;
+    const current=approved[productionId]??publishedLegacy??{};
+    const missingBio=!current.bio?.trim(),missingPhoto=!current.photo;
+    const sources=[];
+    if(missingBio||missingPhoto){
+      const accounts=await list('members/');
+      for(const source of productions.filter(p=>p.id!==productionId)){
+        const pid=source.id,assigned=assignments(member)[pid],linked=findProfile(member,pid);
+        const claimed=id=>accounts.some(other=>other&&other.id!==member.id&&findProfile(other,pid)?.id===id&&
+          (!other.generalInvite||assignments(other)[pid]||other.approvedProfiles?.[pid]));
+        const add=(id,name,profile)=>{
+          if(!(missingBio&&profile?.bio?.trim())&&!(missingPhoto&&profile?.photo))return;
+          const {bio='',photo='',imageVersion=''}=profile;
+          if(sources.some(item=>item.production===source.name&&item.bio===bio&&item.photo===photo))return;
+          const value=hash(JSON.stringify([pid,id,bio,photo,imageVersion]));
+          sources.push({value,production:source.name,name,bio,photo,imageVersion});
+        };
+        if(assigned&&member.publication?.[pid]!==false&&(!linked||!claimed(linked.id))){
+          add(member.id,linked?.name||member.name,approved[pid]??publishedLegacy);
+        }
+        for(const base of catalogs[pid]){
+          if(!sameCreditName(member.name,base.name)||claimed(base.id))continue;
+          if(linked?.id===base.id&&(member.publication?.[pid]===false||approved[pid]||(!assigned&&!member.generalInvite)))continue;
+          const published=pid==='written-in-the-dark'?await get('published/'+base.id):null;
+          if(!published?.hidden)add(base.id,base.name,published||base);
+        }
+      }
+    }
+    if(!post)return json({sources:sources.map(({value,production,name,bio,photo})=>({value,production,name,hasBio:!!bio?.trim(),hasPhoto:!!photo})),missingBio,missingPhoto});
+    const source=sources.find(item=>item.value===body.source);
+    requireThat(source,'The approved profile or its destination changed. Reload the profile and choose the source again.',409);
+    const usePhoto=missingPhoto&&!!source.photo;
+    const snapshot={bio:missingBio&&source.bio?.trim()?source.bio:current.bio||'',photo:usePhoto?source.photo:current.photo||'',imageVersion:(usePhoto?source.imageVersion:current.imageVersion)||''};
+    await saveTarget(record,{...member,approvedProfiles:{...approved,[productionId]:snapshot}});
+    await invalidate();
+    await recordProfileActivity(productionId,'profile-reused');
+    return json({ok:true,visible:member.publication?.[productionId]!==false});
   }
   async function saveProfileFields(change){
     const key='members/'+uid;

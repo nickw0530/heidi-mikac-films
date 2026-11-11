@@ -843,7 +843,8 @@ async function load(initial){
   return '<nav class="office-nav member-nav" aria-label="Member dashboard">'+tabs.map(([view,label])=>memberButton(view,label)).join('')+'</nav>'+
    (assigned?home:'')+profilePane+documentsPane+(assigned?availabilityPane+eventsPane:'');
  }
- const publication=m=>'<div class="publication-status"><h4>Website publishing</h4>'+Object.entries(m.publication||{}).map(([pid,p])=>'<p>'+escape(s.productions.find(x=>x.id===pid)?.name||pid)+' · <strong>'+escape(publicationLabel(m,pid,p.state))+'</strong></p>').join('')+(m.practice?'':'<h5>Placement on '+escape(s.film)+'</h5>'+websitePlacement(m)+form('publication','<label><input type="checkbox" name="visible" '+(m.publication?.[s.productionId]?.visible?'checked':'')+'> Show on this production’s website</label>','Save website visibility',m.id))+'</div>';
+ const reuseWebsiteProfile=m=>m.needsEmail?'':'<div><button type="button" data-find-website-profile="'+escape(m.id)+'">Reuse approved bio or headshot</button><div data-website-profile-sources aria-live="polite"></div></div>';
+ const publication=m=>'<div class="publication-status"><h4>Website publishing</h4>'+Object.entries(m.publication||{}).map(([pid,p])=>'<p>'+escape(s.productions.find(x=>x.id===pid)?.name||pid)+' · <strong>'+escape(publicationLabel(m,pid,p.state))+'</strong></p>').join('')+(m.practice?'':'<h5>Placement on '+escape(s.film)+'</h5>'+websitePlacement(m)+form('publication','<label><input type="checkbox" name="visible" '+(m.publication?.[s.productionId]?.visible?'checked':'')+'> Show on this production’s website</label>','Save website visibility',m.id)+reuseWebsiteProfile(m))+'</div>';
  const recover=m=>m.agreement&&!m.agreement.id&&!m.agreement.cleared?panel('Recover interrupted signing request','<p>Check SignWell first. Link the existing document below, or confirm that no document was created. This action never sends a contract.</p>'+form('recoverAgreement','<label>Existing SignWell document ID (if found)<input name="documentId"></label><label><input type="checkbox" name="confirmAbsent"> I checked SignWell; no document exists</label>','Recover request',m.id)):'';
  function documentControls(m,document,reason){
   return '<form data-action="trackPaperwork" data-id="'+escape(m.id)+'"><input type="hidden" name="document" value="'+escape(document)+'"><button value="complete"'+(['complete','hard-copy'].includes(reason)?' disabled':'')+'>Complete</button> <button value="not-required"'+(reason==='not-required'?' disabled':'')+'>Document N/A</button>'+(reason?' <button value="reopen">Reopen requirement</button>':'')+'</form>';
@@ -1122,6 +1123,12 @@ listen('submit',async e=>{
    message.textContent='Website placement saved for '+film+'.';
    return;
   }
+  if(a==='reuseWebsiteProfile'){
+   const film=lastState.film;
+   await load();
+   message.textContent='Approved website details saved for '+film+'.'+(result.visible?'':' This profile is hidden on the website.');
+   return;
+  }
   if(a==='prepareOfflineCountersign'){await load();message.textContent=result.created?(result.status==='Draft prepared'?'Heidi’s countersignature draft is prepared.':'SignWell is preparing Heidi’s countersignature draft.')+' Review its status under Documents → Uploaded agreements. No signing request has been sent.':'An existing preparation record was found. Review its status under Documents → Uploaded agreements.';return;}
   await load();message.textContent=['invite','resend'].includes(a)?'Invitation queued for email delivery.':a==='savePendingPerson'?'Name saved. Add their email here when you have it.':a==='removePendingPerson'?'Removed from the setup list.':a==='removeResource'?'Removed from the production board.':['login','passwordLogin','activate'].includes(a)?'':a==='logout'?'Signed out.':'Saved.';
  }catch(e){
@@ -1135,6 +1142,26 @@ listen('submit',async e=>{
   button.disabled=false;
   for(const control of photoInputs)control.disabled=false;
  }
+});
+listen('click',async e=>{
+ const button=e.target.closest('button[data-find-website-profile]');
+ if(!button)return;
+ const id=button.dataset.findWebsiteProfile,slot=button.nextElementSibling,film=lastState.film;
+ button.disabled=true;
+ slot.textContent='Looking for approved profiles…';
+ try{
+  const {sources,missingBio,missingPhoto}=await request('reuseWebsiteProfile',undefined,id);
+  if(!button.isConnected)return;
+  if(!missingBio&&!missingPhoto){slot.textContent='This film already has an approved biography and headshot.';return;}
+  if(!sources.length){slot.textContent='No matching approved biography or headshot was found on the other film.';return;}
+  const options=sources.map(source=>{
+   const fields=[missingBio&&source.hasBio?'Bio':'',missingPhoto&&source.hasPhoto?'Headshot':''].filter(Boolean).join(' and ');
+   return '<option value="'+escape(source.value)+'">'+escape(source.production+' · '+source.name+' · '+fields)+'</option>';
+  }).join('');
+  slot.innerHTML=form('reuseWebsiteProfile','<p>Choose the matching profile to fill missing website details for '+escape(film)+'.</p><label>Approved profile<select name="source" required><option value="">Choose a profile</option>'+options+'</select></label>','Use approved profile',id);
+  button.hidden=true;
+  slot.querySelector('select').focus();
+ }catch(error){slot.textContent=error.message;}finally{button.disabled=false;}
 });
 listen('click',async e=>{
  const b=e.target;if(!b.dataset.status&&!b.dataset.photo)return;
