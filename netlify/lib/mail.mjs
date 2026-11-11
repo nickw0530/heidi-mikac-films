@@ -7,7 +7,9 @@ export const portalUrl='https://heidimikacfilms.com/members/';
 export const TRACKING_KEY='mail-status/tracking';
 const TRACKING_PAUSE=6*3600000;
 const mailKey=(member,event)=>createHash('sha256').update(member.id+'/'+event).digest('hex');
+const calendarReceipt=(email,event)=>'calendar/recipients/'+event+'/'+createHash('sha256').update(email.trim().toLowerCase()).digest('hex');
 export async function calendarInvitationAccepted(store,member,eventKey){
+ if(await store.getMetadata(calendarReceipt(member.email,eventKey)))return true;
  const log=await store.get('mail-log/'+mailKey(member,'calendar/'+eventKey),{type:'json'});
  return log?.to===member.email&&['Accepted by email provider','delivered','delivery_delayed'].includes(log.status);
 }
@@ -16,7 +18,7 @@ export async function enqueue(store, member, event, subject, text, expires=0, op
  const id=mailKey(member,event),key='outbox/'+id;
  const [,calendarEvent,notice]=event.startsWith('calendar/')?event.split('/'):[];
  if(calendarEvent&&(await store.getMetadata('mail-log/'+id)||await store.getMetadata('failed-mail/'+id)))return;
- await store.setJSON(key,{id:member.id,to:member.email,...(calendarEvent?{calendarEvent,...(notice==='cancelled'?{calendarCancellation:true}:{})}:{}),subject,text,expires,...(options.agreementCycle?{agreementCycle:options.agreementCycle}:{}),...(options.requirementKey?{requirementKey:options.requirementKey}:{}),created:Date.now(),attempts:0,nextAttempt:0},{onlyIfNew:true});
+ await store.setJSON(key,{id:member.id,to:member.email,...(calendarEvent?{calendarEvent,...(notice==='cancelled'?{calendarCancellation:true}:{}),...(options.calendarRevision?{calendarRevision:options.calendarRevision}:{})}:{}),subject,text,expires,...(options.agreementCycle?{agreementCycle:options.agreementCycle}:{}),...(options.requirementKey?{requirementKey:options.requirementKey}:{}),created:Date.now(),attempts:0,nextAttempt:0},{onlyIfNew:true});
 }
 
 const escapeHtml=value=>String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -32,7 +34,7 @@ export function emailHtml(message){
  return '<!doctype html><html><body style="margin:0;background:#f5f3f0;color:#252122;font-family:Arial,sans-serif"><div style="max-width:560px;margin:0 auto;padding:28px 20px"><p style="font-size:14px;color:#6b343e">HEIDI MIKAC FILMS</p><h1 style="font-size:24px;line-height:1.3">'+escapeHtml(message.subject)+'</h1><div style="font-size:16px;line-height:1.6">'+paragraphs+'</div></div></body></html>';
 }
 
-export async function deliver(store){
+export async function deliver(store,{currentCalendarEvent}={}){
  if(!mailReady())return;
  const entries=(await store.list({prefix:'outbox/'})).blobs;
  let processed=0;const deadline=Date.now()+22000;let lastRequest=0;
@@ -40,7 +42,7 @@ export async function deliver(store){
  for(const {key} of entries){
   if(processed>=20||Date.now()>deadline-5000)break;
   const record=await store.getWithMetadata(key,{type:'json'}),msg=record?.data;if(!msg||msg.nextAttempt>Date.now())continue;
-  const member=['Nick','Heidi'].includes(msg.id)?{id:msg.id}:await store.get('members/'+msg.id,{type:'json'});
+  const member=!msg.calendarEvent&&['Nick','Heidi'].includes(msg.id)?{id:msg.id}:await store.get('members/'+msg.id,{type:'json'});
   const logKey='mail-log/'+key.split('/')[1];
   const log=async(status,extra={})=>store.setJSON(logKey,{to:msg.to,subject:msg.subject,updated:Date.now(),status,...extra});
   if(supersededContractNotice(msg)){await log('Not sent — replaced agreement');await store.delete(key);continue;}
@@ -51,13 +53,25 @@ export async function deliver(store){
    const audience=msg.calendarCancellation?(state?.cancelled?state.cancelledAudience:[]):
     (state?.audience??(msg.calendarEvent&&await store.get('calendar/audiences/'+msg.calendarEvent,{type:'json'})));
    if(!Array.isArray(audience)||!includesMember(audience,member)||member.email!==msg.to){await store.delete(key);continue;}
+   if(msg.calendarRevision){
+    if(state?.revision!==msg.calendarRevision){await store.delete(key);continue;}
+    try{
+     // Outlook may have changed the audience or privacy since the last scheduled scan.
+     if(!currentCalendarEvent)continue;
+     if(!await currentCalendarEvent(msg.calendarEvent,msg.calendarRevision,member)){await store.delete(key);continue;}
+    }catch{continue;}
+   }
   }
   // Lease the queue item; overlapping workers still share the provider idempotency key.
   if(!(await store.setJSON(key,{...msg,nextAttempt:Date.now()+120000},{onlyIfMatch:record.etag})).modified)continue;
   processed++;
   let response;
   try{await pace();response=await fetch('https://api.resend.com/emails',{method:'POST',signal:AbortSignal.timeout(5000),headers:{Authorization:'Bearer '+process.env.RESEND_API_KEY,'Content-Type':'application/json','Idempotency-Key':key.split('/')[1]},body:JSON.stringify({from:process.env.HMF_MAIL_FROM,to:[msg.to],subject:msg.subject,text:msg.text,html:emailHtml(msg)})});}catch{}
-  if(response?.ok){const sent=await response.json().catch(()=>({}));await log('Accepted by email provider',{providerId:sent.id});await store.delete(key);continue;}
+  if(response?.ok){
+   const sent=await response.json().catch(()=>({}));
+   if(msg.calendarEvent&&!msg.calendarCancellation)await store.setJSON(calendarReceipt(msg.to,msg.calendarEvent),true,{onlyIfNew:true});
+   await log('Accepted by email provider',{providerId:sent.id});await store.delete(key);continue;
+  }
   const attempts=(msg.attempts||0)+1,retry=!response||response.status===429||response.status>=500;
   const error=response?'Email provider returned '+response.status:'Email provider did not respond';
   if(!retry||attempts>=6){await store.setJSON('failed-mail/'+key.split('/')[1],{...msg,attempts,lastError:error});await log('Failed — needs attention',{error});await store.delete(key);}

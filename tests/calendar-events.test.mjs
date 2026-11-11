@@ -8,7 +8,7 @@ const calendarFile=new URL('../netlify/functions/calendar-callback.mjs',import.m
 const source=(await readFile(calendarFile,'utf8'))
  .replace("import {getStore} from '@netlify/blobs';","const getStore=()=>{throw new Error('Unexpected real store access');};")
  .replace(/from (['"])(\.\.?\/[^'"]+)\1/g,(_match,_quote,path)=>'from '+JSON.stringify(new URL(path,calendarFile).href));
-const {events,eventNotes,notifyNewEvents}=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
+const {events,eventNotes,notifyNewEvents,calendarNoticeValidator}=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
 const eventKey=id=>createHash('sha256').update(id).digest('base64url');
 const firstFilm='written-in-the-dark',secondFilm='wherein-lies-continue';
 const actor={id:'actor',email:'actor@example.test',productions:{[firstFilm]:{}}};
@@ -60,7 +60,7 @@ async function fixture(t,{notesEnabled=false}={}){
   if(url.pathname==='/v1.0/me/calendar/events'){
    const filter=url.searchParams.get('$filter');
    const [,from,to]=filter.match(/^lastModifiedDateTime ge (.+) and lastModifiedDateTime lt (.+)$/);
-   return Response.json({value:[...calendar.values()].filter(event=>event.lastModifiedDateTime>=from&&event.lastModifiedDateTime<to)});
+   return Response.json({value:[...calendar.values()].filter(event=>event.type!=='exception'&&event.type!=='occurrence'&&event.lastModifiedDateTime>=from&&event.lastModifiedDateTime<to)});
   }
   const id=decodeURIComponent(url.pathname.split('/').at(-1));
   return calendar.has(id)?Response.json(calendar.get(id)):new Response(null,{status:404});
@@ -71,7 +71,8 @@ async function fixture(t,{notesEnabled=false}={}){
  await store.setJSON('members/'+other.id,other);
  const change=(updates={},id='shoot')=>{
   const event=calendar.get(id)||{
-   id,subject:'Mock filming day',start:{dateTime:'2026-11-14T15:00:00.000'},
+   id,createdDateTime:new Date(clock-120000).toISOString(),
+   subject:'Mock filming day',start:{dateTime:'2026-11-14T15:00:00.000'},
    end:{dateTime:'2026-11-14T17:00:00.000'},isAllDay:false,
    sensitivity:'normal',categories:['Written in the Dark'],location:{displayName:'Studio A'}
   };
@@ -79,7 +80,7 @@ async function fixture(t,{notesEnabled=false}={}){
  };
  const messages=()=>[...data.entries()].filter(([key])=>key.startsWith('outbox/')).map(([,record])=>record.value);
  return {store,calendar,sent,change,messages,graphRequests,advance:minutes=>{clock+=minutes*60000;},
-  poll:()=>notifyNewEvents(store,enqueue,portalUrl),mail:()=>deliver(store)};
+  poll:()=>notifyNewEvents(store,enqueue,portalUrl),mail:()=>deliver(store,{currentCalendarEvent:calendarNoticeValidator(store)})};
 }
 
 test('upcoming events show the location and production only to eligible members',async t=>{
@@ -96,25 +97,53 @@ test('upcoming events show the location and production only to eligible members'
  assert.equal(admin.find(event=>event.key===eventKey('private')).location,'');
 });
 
-test('a time change and a cancellation send one scoped notice each',async t=>{
- const f=await fixture(t);
- f.change();
+test('a new event email includes the event name, Eastern time and portal link for eligible members',async t=>{
+ const f=await fixture(t,{notesEnabled:true});
+ await f.store.setJSON('members/revoked',{...actor,id:'revoked',email:'revoked@example.test',revoked:true});
+ await f.store.setJSON('members/no-address',{...actor,id:'no-address',email:''});
+ f.change({body:{contentType:'text',content:'Fictional notes available in the portal only.'}});
  await f.poll();
- assert.equal(f.messages().length,1);
+ assert.deepEqual(f.messages().map(message=>message.to),[actor.email]);
  await f.mail();
  assert.equal(f.sent.length,1);
- assert.deepEqual(f.sent[0].to,[actor.email]);
+ const [email]=f.sent;
+ assert.deepEqual(email.to,[actor.email]);
+ assert.match(email.subject,/new event/i);
+ assert.match(email.text,/Mock filming day/);
+ assert.match(email.text,/Nov(?:ember)?\.? 14/i);
+ assert.match(email.text,/10(?::00)?\s*AM/i);
+ assert.match(email.text,/\b(?:ET|EST|Eastern)\b/i);
+ assert.ok(email.text.includes(portalUrl+'?event='+eventKey('shoot')));
+ assert.doesNotMatch(email.text,/Fictional notes available in the portal only/);
+});
+
+test('title, notes and time edits each send one scoped update and cancellation remains scoped',async t=>{
+ const f=await fixture(t,{notesEnabled:true});
+ f.change();
+ await f.poll();
+ await f.mail();
  f.advance(5);
  f.change({subject:'Renamed fixture'});
  await f.poll();
- assert.equal(f.messages().length,0);
+ assert.deepEqual(f.messages().map(message=>message.subject),['Production calendar event updated']);
+ await f.mail();
+ assert.equal(f.sent.length,2);
+ assert.match(f.sent[1].text,/Renamed fixture/);
+ f.advance(5);
+ f.change({body:{contentType:'text',content:'Revised fictional notes.'}});
+ await f.poll();
+ assert.deepEqual(f.messages().map(message=>message.subject),['Production calendar event updated']);
+ await f.mail();
+ assert.equal(f.sent.length,3);
+ assert.doesNotMatch(f.sent[2].text,/Revised fictional notes/);
  f.advance(5);
  f.change({start:{dateTime:'2026-11-14T16:00:00.000'},end:{dateTime:'2026-11-14T18:00:00.000'}});
  await f.poll();
  assert.deepEqual(f.messages().map(message=>message.subject),['Production calendar event updated']);
  await f.mail();
- assert.equal(f.sent.length,2);
- await f.store.setJSON('calendar/notification-cursor','2026-11-11T14:05:00.000Z');
+ assert.equal(f.sent.length,4);
+ assert.match(f.sent[3].text,/11(?::00)?\s*AM/i);
+ await f.store.setJSON('calendar/notification-cursor','2026-11-11T14:10:00.000Z');
  await f.poll();
  assert.equal(f.messages().length,0,'Processing the same revision again does not queue a second notice.');
  const id=eventKey('shoot');
@@ -130,12 +159,68 @@ test('a time change and a cancellation send one scoped notice each',async t=>{
  await f.poll();
  assert.deepEqual(f.messages().map(message=>message.subject),['Production calendar event cancelled']);
  await f.mail();
- assert.equal(f.sent.length,3);
- assert.deepEqual(f.sent[2].to,[actor.email]);
- assert.equal(f.sent[2].text.includes('Studio A'),false);
- await f.store.setJSON('calendar/notification-cursor','2026-11-11T14:05:00.000Z');
+ assert.equal(f.sent.length,5);
+ assert.ok(f.sent.every(message=>message.to.length===1&&message.to[0]===actor.email));
+ assert.equal(f.sent[4].text.includes('Studio A'),false);
+ await f.store.setJSON('calendar/notification-cursor','2026-11-11T14:10:00.000Z');
  await f.poll();
  assert.equal(f.messages().length,0);
+});
+
+test('an edited event predating the first scan can send an update without a prior new-event email',async t=>{
+ const f=await fixture(t);
+ f.change({createdDateTime:'2026-11-01T16:00:00Z'});
+ await f.poll();
+ assert.deepEqual(f.messages().map(message=>[message.to,message.subject]),[
+  [actor.email,'Production calendar event updated']
+ ]);
+});
+
+test('a changed occurrence gets an update without announcing ordinary occurrences again',async t=>{
+ const f=await fixture(t);
+ f.change({type:'occurrence'},'regular-shoot');
+ f.change({type:'exception',subject:'One rehearsal moved'},'changed-shoot');
+ await f.poll();
+ assert.deepEqual(f.messages().map(message=>message.subject),['Production calendar event updated']);
+ await f.mail();
+ assert.match(f.sent[0].text,/One rehearsal moved/);
+});
+
+test('an event moved to the other production sends only to its new audience',async t=>{
+ const f=await fixture(t);
+ f.change();
+ await f.poll();
+ await f.mail();
+ f.advance(5);
+ f.change({categories:['Wherein Lies Continue']});
+ await f.poll();
+ assert.deepEqual(f.messages().map(message=>message.to),[other.email]);
+ await f.mail();
+ assert.deepEqual(f.sent.map(message=>message.to),[[actor.email],[other.email]]);
+});
+
+test('making an event private after queuing it prevents its summary from being sent',async t=>{
+ const f=await fixture(t);
+ f.change();
+ await f.poll();
+ assert.equal(f.messages().length,1);
+ f.advance(1);
+ f.change({sensitivity:'private'});
+ await f.mail();
+ assert.equal(f.sent.length,0);
+ assert.equal(f.messages().length,0);
+});
+
+test('dual categories reach both casts once while private and uncategorized events send nothing',async t=>{
+ const f=await fixture(t);
+ const both={id:'both',email:'both@example.test',productions:{[firstFilm]:{},[secondFilm]:{}}};
+ await f.store.setJSON('members/'+both.id,both);
+ f.change({categories:['Written in the Dark','Wherein Lies Continue']});
+ f.change({sensitivity:'private'},'private');
+ f.change({categories:[]},'uncategorized');
+ await f.poll();
+ assert.deepEqual(f.messages().map(message=>message.to).sort(),[actor.email,both.email,other.email].sort());
+ assert.ok(f.messages().every(message=>message.text.includes(portalUrl+'?event='+eventKey('shoot'))));
 });
 
 test('a hard-deleted upcoming event is verified before its cancellation notice is queued',async t=>{

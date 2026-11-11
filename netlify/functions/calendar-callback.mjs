@@ -12,6 +12,7 @@ const mailbox='hello@heidimikacfilms.com';
 const scope='offline_access User.Read Calendars.Read';
 const binding='calendar/connection';
 const calendarRowsVersion=3;
+const calendarWindow=30*86400000;
 const maxNoteLength=12000;
 const eventStateKey=key=>'calendar/event-state/'+key;
 const nonce=()=>randomBytes(32).toString('base64url');
@@ -40,7 +41,7 @@ async function graph(path,token,timeout=15000,preferText=false){
  return response.json();
 }
 const fields='id,subject,start,end,isAllDay,isCancelled,sensitivity,categories,location';
-const trackingFields=fields+',lastModifiedDateTime,recurrence';
+const trackingFields=fields+',createdDateTime,lastModifiedDateTime,recurrence';
 const utcTime=value=>{
  if(!value)return NaN;
  return Date.parse(/(?:Z|[+-]\d\d:\d\d)$/i.test(value)?value:value+'Z');
@@ -67,7 +68,7 @@ async function* pages(path,token){
 }
 async function upcoming(token){
  const now=Date.now();
- const params=new URLSearchParams({startDateTime:new Date(now).toISOString(),endDateTime:new Date(now+30*86400000).toISOString(),'$select':fields,'$orderby':'start/dateTime','$top':'100'});
+ const params=new URLSearchParams({startDateTime:new Date(now).toISOString(),endDateTime:new Date(now+calendarWindow).toISOString(),'$select':fields,'$orderby':'start/dateTime','$top':'100'});
  const rows=[];
  for await(const page of pages('me/calendarView?'+params,token))rows.push(...page.filter(e=>!e.isCancelled));
  return rows.map(event=>display(event,true));
@@ -171,20 +172,28 @@ export async function eventNotes(store,admin,eventKey,member){
  return Response.json({notes:characters.slice(0,maxNoteLength).join(''),truncated:characters.length>maxNoteLength},{headers});
 }
 const notices={
- new:['New event on the production calendar','An event has been added to the Heidi Mikac Films calendar. Sign in to see the event and its scheduled time.'],
- updated:['Production calendar event updated','The time or location of an event on the Heidi Mikac Films calendar has changed. Sign in to see the latest details.'],
+ new:['New event on the production calendar','A new event has been added to the Heidi Mikac Films members portal.'],
+ updated:['Production calendar event updated','An event in the Heidi Mikac Films members portal has changed.'],
  cancelled:['Production calendar event cancelled','A previously announced Heidi Mikac Films calendar event has been cancelled. Sign in to see its status.']
 };
 
-function eventSchedule(event){
- return {start:utcTime(event.start)||null,end:utcTime(event.end)||null,allDay:event.allDay,location:event.location};
+const easternEventTime=new Intl.DateTimeFormat('en-US',{
+ timeZone:'America/Indiana/Indianapolis',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'
+});
+const allDayEventDate=new Intl.DateTimeFormat('en-US',{timeZone:'UTC',month:'short',day:'numeric'});
+
+function eventSummary(event){
+ const title=String(event.title||'').replace(/\s+/g,' ').trim().slice(0,300)||'Production event';
+ const start=utcTime(event.start),end=utcTime(event.end);
+ if(!Number.isFinite(start))return title;
+ const hasEnd=Number.isFinite(end)&&end>start;
+ const when=event.allDay
+  ?allDayEventDate.formatRange(start,hasEnd?end-1:start)+' · All day'
+  :(hasEnd?easternEventTime.formatRange(start,end):easternEventTime.format(start))+' (Eastern time)';
+ return title+'\n'+when;
 }
 
-function scheduleChanged(before,after){
- return before&&['start','end','allDay','location'].some(field=>before[field]!==undefined&&before[field]!==after[field]);
-}
-
-async function observeEvent(store,event,{deletedAt,baseline}={}){
+async function observeEvent(store,event,{deletedAt,windowStart}={}){
  const key=digest(event.id);
  const path=eventStateKey(key);
  const record=await store.getWithMetadata(path,{type:'json'});
@@ -198,18 +207,22 @@ async function observeEvent(store,event,{deletedAt,baseline}={}){
  const audience=details?.productions||[];
  const legacyAudience=previous?[]:await store.get('calendar/audiences/'+key,{type:'json'});
  if(!audience.length&&!previous&&!legacyAudience?.length)return null;
- const cancelledAudience=cancelled?(previous?.cancelledAudience||previous?.audience||legacyAudience||[]):null;
- const schedule=audience.length?eventSchedule(details):null;
+ const previousAudience=previous?.audience??legacyAudience??[];
+ const cancelledAudience=cancelled?(previous?.cancelledAudience||previousAudience):null;
  const upcoming=!!(event.recurrence||utcTime(details?.end)>=Date.now());
- const formerEnd=utcTime(previous?.upcomingUntil||event.end?.dateTime);
- const wasUpcoming=previous?.recurring||event.recurrence||!Number.isFinite(formerEnd)||formerEnd>=Date.now();
+ const formerEnd=utcTime(previous?.upcomingUntil);
+ const wasUpcoming=previous?.recurring||formerEnd>=Date.now();
  let notice=null;
- if(cancelled&&cancelledAudience.length&&!previous?.cancelled&&wasUpcoming)notice='cancelled';
- else if(audience.length&&upcoming){
-  notice=scheduleChanged(previous?.schedule||baseline,schedule)?'updated':'new';
+ const legacyEnd=utcTime(event.end?.dateTime);
+ if(cancelled&&cancelledAudience.length&&!previous?.cancelled&&(wasUpcoming||!previous&&(event.recurrence||!Number.isFinite(legacyEnd)||legacyEnd>=Date.now())))notice='cancelled';
+ else if(audience.length&&(upcoming||wasUpcoming)){
+  // Graph revisions cover notes and other edits without copying the body into the mail queue.
+  const existing=previousAudience.length>0||!previous&&(event.type==='exception'||utcTime(event.createdDateTime)<utcTime(windowStart));
+  notice=existing?'updated':'new';
  }
  const state={
-  key,revision,audience,cancelled,cancelledAudience,schedule,notice,
+  key,revision,audience,cancelled,cancelledAudience,notice,
+  ...(notice&&!cancelled?{summary:eventSummary(details),previousAudience:previous?previousAudience:null,firstNotice:!previous&&!previousAudience.length}:{}),
   upcomingUntil:audience.length?details.end:null,recurring:!!(audience.length&&event.recurrence),checkedAt:Date.now()
  };
  if(notice)await store.set('calendar/event-links/'+key,event.id,{onlyIfNew:true});
@@ -223,14 +236,45 @@ async function queueEventNotice(store,enqueue,portalUrl,state,members){
  const recipients=state.cancelled?state.cancelledAudience:state.audience;
  const version=digest(state.revision);
  const noticeEvent='calendar/'+state.key;
+ const addressed=new Set();
  for(const member of members.filter(member=>includesMember(recipients,member))){
-  const received=state.notice==='new'?false:await calendarInvitationAccepted(store,member,state.key);
-  if(state.cancelled&&!received)continue;
-  const kind=received?state.notice:'new';
-  const event=kind==='new'?noticeEvent:noticeEvent+'/'+kind+'/'+version;
+  const email=member.email.trim().toLowerCase();
+  if(!email||addressed.has(email))continue;
+  if(state.cancelled&&!await calendarInvitationAccepted(store,member,state.key))continue;
+  const newlyEligible=state.previousAudience&&!includesMember(state.previousAudience,member);
+  const kind=state.notice==='updated'&&newlyEligible?'new':state.notice;
+  const event=kind==='new'&&(state.firstNotice||!state.summary)?noticeEvent:noticeEvent+'/'+kind+'/'+version;
   const [subject,body]=notices[kind];
-  await enqueue(store,member,event,subject,body+'\n\n'+portalUrl+'?event='+state.key);
+  const summary=state.cancelled?'':state.summary;
+  const text=[body,summary,!state.cancelled?'Sign in to view the event details.':'',portalUrl+'?event='+state.key].filter(Boolean).join('\n\n');
+  await enqueue(store,member,event,subject,text,0,summary?{calendarRevision:state.revision}:{});
+  addressed.add(email);
  }
+}
+
+export function calendarNoticeValidator(store){
+ let token;
+ const events=new Map();
+ return async(key,revision,member)=>{
+  if(!events.has(key))events.set(key,(async()=>{
+   const id=await store.get('calendar/event-links/'+key);
+   if(!id)return null;
+   token??=(async()=>{
+    const connection=await store.getWithMetadata(binding,{type:'json'});
+    if(!connection)throw Error('Outlook calendar is disconnected');
+    return access(store,connection);
+   })();
+   try{
+    const params=new URLSearchParams({'$select':'id,categories,sensitivity,isCancelled,lastModifiedDateTime'});
+    return await graph('me/calendar/events/'+encodeURIComponent(id)+'?'+params,await token,5000);
+   }catch(error){
+    if(error.status===404||error.status===410)return null;
+    throw error;
+   }
+  })());
+  const event=await events.get(key);
+  return event?.lastModifiedDateTime===revision&&includesMember(eventProductions(event),member);
+ };
 }
 
 async function checkRemovedEvents(store,token,now,observe,queue){
@@ -262,7 +306,7 @@ async function checkRemovedEvents(store,token,now,observe,queue){
 
 export async function notifyNewEvents(store,enqueue,portalUrl){
  const checkpoint='calendar/notification-cursor';
- const end=new Date(Date.now()-60000).toISOString();
+ const now=Date.now(),end=new Date(now-60000).toISOString();
  const cursor=await store.getWithMetadata(checkpoint,{type:'json'});
  if(!cursor){await store.setJSON(checkpoint,end,{onlyIfNew:true});return;}
  if(cursor.data>=end)return;
@@ -280,15 +324,19 @@ export async function notifyNewEvents(store,enqueue,portalUrl){
   const path=eventStateKey(state.key),record=await store.getWithMetadata(path,{type:'json'});
   if(record?.data?.revision===state.revision)await store.setJSON(path,{...record.data,noticeQueued:true},{onlyIfMatch:record.etag});
  };
- const baselines=new Map((connection.data.productionCalendarRows||[]).map(event=>[event.key,eventSchedule(event)]));
  const observe=async(event,options)=>{
-  const state=await observeEvent(store,event,{baseline:baselines.get(digest(event.id)),...options});
+  const state=await observeEvent(store,event,{windowStart:cursor.data,...options});
   if(!state)return;
   changed=true;
   await queue(state);
  };
  for await(const page of pages('me/calendar/events?'+query,token))for(const event of page)await observe(event);
- await checkRemovedEvents(store,token,Date.now(),observe,queue);
+ // The event list returns series masters. The calendar view exposes edits to a single occurrence.
+ const instances=new URLSearchParams({startDateTime:new Date(now).toISOString(),endDateTime:new Date(now+calendarWindow).toISOString(),'$select':trackingFields+',type','$top':'100'});
+ for await(const page of pages('me/calendarView?'+instances,token))for(const event of page){
+  if(event.type==='exception'&&event.lastModifiedDateTime>=cursor.data&&event.lastModifiedDateTime<end)await observe(event);
+ }
+ await checkRemovedEvents(store,token,now,observe,queue);
  if(changed){
   const latest=await store.getWithMetadata(binding,{type:'json'});
   if(latest)await store.setJSON(binding,{...latest.data,cachedUntil:0},{onlyIfMatch:latest.etag});

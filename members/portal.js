@@ -1240,6 +1240,11 @@ async function mountCalendar(admin=true){
      description.textContent='Reconnect to allow the portal to read event descriptions. Members see descriptions only for events shared with their production.';
      panel.append(description,connectButton('Reconnect Outlook to show notes'));
     }
+    if(admin){
+     const notifications=document.createElement('p');
+     notifications.textContent='In Outlook, use the film’s category to email its members when an event is added or updated. Select both categories to notify both casts.';
+     panel.append(notifications);
+    }
     panel.append(list);
     for(const load of loadOpenedNotes)load();
     if(eventKey&&focusedCalendarEvent!==eventKey){focusedCalendarEvent=eventKey;panel.scrollIntoView({block:'start'});}
