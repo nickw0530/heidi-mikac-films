@@ -161,7 +161,7 @@ async function showSigning(rawUrl,id,container,attempt,recipientName){
  const fallback=()=>{
   if(!current()||session.completed||session.failed)return;
   session.failed=true;clearTimeout(session.timeout);
-  note.textContent='The agreement could not open inside the portal. Use “Open agreement in a new tab” above, then return here to refresh its status.';
+  note.textContent='The agreement could not open inside your Film Portal. Use “Open agreement in a new tab” above, then return here to refresh its status.';
   try{if(typeof session.embed?.close==='function')session.embed.close();}catch{}
   mount.replaceChildren();mount.hidden=true;
  };
@@ -713,13 +713,15 @@ async function load(initial){
  const savedForms=dirty().map(f=>({action:f.dataset.action,id:f.dataset.id,node:f}));
  const openDetails=[...app.querySelectorAll('details[open]')].map(detailKey);
  if(resetTicket&&location.hash){app.innerHTML='<section><h2>Reset your password</h2>'+form('resetPassword',newPassword,'Save new password')+'</section>';return;}
- if(ticket&&location.hash){app.innerHTML='<section><h2>Set up your cast &amp; crew account</h2><p>Choose a password now. The next time you sign in, use the email address that received this invitation.</p>'+form('activate',newPassword,'Create my account')+'<p>If the link expired or was replaced, open the newest invitation or ask production to resend it.</p></section>';return;}
+ if(ticket&&location.hash){app.innerHTML='<section><h2>Set up your Film Portal account</h2><p>Choose a password now. The next time you sign in, use the email address that received this invitation.</p>'+form('activate',newPassword,'Create my account')+'<p>If the link expired or was replaced, open the newest invitation or ask production to resend it.</p></section>';return;}
  let s;try{s=initial||await request('home');}catch(e){if(e.status===401){if(office)return location.reload();return login();}throw e;}
  if(availabilityBusy())return;
  clearAvailability();
  if(office&&!s.admin){location.reload();return;}
  s=orderAdminPeople(s);
  lastState=s;let admin=s.admin;
+ // Members know this as their Film Portal; administrators work in the production office.
+ for(const name of document.querySelectorAll('[data-portal-name]'))name.textContent=admin?'Production office':'Film Portal';
  app.classList.toggle('member-workspace',!admin);
  selectedProduction=s.productionId;
  const params=new URLSearchParams(location.search);
@@ -844,7 +846,7 @@ async function load(initial){
   const availabilityPane='<section class="member-panel member-availability" data-member-view="availability"><h2>My availability</h2><p>Share your availability with the cast and crew of '+escape(s.film)+'.</p><div data-availability-slot></div></section>';
   const eventsPane='<div data-member-view="events"><h2>Events &amp; updates</h2><div id="calendar-slot"></div><section class="member-panel member-board"><h3>Production board</h3>'+(updates||'<p>No updates posted yet.</p>')+'</section></div>';
   const tabs=memberViews.filter(([view])=>assigned||view==='profile'||view==='documents'&&documentsPane);
-  return '<nav class="office-nav member-nav" aria-label="Member dashboard">'+tabs.map(([view,label])=>memberButton(view,label)).join('')+'</nav>'+
+  return '<nav class="office-nav member-nav" aria-label="Film Portal">'+tabs.map(([view,label])=>memberButton(view,label)).join('')+'</nav>'+
    (assigned?home:'')+profilePane+documentsPane+(assigned?availabilityPane+eventsPane:'');
  }
  const reuseWebsiteProfile=m=>m.needsEmail?'':'<div><button type="button" data-find-website-profile="'+escape(m.id)+'">Reuse approved bio or headshot</button><div data-website-profile-sources aria-live="polite"></div></div>';
@@ -1041,7 +1043,7 @@ listen('submit',async e=>{
    if(photo)changes.set('file',await prepareHeadshot(f,photo));
    if(bioChanged)changes.set('bio',data.bio);
    const result=await request(a,changes,id);
-   if(!result.ok||photo&&!result.imageVersion)throw Error('The portal could not confirm the save. Try again.');
+   if(!result.ok||photo&&!result.imageVersion)throw Error('Your Film Portal could not confirm the save. Try again.');
    if(photo)showSavedHeadshot(f,id,result.imageVersion);
    if(bioChanged)bio.defaultValue=data.bio;
    delete f.dataset.dirty;
@@ -1118,7 +1120,7 @@ listen('submit',async e=>{
    if(lastState?.admin){
     const productions=lastState.productionChoices||lastState.productions;
     const published=(result.publishedProductions||[]).map(id=>productions.find(p=>p.id===id)?.name||id);
-    const status=published.length?field+' published on '+new Intl.ListFormat('en',{type:'conjunction'}).format(published)+'.':field+' saved in the portal.';
+    const status=published.length?field+' published on '+new Intl.ListFormat('en',{type:'conjunction'}).format(published)+'.':field+' saved in your Film Portal.';
     profileStatus(f,newerBio?'Unsaved changes':status);
     await combined?.refresh();
     message.textContent=status;
@@ -1481,7 +1483,7 @@ function syncOffice(){
  ensureAvailability();
 
 }
-load(office?.state).catch(e=>{app.textContent='Portal unavailable.';message.textContent=e.message;});
+load(office?.state).catch(e=>{app.textContent='Film Portal unavailable.';message.textContent=e.message;});
 return {
  review(id){
   const list=app.querySelector('[data-review-list]');

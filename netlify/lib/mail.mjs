@@ -7,8 +7,8 @@ export const mailReady=()=>Boolean(process.env.RESEND_API_KEY&&process.env.HMF_M
 export const portalUrl='https://heidimikacfilms.com/members/';
 export const TRACKING_KEY='mail-status/tracking';
 const TRACKING_PAUSE=6*3600000;
-const invitationSubjects=new Set(['Heidi Mikac Films — your cast & crew invitation','Written in the Dark — your cast & crew invitation','Wherein Lies Continue — your cast & crew invitation','Your invitation to Heidi Mikac Films']);
-const personalNotices=new Set([...invitationSubjects,'Reset your portal password','New production task','Document ready for signature','Agreement ready for your signature']);
+const invitationSubjects=new Set(['Heidi Mikac Films — your Film Portal invitation','Heidi Mikac Films — your cast & crew invitation','Written in the Dark — your cast & crew invitation','Wherein Lies Continue — your cast & crew invitation','Your invitation to Heidi Mikac Films']);
+const personalNotices=new Set([...invitationSubjects,'Reset your Film Portal password','Reset your portal password','New production task','Document ready for signature','Agreement ready for your signature']);
 const mailKey=(member,event)=>createHash('sha256').update(member.id+'/'+event).digest('hex');
 const calendarReceipt=(email,event)=>'calendar/recipients/'+event+'/'+createHash('sha256').update(email.trim().toLowerCase()).digest('hex');
 export async function calendarInvitationAccepted(store,member,eventKey){
@@ -35,7 +35,7 @@ export function emailHtml(message){
  const paragraphs=String(message.text).split(/\n\n+/).map(paragraph=>{
   const escaped=escapeHtml(paragraph);
   const linked=escaped.replace(/https:\/\/heidimikacfilms\.com\/members\/(?:\?(?:production=[a-z-]+|event=[\w-]{43}))?(?:#(?:invite|reset)=[a-f0-9]{64})?(?=\s|$)/g,link=>{
-   const label=link.includes('#invite=')?'Set up your account':link.includes('#reset=')?'Reset your password':link.includes('?event=')?'View event':/Film Portal/.test(message.subject)?'Open your Film Portal':'Open your dashboard';
+   const label=link.includes('#invite=')?'Set up your account':link.includes('#reset=')?'Reset your password':link.includes('?event=')?'View event':['Nick','Heidi'].includes(message.id)?'Open your dashboard':'Open your Film Portal';
    return '<a href="'+link+'" style="display:inline-block;background:#803d48;color:#ffffff;padding:12px 20px;border-radius:6px;text-decoration:none;font-weight:bold">'+label+'</a>';
   });
   return '<p style="margin:0 0 20px">'+linked.replace(/\n/g,'<br>')+'</p>';

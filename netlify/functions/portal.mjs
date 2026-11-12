@@ -257,7 +257,7 @@ export default async function handle(req, context) {
     return json({ok:true},{'Set-Cookie':cookie(secret,28800)});
   }
   async function notify(m,event,subject,text,agreementCycle){
-    if(production&&m.email)await enqueue(store,m,event,subject,text+'\n\nOpen your dashboard: '+portalUrl+'?production='+productionId,0,agreementCycle?{agreementCycle,requirementKey:manualAgreementKey(productionId,m.id)}:{});
+    if(production&&m.email)await enqueue(store,m,event,subject,text+'\n\n'+portalUrl+'?production='+productionId,0,agreementCycle?{agreementCycle,requirementKey:manualAgreementKey(productionId,m.id)}:{});
   }
   // Members know the portal as their Film Portal. The email repeats what was posted so it can be
   // read without signing in, and a posted file is attached as well.
@@ -312,7 +312,7 @@ export default async function handle(req, context) {
       if(old&&(!adm||old.adminDigest===adm[1])){
         const ticket=token(),expires=Date.now()+3600000;
         await set('resets/'+hash(ticket),{id:m.id,expires,passwordDigest:old.digest,adminDigest:adm?.[1]||null});
-        await enqueue(store,m,'reset/'+hash(ticket),'Reset your portal password','Use this link within one hour to choose a new password. If you did not request this, ignore this message.\n\n'+portalUrl+'#reset='+ticket,expires);
+        await enqueue(store,m,'reset/'+hash(ticket),'Reset your Film Portal password','Use this link within one hour to choose a new password. If you did not request this, ignore this message.\n\n'+portalUrl+'#reset='+ticket,expires);
       }else if(!adm&&m&&!await isAdminProfile(m)&&!await get('passwords/'+m.id)){
         // Invited but never set a password: there is nothing to reset, so send a fresh invitation instead of silence.
         const current=await store.getWithMetadata('members/'+m.id,{type:'json'});
@@ -320,7 +320,7 @@ export default async function handle(req, context) {
           const ticket=token(),digest=hash(ticket),issuedAt=Date.now(),expires=issuedAt+invitationLifetime;
           await set('tickets/'+digest,{id:m.id,email:who,issuedAt,expires});
           if((await store.setJSON('members/'+m.id,{...current.data,ticket:digest,inviteIssuedAt:issuedAt},{onlyIfMatch:current.etag})).modified)
-            await enqueue(store,m,'invite/'+digest,'Heidi Mikac Films — finish setting up your account','Hi '+m.name+',\n\nYour cast and crew account has no password yet. Choose one here to open your dashboard:\n'+portalUrl+'#invite='+ticket+'\n\nThis link replaces any earlier invitation and expires in seven days. If you did not ask for it, ignore this message.',expires);
+            await enqueue(store,m,'invite/'+digest,'Heidi Mikac Films — finish setting up your account','Hi '+m.name+',\n\nYour Film Portal account has no password yet. Choose one here to open it:\n'+portalUrl+'#invite='+ticket+'\n\nThis link replaces any earlier invitation and expires in seven days. If you did not ask for it, ignore this message.',expires);
         }
       }
     }
@@ -869,7 +869,7 @@ export default async function handle(req, context) {
         const oldIndex='active-email/'+hash(m.email);
         if((await get(oldIndex))?.id===m.id)await store.delete(oldIndex);
       }
-      await enqueue(store,updated,'invite/'+digest,'Heidi Mikac Films — your cast & crew invitation','Hi '+updated.name+',\n\nCreate your cast and crew account, choose your productions, and add your biography, headshot and credits here:\n'+portalUrl+'#invite='+ticket+'\n\nThis invitation expires in seven days. If you receive another invitation, use the newest link.',expires,{invitationDigest:digest});
+      await enqueue(store,updated,'invite/'+digest,'Heidi Mikac Films — your Film Portal invitation','Hi '+updated.name+',\n\nCreate your Film Portal account, choose your productions, and add your biography, headshot and credits here:\n'+portalUrl+'#invite='+ticket+'\n\nThis invitation expires in seven days. If you receive another invitation, use the newest link.',expires,{invitationDigest:digest});
       await invalidate();
       return json({ok:true});
     }catch(error){
