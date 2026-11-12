@@ -673,3 +673,52 @@ test('downloads use the posted title and administrators can remove a posted file
  assert.equal((await call('removeResource',{body:{},id:noteId})).status,404,'Removing twice reports that it is already gone.');
  assert.ok(await context.store.get('members/'+actor),'Removing a board item leaves people untouched.');
 });
+
+test('a countersignature made from SignWell’s email shows on the member’s next page load',async()=>{
+ const context=await fixture();await setAgreement(context,{status:'Waiting on Heidi'});
+ const key=currentAgreementKey(dark,actor),document=context.documents.get('active-doc');
+ document.status='completed';for(const recipient of document.recipients)recipient.status='completed';
+ await context.store.setJSON(key,{...(await context.store.get(key)),checkedAt:Date.now()-5000});
+ assert.equal((await row(dark,'member')).agreement.status,'Waiting on Heidi','A status checked seconds ago is not re-fetched on every load.');
+ await context.store.setJSON(key,{...(await context.store.get(key)),checkedAt:Date.now()-60000});
+ const before=context.calls.length;
+ assert.equal((await row(dark,'Nick')).agreement.status,'Waiting on Heidi','The admin workspace keeps reading saved status.');
+ assert.equal(context.calls.length,before);
+ const member=await row(dark,'member');
+ assert.equal(member.agreement.status,'Complete');
+ assert.ok(member.documents.some(item=>item.kind==='signed'),'The signed copy is offered as soon as the status is known.');
+ await context.store.setJSON(key,{...(await context.store.get(key)),status:'Waiting on Heidi',checkedAt:Date.now()});
+ assert.equal((await call('memberDocument',{who:'member',params:{kind:'signed'}})).status,200,'Opening the signed copy always checks SignWell first.');
+});
+
+test('a signed copy SignWell no longer holds is reported plainly',async()=>{
+ const context=await fixture(),provider=globalThis.fetch;
+ await context.store.setJSON('agreements/'+actor,{id:'historical-doc',status:'Complete'});
+ globalThis.fetch=async(input,options)=>new URL(input).pathname.endsWith('/completed_pdf')?new Response('{}',{status:404}):provider(input,options);
+ let result=await call('memberDocument',{who:'member',params:{kind:'previous-signed'}});
+ assert.equal(result.status,404);assert.match(result.data.error,/no longer holds this agreement/);
+ globalThis.fetch=async(input,options)=>new URL(input).pathname.endsWith('/completed_pdf')?new Response('{}',{status:500}):provider(input,options);
+ result=await call('memberDocument',{who:'member',params:{kind:'previous-signed'}});
+ assert.equal(result.status,503);assert.match(result.data.error,/SignWell returned 500/);
+});
+
+test('forgot-password sends a fresh invitation to someone who never set a password',async()=>{
+ const context=await fixture();
+ const address=other+'@example.invalid';
+ assert.equal(await context.store.get('passwords/'+other),null);
+ const answer=await call('requestReset',{who:null,body:{username:address.toUpperCase()}});
+ assert.equal(answer.status,200);
+ assert.equal(context.notifications.length,1);
+ const [,member,event,subject,text]=context.notifications[0];
+ assert.equal(member.email,address);assert.ok(event.startsWith('invite/'));
+ assert.equal(subject,'Heidi Mikac Films — finish setting up your account');
+ const ticket=text.match(/#invite=([a-f0-9]{64})/)[1];
+ const digest=createHash('sha256').update(ticket).digest('hex');
+ assert.equal((await context.store.get('members/'+other)).ticket,digest,'The new link replaces any earlier invitation.');
+ assert.equal((await context.store.get('tickets/'+digest)).email,address);
+ const activated=await call('activate',{who:null,body:{ticket,password:'a long enough password'}});
+ assert.equal(activated.status,200,JSON.stringify(activated.data));
+ const silent=await call('requestReset',{who:null,body:{username:'nobody@example.invalid'}});
+ assert.deepEqual(silent.data,answer.data,'The reply never reveals whether an address has an account.');
+ assert.equal(context.notifications.length,1);
+});
