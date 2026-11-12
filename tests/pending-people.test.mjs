@@ -198,6 +198,87 @@ test('an invalid or unavailable invite target cannot create an account or invita
  assert.equal(accountRecords(context).length,1);assert.equal(context.notifications.length,0);assert.equal(context.requests.length,0);
 });
 
+test('resending to either email replaces older setup links on the same account',async()=>{
+ const context=await fixture();
+ const previousEmail='original-performer@example.invalid',email='corrected-performer@example.invalid';
+ const name='Invited Performer',password='fixture-password-321';
+ assert.equal((await call('invite',{body:{name,email:previousEmail}})).status,200);
+ const id=context.notifications[0][1].id;
+ const ticket=index=>context.notifications[index][4].match(/#invite=([a-f0-9]{64})/)[1];
+ const activate=value=>call('activate',{who:null,body:{ticket:value,password}});
+ assert.equal((await call('resend',{id,body:{email:previousEmail,expectedEmail:previousEmail}})).status,200);
+ assert.notEqual(ticket(1),ticket(0));
+ assert.ok((await activate(ticket(0))).status>=400,'Same-address resend invalidates the first link before the new link is used.');
+
+ assert.equal((await call('resend',{id,who:'Heidi',body:{email,expectedEmail:previousEmail}})).status,200);
+ assert.equal(context.notifications.length,3);
+ assert.notEqual(ticket(2),ticket(1));
+ assert.deepEqual(context.notifications.map(([,member])=>[member.id,member.email]),[[id,previousEmail],[id,previousEmail],[id,email]]);
+ assert.equal((await context.store.get('members/'+id)).email,email);
+ assert.equal(await context.store.get('active-email/'+digest(previousEmail)),null);
+ assert.equal((await context.store.get('active-email/'+digest(email))).id,id);
+ assert.equal(accountRecords(context).length,2);
+ assert.equal((await call('resend',{id,body:{email:previousEmail,expectedEmail:previousEmail}})).status,409,'A stale form cannot switch the address back.');
+ for(const older of [ticket(0),ticket(1)])assert.ok((await activate(older)).status>=400,'Earlier links remain invalid after the address changes.');
+ assert.equal(await context.store.get('passwords/'+id),null);
+ assert.equal((await activate(ticket(2))).status,200);
+ assert.ok((await activate(ticket(2))).status>=400,'The newest link is single-use.');
+ assert.equal((await call('passwordLogin',{who:null,body:{username:email,password}})).status,200);
+ assert.equal((await call('passwordLogin',{who:null,body:{username:previousEmail,password}})).status,401);
+ assert.equal(context.notifications.length,3);
+});
+
+test('a direct invite to a corrected address cannot create a second same-name account',async()=>{
+ const context=await fixture();
+ const result=await call('invite',{body:{name:'Existing-Member',email:'different-address@example.invalid'}});
+ assert.equal(result.status,409);
+ assert.equal(accountRecords(context).length,1);
+ assert.equal(context.notifications.length,0);
+});
+
+test('an old invite cannot create a password while its replacement is being issued',async()=>{
+ const context=await fixture(),{store}=context;
+ assert.equal((await call('resend',{id:existingId,body:{}})).status,200);
+ const ticket=context.notifications[0][4].match(/#invite=([a-f0-9]{64})/)[1];
+ const activation=()=>call('activate',{who:null,body:{ticket,password:'fixture-password-321'}});
+ const save=store.setJSON.bind(store),paused=Promise.withResolvers(),resume=Promise.withResolvers();
+ store.setJSON=async(key,value,options)=>{
+  if(key.startsWith('tickets/')){paused.resolve();await resume.promise;}
+  return save(key,value,options);
+ };
+ const replacing=call('resend',{id:existingId,body:{}});
+ try{
+  await paused.promise;
+  assert.equal((await activation()).status,409);
+  assert.equal(await store.get('passwords/'+existingId),null);
+ }finally{resume.resolve();}
+ assert.equal((await replacing).status,200);
+ assert.equal((await activation()).status,409);
+ assert.equal(await store.get('passwords/'+existingId),null);
+});
+
+test('only the latest legacy invitation works across unactivated accounts linked to the same catalog profile',async()=>{
+ const context=await fixture();
+ const latest='00000000-0000-4000-8000-000000000082';
+ const previousTicket='d'.repeat(64),latestTicket='e'.repeat(64);
+ const olderExpiry=Date.now()+6*86400000;
+ for(const {id,name,email,ticket,expires} of [
+  {id:existingId,name:'Rachel DeMicco',email:'earlier@example.invalid',ticket:previousTicket,expires:olderExpiry},
+  {id:latest,name:'Rachel DeMicco',email:'correct@example.invalid',ticket:latestTicket,expires:olderExpiry+3600000}
+ ]){
+  const link=digest(ticket);
+  await context.store.setJSON('members/'+id,{id,name,email,ticket:link,generalInvite:true,productions:{},profileLinks:{[dark]:'rachel'}});
+  await context.store.setJSON('tickets/'+link,{id,expires});
+ }
+ const activate=ticket=>call('activate',{who:null,body:{ticket,password:'fixture-password-321'}});
+ assert.ok((await activate(previousTicket)).status>=400,'An older legacy invite fails even before the newer account has been activated.');
+ assert.equal(await context.store.get('passwords/'+existingId),null);
+ assert.equal((await activate(latestTicket)).status,200);
+ assert.ok((await activate(previousTicket)).status>=400,'Activating the corrected account cannot revive the legacy invite.');
+ assert.equal(await context.store.get('passwords/'+existingId),null);
+ assert.equal(context.notifications.length,0);
+});
+
 test('a private no-email profile supports biography, tasks and documents without notifications',async()=>{
  const context=await fixture(),person=await add('Private Profile Performer',[dark]);
  assert.equal((await call('bio',{id:person.id,body:{bio:'A privately saved biography.'}})).status,200);

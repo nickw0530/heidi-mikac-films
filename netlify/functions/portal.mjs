@@ -84,6 +84,7 @@ const sharedBase=m=>darkCatalog.find(x=>x.id===m.filmProfile)||Object.keys(assig
 
 const uuid = /^[a-f0-9-]{36}$/;
 const LOGIN_ATTEMPTS=20,LOGIN_ATTEMPTS_PER_ACCOUNT=200;
+const invitationLifetime=7*86400000;
 function requireThat(ok, message, status=400) {
   if (!ok) throw Object.assign(new Error(message), {status});
 }
@@ -253,6 +254,40 @@ export default async function handle(req, context) {
   async function notify(m,event,subject,text,agreementCycle){
     if(production&&m.email)await enqueue(store,m,event,subject,text+'\n\nOpen your dashboard: '+portalUrl+'?production='+productionId,0,agreementCycle?{agreementCycle,requirementKey:manualAgreementKey(productionId,m.id)}:{});
   }
+  function invitationCatalogIdentity(member){
+    for(const {id} of productions){
+      const profile=findProfile(member,id);
+      if(profile)return id+'/'+profile.id;
+    }
+    return '';
+  }
+  async function holdInvitation(member){
+    const identity=invitationCatalogIdentity(member)||normalizePendingName(member.name)||member.id;
+    const key='invitation-lease/'+hash(identity),record=await store.getWithMetadata(key,{type:'json'});
+    const busy='An invitation is being sent or used for this person. Try again in a moment.';
+    requireThat(!(record?.data?.until>Date.now()),busy,409);
+    const lease=token();
+    requireThat((await store.setJSON(key,{lease,until:Date.now()+120000},record?{onlyIfMatch:record.etag}:{onlyIfNew:true})).modified,busy,409);
+    return async()=>{
+      try{
+        const current=await store.getWithMetadata(key,{type:'json'});
+        if(current?.data?.lease===lease)await store.setJSON(key,{until:0},{onlyIfMatch:current.etag});
+      }catch{/* The reservation expires if it cannot be released early. */}
+    };
+  }
+  async function requireLatestCatalogInvite(member,invitation){
+    const identity=invitationCatalogIdentity(member);
+    if(!identity)return;
+    const issued=invitation.issuedAt??invitation.expires-invitationLifetime;
+    for(const other of await globalRecords('members/')){
+      // Prior versions could issue separate accounts for the same credited profile.
+      if(other.id===member.id||!other.ticket||invitationCatalogIdentity(other)!==identity)continue;
+      const previous=await get('tickets/'+other.ticket);
+      const newer=other.inviteIssuedAt??previous?.issuedAt??(previous?.expires?previous.expires-invitationLifetime:null);
+      requireThat(newer===null||newer<issued,'This invitation has been replaced. Use the most recent email.',409);
+      requireThat(other.revoked||!await get('passwords/'+other.id),'A portal account is already set up for this film credit. Contact production before continuing.',409);
+    }
+  }
   const recoveryAddress=id=>process.env['HMF_'+id.toUpperCase()+'_RECOVERY_EMAIL']||(id==='Nick'?'nick@heidimikacfilms.com':'heidi@heidimikacfilms.com');
   if(action==='requestReset'&&post){
     requireThat(production&&mailReady(),'Password recovery email is unavailable. Contact production.',503);
@@ -285,15 +320,23 @@ export default async function handle(req, context) {
   }
   if(action==='activate'&&post){
     requireThat(/^[a-f0-9]{64}$/.test(body.ticket),'Invalid invitation.');
-    const key='tickets/'+hash(body.ticket), rec=await store.getWithMetadata(key,{type:'json'});
-    requireThat(rec?.data?.expires>Date.now(),'Invitation expired. Ask production to resend it.');
-    const m=await get('members/'+rec.data.id);
-    requireThat(active(m)&&m.ticket===hash(body.ticket),'This invitation has been replaced.');
-    requireThat(!await isAdminProfile(m),'Sign in with your administrator account.',409);
+    const digest=hash(body.ticket),key='tickets/'+digest,invitation=await get(key);
+    requireThat(invitation?.expires>Date.now(),'Invitation expired or already used. Ask production to resend it.');
+    const memberKey='members/'+invitation.id,m=await get(memberKey);
+    const check=member=>requireThat(active(member)&&member.email&&member.ticket===digest&&(!invitation.email||invitation.email===member.email),'This invitation has been replaced. Use the most recent email.',409);
+    check(m);
     const pass=await credential(body.password);
-    const result=await store.setJSON('passwords/'+m.id,pass,{onlyIfNew:true});
-    requireThat(result.modified,'This account already has a password. Sign in instead.');
-    await store.delete(key);return signedIn(m.id);
+    const release=await holdInvitation(m);
+    try{
+      const current=await get(memberKey);
+      check(current);
+      requireThat(invitation.expires>Date.now(),'Invitation expired. Ask production to resend it.');
+      requireThat(!await isAdminProfile(current),'Sign in with your administrator account.',409);
+      await requireLatestCatalogInvite(current,invitation);
+      const result=await store.setJSON('passwords/'+current.id,pass,{onlyIfNew:true});
+      requireThat(result.modified,'This account already has a password. Sign in instead.');
+      await store.delete(key);return await signedIn(current.id);
+    }finally{await release();}
   }
   if(action==='passwordLogin'&&post){
     const who=string(body.username).toLowerCase();
@@ -726,7 +769,7 @@ export default async function handle(req, context) {
   }
   if((action==='invite'||action==='resend')&&post){
     onlyAdmin();requireThat(production&&mailReady(),'Invitation email is awaiting sender setup. No invitation was sent.',503);
-    let m,pending,invitationLease,contact;
+    let m,pending,invitationLease,contact,release;
     try{
       if(action==='invite'){
         const address=email(body.email),accounts=await globalRecords('members/');
@@ -750,6 +793,11 @@ export default async function handle(req, context) {
         // A saved person keeps the same private identity when invited later.
         m={...contact,id:pending?.id||randomUUID(),email:address,name:pending?.name||string(body.name),role:contact?.role||'',generalInvite:true,productions:contact?.productions||{},...(pending?{pendingContact:false,pendingPersonId:pending.id}:{})};
         if(body.filmProfile&&!pending){const base=entry(body.filmProfile);requireThat(base,'Unknown film profile.');m.profileLinks={[productionId]:base.id};}
+        release=await holdInvitation(m);
+        const identity=invitationCatalogIdentity(m);
+        requireThat(!(await globalRecords('members/')).some(other=>active(other)&&other.id!==m.id&&
+          (normalizePendingName(other.name)===normalizePendingName(m.name)||identity&&invitationCatalogIdentity(other)===identity)),
+          'A portal profile already exists for this name or film credit. Open that profile in People to send a new invitation.',409);
         const reserved=await store.setJSON(index,{id:m.id},{onlyIfNew:true});
         if(!reserved.modified){const owner=await get(index);requireThat(pending&&owner?.id===m.id,'An invitation already exists.',409);}
         try{
@@ -768,18 +816,38 @@ export default async function handle(req, context) {
           const saved=await rawStore.setJSON(key,{...person,memberId:m.id,archived:false,updated:Date.now()},{onlyIfMatch:record.etag});
           requireThat(saved.modified,'The invitation record changed. Refresh and use Resend invitation if needed.',409);
         }
-      }else m=await target();
+      }else{m=await target();release=await holdInvitation(m);}
       requireThat(active(m),'Member unavailable.',404);
       if(action==='resend'&&body.expectedEmail!==undefined)
         requireThat(body.expectedEmail===m.email,'The account email changed. Review this recipient again.',409);
       requireThat(m.email,'Add an email address before sending an invitation.',409);
-      requireThat(!await get('passwords/'+m.id),'This person already has a password.');
-      const ticket=token(),expires=Date.now()+7*86400000;
-      await set('tickets/'+hash(ticket),{id:m.id,expires});
       const current=await store.getWithMetadata('members/'+m.id,{type:'json'});
       requireThat(active(current?.data)&&current.data.email===m.email,'This person’s profile changed. Refresh before inviting them.',409);
-      requireThat((await store.setJSON('members/'+m.id,{...current.data,ticket:hash(ticket)},{onlyIfMatch:current.etag})).modified,'This person’s profile changed. Refresh and use Resend invitation.',409);await invalidate();
-      await enqueue(store,m,'invite/'+hash(ticket),'Heidi Mikac Films — your cast & crew invitation','Hi '+m.name+',\n\nCreate your cast and crew account, choose your productions, and add your biography, headshot and credits here:\n'+portalUrl+'#invite='+ticket+'\n\nThis invitation expires in seven days.',expires);
+      requireThat(!await get('passwords/'+m.id),'This person already has a password.');
+      const address=action==='resend'&&body.email!==undefined?email(body.email):m.email;
+      const changed=address!==m.email,index='active-email/'+hash(address);
+      let reserved=false;
+      if(changed){
+        requireThat(body.expectedEmail===m.email,'The account email changed. Review this recipient again.',409);
+        requireThat(!(await globalRecords('members/')).some(other=>active(other)&&other.id!==m.id&&other.email===address),'That email is already used by another profile.',409);
+        reserved=(await store.setJSON(index,{id:m.id},{onlyIfNew:true})).modified;
+        requireThat(reserved||(await get(index))?.id===m.id,'That email is already used by another profile.',409);
+      }
+      const ticket=token(),digest=hash(ticket),issuedAt=Date.now(),expires=issuedAt+invitationLifetime;
+      const updated={...current.data,email:address,ticket:digest,inviteIssuedAt:issuedAt};
+      try{
+        await set('tickets/'+digest,{id:m.id,email:address,issuedAt,expires});
+        requireThat((await store.setJSON('members/'+m.id,updated,{onlyIfMatch:current.etag})).modified,'This person’s profile changed. Refresh and send the invitation again.',409);
+      }catch(error){
+        if(reserved&&(await get('members/'+m.id))?.email!==address)await store.delete(index);
+        throw error;
+      }
+      if(changed){
+        const oldIndex='active-email/'+hash(m.email);
+        if((await get(oldIndex))?.id===m.id)await store.delete(oldIndex);
+      }
+      await enqueue(store,updated,'invite/'+digest,'Heidi Mikac Films — your cast & crew invitation','Hi '+updated.name+',\n\nCreate your cast and crew account, choose your productions, and add your biography, headshot and credits here:\n'+portalUrl+'#invite='+ticket+'\n\nThis invitation expires in seven days. If you receive another invitation, use the newest link.',expires,{invitationDigest:digest});
+      await invalidate();
       return json({ok:true});
     }catch(error){
       if(pending&&invitationLease){
@@ -790,7 +858,7 @@ export default async function handle(req, context) {
         }
       }
       throw error;
-    }
+    }finally{if(release)await release();}
   }
 
   async function reviewProfile(m){

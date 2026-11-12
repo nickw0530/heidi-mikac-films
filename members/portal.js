@@ -374,7 +374,7 @@ function pendingPeoplePanel(state,selected){
  const row=person=>{
   const films=person.productions.map(id=>choices.find(p=>p.id===id)?.name||id).join(' · ')||'Production not selected';
   const edit=person.memberId?'':panel('Edit saved name',form('savePendingPerson',input('name','Name','text',person.name)+fields(person.productions),'Save name',person.id));
-  const invite=person.status==='Email needed'?form('invite','<input type="hidden" name="pendingId" value="'+escape(person.id)+'">'+input('email','Email address','email'),'Add email & send invitation',person.id):person.status==='Invitation pending'?'<p>Invitation sent. Waiting for this person to create their password.</p>'+form('resend','','Resend invitation',person.memberId):'<p>'+escape(person.status)+(person.status==='Account created'?'. Production assignments are available in Settings.':'. Review this account in Settings.')+'</p>';
+  const invite=person.status==='Email needed'?form('invite','<input type="hidden" name="pendingId" value="'+escape(person.id)+'">'+input('email','Email address','email'),'Add email & send invitation',person.id):person.status==='Invitation pending'?'<p>Waiting for this person to create their password. Resending replaces earlier links. To correct the email address, open their profile.</p>'+form('resend','','Resend invitation',person.memberId):'<p>'+escape(person.status)+(person.status==='Account created'?'. Production assignments are available in Settings.':'. Review this account in Settings.')+'</p>';
   return '<details data-pending-person="'+escape(person.id)+'"><summary>'+escape(person.name)+' · '+escape(person.status)+'</summary><p>'+escape(films)+'</p><button type="button" data-open-setup-profile="'+escape(person.profileId||person.memberId||person.id)+'">Open profile</button>'+edit+invite+form('removePendingPerson','<input type="hidden" name="id" value="'+escape(person.id)+'">','Remove from this list',person.id)+'</details>';
  };
  const outstanding=records.filter(p=>p.status!=='Account created'),completed=records.filter(p=>p.status==='Account created');
@@ -392,7 +392,11 @@ function contactName(m){
 }
 function accessControls(m,state){
  if(m.adminProfile)return '';
- return panel('Manage access',(!m.needsEmail&&!m.activated&&state.mailReady?form('resend','','Resend invitation',m.id):'')+
+ const invitation=!m.needsEmail&&!m.activated&&state.mailReady?form('resend',
+  input('email','Invitation email','email',m.email)+'<input type="hidden" name="expectedEmail" value="'+escape(m.email)+'">'+
+  '<p>Use the saved email or enter a corrected one. Each new invitation replaces all earlier links for this account.</p>',
+  'Send new invitation',m.id):'';
+ return panel('Manage access',invitation+
   form('revoke','<label><input type="checkbox" name="keepPublic" checked> Keep public film credits and profile visible</label><p>Uncheck to also remove this account’s public profiles. Access is revoked immediately.</p>','Revoke portal access',m.id));
 }
 function renderPendingPeople(host,state,selected){
@@ -1006,10 +1010,16 @@ listen('change',e=>{
 });
 listen('submit',async e=>{
  e.preventDefault();const f=e.target,a=f.dataset.action,id=f.dataset.id,data=Object.fromEntries(new FormData(f));const button=e.submitter||f.querySelector('button');
+ const inviteEmail=a==='resend'?f.elements.namedItem('email'):null;
+ if(inviteEmail){
+  data.email=data.email.trim().toLowerCase();
+  if(data.email!==data.expectedEmail&&!confirm('Change the account email to '+data.email+' and send a new invitation?'))return;
+ }
  if(a==='publishProfile'&&!confirm('Publish this member’s saved biography and headshot on the public Written in the Dark website?'))return;
  if(a==='removeResource'&&!confirm('Remove this from the production board for everyone? Email already delivered about it cannot be recalled.'))return;
  if((a==='revoke'||a==='sendAgreement'||(a==='agreement'&&button.value==='send'))&&!confirm(a==='revoke'?'Revoke this member’s access immediately?':a==='sendAgreement'?'Send this pending contract to its recipients?':'Create a signing request for this actor and Heidi?'))return;
  button.disabled=true;message.textContent='';
+ if(inviteEmail)inviteEmail.disabled=true;
  const photoInputs=photoForm(a)?[...f.querySelectorAll('input,select,textarea')].filter(control=>!control.disabled):[];
  for(const control of photoInputs)control.disabled=true;
  try{
@@ -1087,6 +1097,10 @@ listen('submit',async e=>{
    return;
   }
   delete f.dataset.dirty;
+  if(inviteEmail){
+   inviteEmail.defaultValue=inviteEmail.value=data.email;
+   f.elements.expectedEmail.value=data.email;
+  }
   if(a==='savePendingPerson'&&!id)f.reset();
   if(office&&!data.preview)office.changed();
   if(a==='linkAdminProfiles'||combined&&a==='choosePassword'){location.reload();return;}
@@ -1130,7 +1144,7 @@ listen('submit',async e=>{
    return;
   }
   if(a==='prepareOfflineCountersign'){await load();message.textContent=result.created?(result.status==='Draft prepared'?'Heidi’s countersignature draft is prepared.':'SignWell is preparing Heidi’s countersignature draft.')+' Review its status under Documents → Uploaded agreements. No signing request has been sent.':'An existing preparation record was found. Review its status under Documents → Uploaded agreements.';return;}
-  await load();message.textContent=['invite','resend'].includes(a)?'Invitation queued for email delivery.':a==='savePendingPerson'?'Name saved. Add their email here when you have it.':a==='removePendingPerson'?'Removed from the setup list.':a==='removeResource'?'Removed from the production board.':['login','passwordLogin','activate'].includes(a)?'':a==='logout'?'Signed out.':'Saved.';
+  await load();message.textContent=a==='resend'?'New invitation queued. Earlier links for this account are invalid.':a==='invite'?'Invitation queued for email delivery.':a==='savePendingPerson'?'Name saved. Add their email here when you have it.':a==='removePendingPerson'?'Removed from the setup list.':a==='removeResource'?'Removed from the production board.':['login','passwordLogin','activate'].includes(a)?'':a==='logout'?'Signed out.':'Saved.';
  }catch(e){
   if(a==='memberProfile'||a==='photo'){
    const reason=e.status===401?'Your session ended. Sign in again and retry.':e.status===413?'The photo is too large to upload. Try a smaller copy.':e.status||!(e instanceof TypeError)?e.message:'Check your connection and try again.';
@@ -1140,6 +1154,7 @@ listen('submit',async e=>{
   else message.textContent=e.message;
  }finally{
   button.disabled=false;
+  if(inviteEmail)inviteEmail.disabled=false;
   for(const control of photoInputs)control.disabled=false;
  }
 });
