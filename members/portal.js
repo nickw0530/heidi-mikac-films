@@ -784,7 +784,7 @@ async function load(initial){
  const audience='<fieldset><legend>Who should receive this?</legend><select name="audience" aria-label="Audience"><option value="all">Include all cast and crew</option><option value="selected">Select individuals</option></select><div data-recipients hidden>'+s.members.map(m=>'<label><input type="checkbox" style="width:auto;display:inline" name="recipient" value="'+escape(m.id)+'"> '+escape(m.name)+' · '+escape(m.role)+'</label>').join('')+'<small>Choose from the portal roster.</small></div></fieldset>';
  const setup=panel('Welcome video',form('welcomeSettings','<label>Direct video URL (MP4)<input type="url" name="video" value="'+escape(s.welcome?.video)+'"></label><label>Thumbnail URL (optional)<input type="url" name="poster" value="'+escape(s.welcome?.poster)+'"></label><label>English captions URL (.vtt)<input type="url" name="captions" value="'+escape(s.welcome?.captions)+'"></label>','Save welcome video'))+
  panel('Post a message',form('notice',audience+input('title','Subject')+'<label>Message<textarea required name="text"></textarea></label>','Post message'))+
- panel('Share a script or call sheet',form('resource',audience+input('title','Title and revision date')+file('Production PDF · up to 4 MB','application/pdf'),'Post file'))+
+ panel('Share a script or call sheet',form('resource',audience+input('title','Title and revision date')+'<label>Message to include (optional)<textarea name="text" maxlength="1000" rows="3"></textarea></label><p>Recipients get an email with this message and the PDF attached.</p>'+file('Production PDF · up to 4 MB','application/pdf'),'Post file'))+
  (s.agreementSupported?panel('Agreement setup',form('master','<p>'+(s.agreementReady?'Approved master installed.':'Install the approved master before previewing or sending.')+'</p>'+file('Approved '+s.film+' contract master','application/pdf'),'Install agreement master')):'<p>Actor agreement sending for this production needs its own approved template.</p>');
  function tasks(m){return (m.tasks||[]).map(t=>'<div><strong>'+escape(t.title)+'</strong> '+(t.done?'Completed':form('finishTask','<input type="hidden" name="task" value="'+escape(t.id)+'">','Mark complete',m.id))+'</div>').join('');}
  function memberView(m){
@@ -876,7 +876,7 @@ async function load(initial){
  const personalMessage=m=>panel(m.needsEmail?'Save a message for this person':'Send a message',form('notice','<p>For '+escape(m.name)+' · '+escape(s.film)+'</p><input type="hidden" name="audience" value="selected"><input type="hidden" name="recipient" value="'+escape(m.id)+'">'+input('title','Subject')+'<label>Message<textarea required name="text"></textarea></label>',m.needsEmail?'Save message':'Send to '+escape(m.name),m.id));
  function filmPersonCard(member){
   const documentFields='<p>For '+escape(member.name)+' · '+escape(s.film)+'</p>'+
-   '<input type="hidden" name="audience" value="selected"><input type="hidden" name="recipient" value="'+escape(member.id)+'">'+input('title','Document title')+file('PDF · up to 4 MB','application/pdf');
+   '<input type="hidden" name="audience" value="selected"><input type="hidden" name="recipient" value="'+escape(member.id)+'">'+input('title','Document title')+'<label>Message to include (optional)<textarea name="text" maxlength="1000" rows="3"></textarea></label><p>Recipients get an email with this message and the PDF attached.</p>'+file('PDF · up to 4 MB','application/pdf');
   const availability='<details data-availability-panel data-availability-person="'+escape(member.id)+'"><summary>Availability calendar</summary><div data-availability-slot></div></details>';
   const assignment=member.productions[s.productionId];
   const credits=[assignment?.character&&'Character · '+assignment.character,assignment?.crewTitle&&'Crew title · '+assignment.crewTitle].filter(Boolean);
@@ -896,7 +896,7 @@ async function load(initial){
   return profile?catalogCard(profile):'<p>This website profile is now linked. Return to People to open the account.</p>';
  };
  const account=s.passwordSet?'':'<section><h2>Set your password</h2><p>Your sign-in name is <strong>'+escape(admin?s.self:s.members[0].email)+'</strong>.</p>'+form('choosePassword',newPassword,'Save my password')+'</section>';
- const updates=s.resources.map(r=>'<section><small>'+escape(new Date(r.created).toLocaleDateString())+' · '+escape(r.type)+'</small><h3>'+escape(r.title)+'</h3>'+(r.type==='PDF'?'<a href="'+escape(url('resource',r.id))+'">Download PDF</a>':'<p>'+escape(r.text)+'</p>')+(admin?form('removeResource','',r.type==='PDF'?'Remove file':'Remove message',r.id):'')+'</section>').join('');
+ const updates=s.resources.map(r=>'<section><small>'+escape(new Date(r.created).toLocaleDateString())+' · '+escape(r.type)+'</small><h3>'+escape(r.title)+'</h3>'+(r.type==='PDF'?(r.text?'<p>'+escape(r.text)+'</p>':'')+'<a href="'+escape(url('resource',r.id))+'">Download PDF</a>':'<p>'+escape(r.text)+'</p>')+(admin?form('removeResource','',r.type==='PDF'?'Remove file':'Remove message',r.id):'')+'</section>').join('');
  const castAccounts=s.members.filter(m=>!m.adminProfile&&!m.needsEmail);
  const counts='<div class="metrics"><div><b>'+people.length+'</b><span>Production roster</span></div><div><b>'+castAccounts.length+'</b><span>Portal accounts</span></div><div><b>'+castAccounts.filter(m=>m.activated).length+'</b><span>Activated accounts</span></div><div><b>'+castAccounts.filter(m=>!outstanding(m).gaps.some(x=>['Bio','Headshot'].includes(x))).length+'</b><span>Complete account profiles</span></div></div>';
  const mailRows=[...(s.mailQueue||[]).map(x=>({...x,status:x.lastError?'Retry scheduled':'Queued'})),...(s.mailLog||[])];
@@ -1084,6 +1084,7 @@ listen('submit',async e=>{
   }
   if(a==='savePendingPerson')data.productions=new FormData(f).getAll('pendingProduction');
   const targetParams=new URLSearchParams({title:data.title||''});
+  if(a==='resource'&&data.text?.trim())targetParams.set('text',data.text.trim());
   if(data.audience){data.recipients=new FormData(f).getAll('recipient');if(data.audience==='selected'&&!data.recipients.length)throw Error('Select at least one recipient.');targetParams.set('audience',data.audience);for(const who of data.recipients)targetParams.append('recipient',who);}
   const actionProduction=(a==='adminTask'?data.actionProduction:f.dataset.production)||selectedProduction;
   const result=await request(a,data.file||data,id,a==='offline'?'&'+new URLSearchParams({status:data.status}):a==='photo'?'&'+new URLSearchParams({filename:data.file.name}):data.title&&data.file?'&'+targetParams:'',actionProduction);
