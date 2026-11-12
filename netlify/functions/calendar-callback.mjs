@@ -172,8 +172,8 @@ export async function eventNotes(store,admin,eventKey,member){
  return Response.json({notes:characters.slice(0,maxNoteLength).join(''),truncated:characters.length>maxNoteLength},{headers});
 }
 const notices={
- new:['New event on the production calendar','A new event has been added to the Heidi Mikac Films members portal.'],
- updated:['Production calendar event updated','An event in the Heidi Mikac Films members portal has changed.'],
+ new:['New event on the production calendar','A new event has been added to your Heidi Mikac Films Film Portal.'],
+ updated:['Production calendar event updated','An event in your Heidi Mikac Films Film Portal has changed.'],
  cancelled:['Production calendar event cancelled','A previously announced Heidi Mikac Films calendar event has been cancelled. Sign in to see its status.']
 };
 
