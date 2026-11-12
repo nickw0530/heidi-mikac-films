@@ -22,9 +22,10 @@ export function documentStatus(d){
 }
 export const SIGNING_REFRESH_INTERVAL=300000;
 
-export async function refreshAgreement(store,key,force=false,timeoutMs=15000){
+// maxAge is how long a stored status is trusted before asking SignWell again.
+export async function refreshAgreement(store,key,force=false,timeoutMs=15000,maxAge=SIGNING_REFRESH_INTERVAL){
  const record=await store.getWithMetadata(key,{type:'json'}),a=record?.data;
- if(!a?.id||a.cleared||a.status==='Complete'||a.sendLeaseUntil>Date.now()||(!force&&Date.now()-(a.checkedAt||0)<SIGNING_REFRESH_INTERVAL))return a;
+ if(!a?.id||a.cleared||a.status==='Complete'||a.sendLeaseUntil>Date.now()||(!force&&Date.now()-(a.checkedAt||0)<maxAge))return a;
  let next;
  try{
   const d=await signwell('documents/'+encodeURIComponent(a.id)+'/',undefined,timeoutMs);
@@ -42,7 +43,8 @@ export async function completedAgreementPdf(id){
  const response=await fetch('https://www.signwell.com/api/v1/documents/'+encodeURIComponent(id)+'/completed_pdf?audit_page=true&url_only=false',{
   headers:{'X-Api-Key':process.env.SIGNWELL_API_KEY,Accept:'application/pdf'},signal:AbortSignal.timeout(20000)
  });
- if(!response.ok)throw Object.assign(Error('The signed PDF is unavailable from SignWell. Please try again shortly.'),{status:503});
+ if(response.status===404||response.status===410)throw Object.assign(Error('SignWell no longer holds this agreement, so it cannot be downloaded here. Ask production for a copy.'),{status:404});
+ if(!response.ok)throw Object.assign(Error('The signed PDF is unavailable from SignWell right now (SignWell returned '+response.status+'). Please try again shortly.'),{status:503});
  const bytes=new Uint8Array(await response.arrayBuffer());
  if(String.fromCharCode(...bytes.subarray(0,5))!=='%PDF-')throw Object.assign(Error('The signed PDF is still being prepared. Please try again shortly.'),{status:503});
  return bytes;

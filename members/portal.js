@@ -1017,7 +1017,7 @@ listen('submit',async e=>{
  }
  if(a==='publishProfile'&&!confirm('Publish this member’s saved biography and headshot on the public Written in the Dark website?'))return;
  if(a==='removeResource'&&!confirm('Remove this from the production board for everyone? Email already delivered about it cannot be recalled.'))return;
- if((a==='revoke'||a==='sendAgreement'||(a==='agreement'&&button.value==='send'))&&!confirm(a==='revoke'?'Revoke this member’s access immediately?':a==='sendAgreement'?'Send this pending contract to its recipients?':'Create a signing request for this actor and Heidi?'))return;
+ if((a==='revoke'||a==='sendAgreement'||(a==='agreement'&&button.value==='send'))&&!confirm(a==='revoke'?'Revoke this member’s access immediately?':a==='sendAgreement'?'Send this pending contract to its recipients?':'Create a signing request for this person and Heidi?'))return;
  button.disabled=true;message.textContent='';
  if(inviteEmail)inviteEmail.disabled=true;
  const photoInputs=photoForm(a)?[...f.querySelectorAll('input,select,textarea')].filter(control=>!control.disabled):[];
@@ -1157,6 +1157,24 @@ listen('submit',async e=>{
   if(inviteEmail)inviteEmail.disabled=false;
   for(const control of photoInputs)control.disabled=false;
  }
+});
+// Documents download in place, so a failure shows a readable message instead of a raw error page.
+listen('click',async e=>{
+ const link=e.target.closest('a[href]');
+ if(!link||!/[?&]action=(memberDocument|resource|offline)(&|$)/.test(link.getAttribute('href'))||link.dataset.busy)return;
+ e.preventDefault();link.dataset.busy='true';message.textContent='Preparing '+link.textContent.trim()+'…';
+ try{
+  const response=await fetch(link.href,{cache:'no-store'});
+  if(!response.ok){const failure=await response.json().catch(()=>({}));throw Error(failure.error||'This document could not be downloaded. Please try again.');}
+  const header=response.headers.get('content-disposition')||'',encoded=header.match(/filename\*=UTF-8''([^;]+)/i)?.[1],plain=header.match(/filename="([^"]+)"/i)?.[1];
+  // The plain-letters name is used: some browsers discard a saved name containing symbols such as “·”.
+  let name=plain;try{if(!name&&encoded)name=decodeURIComponent(encoded);}catch{}
+  name=name||'document.pdf';
+  const href=URL.createObjectURL(await response.blob()),save=document.createElement('a');
+  save.href=href;save.download=name;document.body.append(save);save.click();save.remove();setTimeout(()=>URL.revokeObjectURL(href),60000);
+  message.textContent='Downloaded '+name+'.';
+ }catch(error){message.textContent=error.message;}
+ finally{delete link.dataset.busy;}
 });
 listen('click',async e=>{
  const button=e.target.closest('button[data-find-website-profile]');

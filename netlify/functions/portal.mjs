@@ -83,6 +83,7 @@ const findProfile=(m,productionId)=>{
 const sharedBase=m=>darkCatalog.find(x=>x.id===m.filmProfile)||Object.keys(assignments(m)).map(id=>findProfile(m,id)).find(Boolean);
 
 const uuid = /^[a-f0-9-]{36}$/;
+const MEMBER_STATUS_MAX_AGE=30000;
 const LOGIN_ATTEMPTS=20,LOGIN_ATTEMPTS_PER_ACCOUNT=200;
 const invitationLifetime=7*86400000;
 function requireThat(ok, message, status=400) {
@@ -301,6 +302,15 @@ export default async function handle(req, context) {
         const ticket=token(),expires=Date.now()+3600000;
         await set('resets/'+hash(ticket),{id:m.id,expires,passwordDigest:old.digest,adminDigest:adm?.[1]||null});
         await enqueue(store,m,'reset/'+hash(ticket),'Reset your portal password','Use this link within one hour to choose a new password. If you did not request this, ignore this message.\n\n'+portalUrl+'#reset='+ticket,expires);
+      }else if(!adm&&m&&!await isAdminProfile(m)&&!await get('passwords/'+m.id)){
+        // Invited but never set a password: there is nothing to reset, so send a fresh invitation instead of silence.
+        const current=await store.getWithMetadata('members/'+m.id,{type:'json'});
+        if(active(current?.data)&&current.data.email===who){
+          const ticket=token(),digest=hash(ticket),issuedAt=Date.now(),expires=issuedAt+invitationLifetime;
+          await set('tickets/'+digest,{id:m.id,email:who,issuedAt,expires});
+          if((await store.setJSON('members/'+m.id,{...current.data,ticket:digest,inviteIssuedAt:issuedAt},{onlyIfMatch:current.etag})).modified)
+            await enqueue(store,m,'invite/'+digest,'Heidi Mikac Films — finish setting up your account','Hi '+m.name+',\n\nYour cast and crew account has no password yet. Choose one here to open your dashboard:\n'+portalUrl+'#invite='+ticket+'\n\nThis link replaces any earlier invitation and expires in seven days. If you did not ask for it, ignore this message.',expires);
+        }
       }
     }
     return json({ok:true,message:'If that account is eligible, a password reset email will arrive shortly. Check spam too.'});
@@ -569,7 +579,7 @@ export default async function handle(req, context) {
       requireThat(agreement?.id&&agreement.status==='Complete','No previous completed agreement available.',404);
       bytes=await completedAgreementPdf(agreement.id);label='previous-signed-agreement';
     }else if(kind==='signed'){
-      const agreement=await refreshAgreement(store,'agreements/'+member.id);
+      const agreement=await refreshAgreement(store,'agreements/'+member.id,true);
       requireThat(agreement?.id&&agreement.status==='Complete','No completed agreement available.',404);
       bytes=await completedAgreementPdf(agreement.id);label='signed-agreement';
     }else{
@@ -694,7 +704,9 @@ export default async function handle(req, context) {
       const [profile,photo,agreement,tasks,password]=await Promise.all([
         member.draftProfile?.bio!==undefined?{bio:member.draftProfile.bio}:get('profiles/'+member.id),
         store.getMetadata(imageKey),
-        assignment?(admin?get(agreementKey):refreshAgreement(store,agreementKey)):null,
+        // A member's own page checks their one agreement again after a short wait, so a
+        // countersignature made from SignWell's email shows without a five-minute lag.
+        assignment?(admin?get(agreementKey):refreshAgreement(store,agreementKey,false,15000,MEMBER_STATUS_MAX_AGE)):null,
         assignment&&!adminProfile?list('tasks/'+member.id+'/'):[],
         adminProfile?null:get('passwords/'+member.id),
       ]);
@@ -1256,7 +1268,7 @@ export default async function handle(req, context) {
     requireThat(/^\d{1,5}(\.\d{1,2})?$/.test(t.rate),'Enter a daily rate.');
     requireThat(/^\d{4}-\d{2}-\d{2}$/.test(t.date)&&!Number.isNaN(Date.parse(t.date))&&new Date(t.date).toISOString().slice(0,10)===t.date,'Enter a valid agreement date.');
     const heidi=COUNTERSIGN_EMAIL;
-    requireThat(body.preview||heidi!==m.email,'Actor and countersigner need separate addresses.');
+    requireThat(body.preview||heidi!==m.email,'The signer and the countersigner need separate email addresses.');
     const master=await store.get('contract/master',{type:'arrayBuffer'});requireThat(master,'Upload the private agreement master first.');
     const bytes=await packet(master,t);
     if(body.preview)return new Response(bytes,{headers:{...headers,'Content-Type':'application/pdf'}});
@@ -1270,7 +1282,7 @@ export default async function handle(req, context) {
     let d;try{
       // The cycle-specific reservation allows one current request per person and film.
 
-      d=await signwell('documents/',{test_mode:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes'),name:film+' — '+t.legal+' · '+AGREEMENT_CYCLE,files:[{name:'Actor Agreement.pdf',file_base64:bytes.toString('base64')}],recipients:[{id:'1',name:t.legal,email:m.email},{id:'2',name:'Heidi Mikac',email:heidi,send_email:true}],apply_signing_order:true,embedded_signing:true,text_tags:true});
+      d=await signwell('documents/',{test_mode:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes'),name:film+' — '+t.legal+' · '+AGREEMENT_CYCLE,files:[{name:'Agreement.pdf',file_base64:bytes.toString('base64')}],recipients:[{id:'1',name:t.legal,email:m.email,send_email:true},{id:'2',name:'Heidi Mikac',email:heidi,send_email:true}],apply_signing_order:true,embedded_signing:true,text_tags:true});
     }catch(e){await set(key,{cycle:AGREEMENT_CYCLE,status:'Needs recovery — check SignWell',created:Date.now(),recipientEmail:heidi,name:film+' — '+t.legal+' · '+AGREEMENT_CYCLE});throw e;}
     await set(key,{id:d.id,cycle:AGREEMENT_CYCLE,status:documentStatus(d),providerStatus:String(d.status||'').toLowerCase(),testMode:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes'),name:film+' — '+t.legal+' · '+AGREEMENT_CYCLE,recipientEmail:heidi,created:Date.now(),checkedAt:Date.now()});
     if(documentStatus(d)!=='Draft ready to send')await notify(m,d.id,'Document ready for signature','Your new agreement is ready to review and sign.',AGREEMENT_CYCLE);return json({ok:true});
