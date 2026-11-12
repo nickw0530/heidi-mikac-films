@@ -722,3 +722,29 @@ test('forgot-password sends a fresh invitation to someone who never set a passwo
  assert.deepEqual(silent.data,answer.data,'The reply never reveals whether an address has an account.');
  assert.equal(context.notifications.length,1);
 });
+
+test('posted messages and files are announced as Film Portal email, with the file attached',async()=>{
+ const context=await fixture();
+ const posted=await call('notice',{body:{audience:'selected',recipients:[actor],title:'Parking for Saturday',text:'Park behind the building.'}});
+ assert.equal(posted.status,200);
+ let [,member,event,subject,text,,options]=context.notifications.at(-1);
+ assert.equal(member.id,actor);
+ assert.equal(subject,'New message on your Film Portal · Parking for Saturday');
+ assert.ok(text.startsWith('The following message is on your Film Portal for Written in the Dark:\n\nParking for Saturday\n\nPark behind the building.\n\n'),text);
+ assert.ok(text.endsWith('https://heidimikacfilms.com/members/?production=written-in-the-dark'));
+ assert.deepEqual(options,{},'A message without a file carries no attachment.');
+ assert.ok((await context.store.get('resources/'+event)).text);
+
+ const before=context.notifications.length,pdf=new Blob(['%PDF-1.7\nCall sheet\n%%EOF']);
+ const filed=await call('resource',{body:pdf,production:lies,params:{title:'Call sheet · Day 3 / rev 11/08',text:' Bring layers. ',audience:'selected',recipient:actor}});
+ assert.equal(filed.status,200,JSON.stringify(filed.data));
+ assert.equal(context.notifications.length,before+1,'Only the chosen person is emailed.');
+ [,member,event,subject,text,,options]=context.notifications.at(-1);
+ assert.equal(subject,'New file on your Film Portal · Call sheet · Day 3 / rev 11/08');
+ assert.ok(text.includes('The following file is on your Film Portal for Wherein Lies Continue:')&&text.includes('\n\nBring layers.\n\n')&&text.includes('The file is attached to this email.'),text);
+ assert.deepEqual(options,{attachmentKey:'productions/'+lies+'/files/'+event,attachmentName:'Call sheet - Day 3 - rev 11-08.pdf'});
+ assert.ok(await context.store.get(options.attachmentKey),'The attachment points at the stored file for that production.');
+ assert.equal((await context.store.get('productions/'+lies+'/resources/'+event)).text,'Bring layers.');
+ const long=await call('resource',{body:pdf,params:{title:'Too long',text:'x'.repeat(1001),audience:'selected',recipient:actor}});
+ assert.equal(long.status,400);
+});

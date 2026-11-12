@@ -102,6 +102,10 @@ const headers={'Cache-Control':'private, no-store','X-Content-Type-Options':'nos
 const cookie=(key,age)=>'__Host-hmf='+key+'; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age='+age;
 const json=(value,extra={})=>Response.json(value,{headers:{...headers,...extra}});
 // Downloads carry the title production gave them, made safe for any filesystem.
+// The plain-letters file name, for email attachments.
+function attachmentName(title,fallback='production-document'){
+  return attachment(title,fallback).match(/filename="([^"]+)"/)[1];
+}
 function attachment(title,fallback='production-document'){
   const clean=String(title||'').normalize('NFKC').replace(/[\u0000-\u001f\u007f]/g,' ').replace(/[\\/:*?"<>|]/g,'-').replace(/\s+/g,' ').replace(/^[\s.-]+|[\s.-]+$/g,'').slice(0,120).trim()||fallback;
   const name=/\.pdf$/i.test(clean)?clean:clean+'.pdf';
@@ -254,6 +258,13 @@ export default async function handle(req, context) {
   }
   async function notify(m,event,subject,text,agreementCycle){
     if(production&&m.email)await enqueue(store,m,event,subject,text+'\n\nOpen your dashboard: '+portalUrl+'?production='+productionId,0,agreementCycle?{agreementCycle,requirementKey:manualAgreementKey(productionId,m.id)}:{});
+  }
+  // Members know the portal as their Film Portal. The email repeats what was posted so it can be
+  // read without signing in, and a posted file is attached as well.
+  async function announce(m,id,resource,file){
+    if(!production||!m.email)return;
+    const text=['The following '+(file?'file':'message')+' is on your Film Portal for '+film+':',resource.title,resource.text,file?'The file is attached to this email. It also stays in your Film Portal under Documents.':'',portalUrl+'?production='+productionId].filter(Boolean).join('\n\n');
+    await enqueue(store,m,id,file?'New file on your Film Portal · '+resource.title:'New message on your Film Portal · '+resource.title,text,0,file?{attachmentKey:scoped('files/'+id),attachmentName:attachmentName(resource.title)}:{});
   }
   function invitationCatalogIdentity(member){
     for(const {id} of productions){
@@ -1231,10 +1242,10 @@ export default async function handle(req, context) {
     const bytes=Buffer.from(await req.arrayBuffer());
     requireThat(bytes.length>0&&bytes.length<=4*1024*1024,'Choose a file up to 4 MB.');
     if(action==='master'){requireThat(hash(bytes)===(productionId==='written-in-the-dark'?'8437469c10b4a2ebd322adb8fd4c4e246abb2a0e26043a7c4129dffee92e6626':'0777d2cf63f99e584091be91442d9c77f8fe835e738c56308e82c328a49a2be8'),'Choose the approved contract master for this production.');await store.set('contract/master',bytes);}
-    else {requireThat(bytes.subarray(0,5).toString()==='%PDF-','Choose a PDF.');const group=await recipients(url.searchParams.get('audience'),url.searchParams.getAll('recipient'));const id=randomUUID(),title=string(url.searchParams.get('title'));await store.set('files/'+id,bytes);await set('resources/'+id,{id,title,audience:group.audience,type:'PDF',created:Date.now()});await Promise.all(group.recipients.map(m=>notify(m,id,'New production file','Production posted a new file for '+film+'.')));}
+    else {requireThat(bytes.subarray(0,5).toString()==='%PDF-','Choose a PDF.');const group=await recipients(url.searchParams.get('audience'),url.searchParams.getAll('recipient'));const id=randomUUID(),title=string(url.searchParams.get('title')),note=url.searchParams.get('text')?.trim()||'';requireThat(note.length<=1000,'Keep the message with a file within 1,000 characters.');const resource={id,title,...(note?{text:note}:{}),audience:group.audience,type:'PDF',created:Date.now()};await store.set('files/'+id,bytes);await set('resources/'+id,resource);await Promise.all(group.recipients.map(m=>announce(m,id,resource,true)));}
     return json({ok:true});
   }
-  if(action==='notice'&&post){onlyAdmin();const group=await recipients(body.audience,body.recipients);const id=randomUUID();await set('resources/'+id,{id,title:string(body.title),text:string(body.text,5000),audience:group.audience,type:'Update',created:Date.now()});await Promise.all(group.recipients.map(m=>notify(m,id,'New production message','You have a new message from production.')));return json({ok:true});}
+  if(action==='notice'&&post){onlyAdmin();const group=await recipients(body.audience,body.recipients);const id=randomUUID(),resource={id,title:string(body.title),text:string(body.text,5000),audience:group.audience,type:'Update',created:Date.now()};await set('resources/'+id,resource);await Promise.all(group.recipients.map(m=>announce(m,id,resource,false)));return json({ok:true});}
   if(action==='removeResource'&&post){
     onlyAdmin();requireThat(uuid.test(uid),'Invalid message or file.');
     const resource=await get('resources/'+uid);requireThat(resource,'This message or file was already removed.',404);

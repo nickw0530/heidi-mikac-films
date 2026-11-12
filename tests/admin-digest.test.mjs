@@ -148,3 +148,25 @@ test('a send-only provider key is reported once instead of on every row',async()
  assert.equal(await store.get(TRACKING_KEY),null,'A working key clears the notice.');
  assert.equal((await store.get('mail-log/1')).status,'delivered');
 });
+
+test('a queued file notice is sent with its PDF attached, and never after the file is removed',async()=>{
+ const store=fixture();process.env.RESEND_API_KEY='test-only';process.env.HMF_MAIL_FROM='Production <test@example.invalid>';
+ const member={id:'00000000-0000-4000-8000-000000000071',name:'Sample Actor',email:'actor@example.invalid',productions:{}};
+ await store.setJSON('members/'+member.id,member);
+ const bytes=Buffer.from('%PDF-1.7\nCall sheet\n%%EOF');
+ store.data.set('files/one',{value:bytes,etag:'f1'});
+ await enqueue(store,member,'one','New file on your Film Portal · Call sheet','The following file is on your Film Portal for Written in the Dark:\n\nCall sheet\n\nhttps://heidimikacfilms.com/members/?production=written-in-the-dark',0,{attachmentKey:'files/one',attachmentName:'Call sheet.pdf'});
+ await enqueue(store,member,'two','New file on your Film Portal · Removed','Body',0,{attachmentKey:'files/gone',attachmentName:'Removed.pdf'});
+ await enqueue(store,member,'three','New message on your Film Portal · Parking','Body\n\nhttps://heidimikacfilms.com/members/?production=written-in-the-dark');
+ const sent=[];
+ globalThis.fetch=async(url,options)=>{if(options?.method==='POST')sent.push(JSON.parse(options.body));return Response.json({id:'provider-'+sent.length});};
+ await deliver(store);
+ assert.deepEqual(sent.map(mail=>mail.subject).sort(),['New file on your Film Portal · Call sheet','New message on your Film Portal · Parking']);
+ const withFile=sent.find(mail=>mail.subject.includes('Call sheet'));
+ assert.deepEqual(withFile.attachments,[{filename:'Call sheet.pdf',content:bytes.toString('base64')}]);
+ assert.ok(withFile.html.includes('>Open your Film Portal</a>'));
+ assert.equal(sent.find(mail=>mail.subject.includes('Parking')).attachments,undefined);
+ const logs=[...store.data].filter(([key])=>key.startsWith('mail-log/')).map(([,record])=>record.value);
+ assert.ok(logs.some(log=>log.subject.includes('Removed')&&log.status==='Not sent — file removed'));
+ assert.equal([...store.data.keys()].filter(key=>key.startsWith('outbox/')).length,0);
+});
