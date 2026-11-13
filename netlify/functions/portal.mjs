@@ -17,6 +17,7 @@ import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 
 import {promisify} from 'node:util';
 import {enqueue, mailReady, portalUrl} from '../lib/mail.mjs';
+import {homepagePromoKey, initialHomepagePromo, promoSettings, validatePromo} from '../lib/homepage-promo.mjs';
 const derive=promisify(scrypt);
 async function credential(password){
  requireThat(typeof password==='string'&&password.length>=12&&password.length<=128,'Choose a password between 12 and 128 characters.');
@@ -225,6 +226,12 @@ export default async function handle(req, context) {
   requireThat(post||req.method==='GET','Unsupported method.',405);
   if(post) requireThat(req.headers.get('origin')===url.origin,'Origin rejected.',403);
   const entry=id=>catalog.find(item=>item.id===id);
+  if(!post&&action==='homepagePromo'){
+    const promo=await get(homepagePromoKey)??initialHomepagePromo;
+    if(!promo.enabled)return json({enabled:false});
+    const {videoId,title,buttonLabel,buttonPath}=promo;
+    return json({enabled:true,videoId,title,buttonLabel,buttonPath});
+  }
   if(!post&&action==='published'){
     // Hidden entries exist only to suppress a card already printed on a film website.
     // People without such a card are left out, so hiding someone never names them here.
@@ -443,6 +450,17 @@ export default async function handle(req, context) {
   requireThat((session.passwordVersion||0)===((await get('passwords/'+self))?.version||0),'Please sign in again.',401);
   if(action==='logout'&&post){await store.delete(sessionKey);return json({}, {'Set-Cookie':cookie('',0)});}
   const onlyAdmin=()=>requireThat(admin,'Administrator access required.',403);
+  if(action==='homepagePromoSettings'){
+    onlyAdmin();
+    const record=await store.getWithMetadata(homepagePromoKey,{type:'json'});
+    if(!post)return json(promoSettings(record));
+    const changed='The promo changed since you opened it. Reload this page before saving again.';
+    requireThat(body?.revision===(record?.etag??''),changed,409);
+    const promo=validatePromo(body,requireThat);
+    const saved=await store.setJSON(homepagePromoKey,promo,record?{onlyIfMatch:record.etag}:{onlyIfNew:true});
+    requireThat(saved.modified,changed,409);
+    return json(promoSettings({data:promo,etag:saved.etag}));
+  }
   if(!admin)requireThat(!await isAdminProfile(account),'Sign in with your administrator account.',401);
   if(post&&['resend','reviewProduction','revoke','trackPaperwork','task','finishTask','agreement','sendAgreement','recoverAgreement'].includes(action))
     requireThat(!await isAdminProfile(uid),'This profile is managed through an administrator account and has no personal requirements.',409);

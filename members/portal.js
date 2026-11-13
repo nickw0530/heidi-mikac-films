@@ -4,7 +4,7 @@ import {mountFilmingAvailability} from './filming-availability.js';
 import {mountReports} from './reports.js';
 import {mountBulkActions} from './bulk-actions.js';
 import {headshotAccept,selectHeadshot,prepareHeadshot,clearHeadshotPreview} from './headshot-editor.js';
-const officeTabs=[['overview','Overview'],['people','People'],['documents','Documents'],['messages','Messages & files'],['availability','Filming availability'],['calendar','Events'],['reports','Reports'],['settings','Settings']];
+const officeTabs=[['overview','Overview'],['people','People'],['documents','Documents'],['messages','Messages & files'],['availability','Filming availability'],['calendar','Events'],['reports','Reports'],['website','Website'],['settings','Settings']];
 const castPlacements=[['','Website default'],['lead','Lead Cast'],['supporting','Supporting Cast'],['additional','Additional Cast'],['crew','Creative Team & Crew']];
 const directoryFilters=[
  ['all','Everyone'],['setup','Account setup needed'],['catalog','Website profiles to link'],
@@ -418,6 +418,45 @@ function renderPendingPeople(host,state,selected){
  for(const details of host.querySelectorAll('details'))if(expanded.includes(details.dataset.pendingPerson||details.querySelector(':scope > summary')?.textContent))details.open=true;
 }
 
+const homepagePromoPanel='<section data-homepage-promo-settings hidden><h2>Homepage Promo</h2>'+
+ '<p>Feature a video at the top of heidimikacfilms.com. Turn it off to bring back the standard homepage banner.</p>'+
+ '<div data-promo-fields></div><p><a href="/" target="_blank" rel="noopener">View homepage ↗</a></p></section>';
+
+function updatePromoForm(f, settings){
+ const {enabled,videoUrl,title,buttonLabel,buttonPath,revision}=settings;
+ const fields=f.elements;
+ fields.enabled.defaultChecked=fields.enabled.checked=enabled;
+ for(const [name,value] of Object.entries({videoUrl,title,buttonLabel,buttonPath,revision})){
+  fields[name].value=fields[name].defaultValue=value;
+ }
+ f.querySelector('[data-promo-status]').textContent=enabled?'Promo is on.':'Promo is off.';
+}
+
+async function openHomepagePromoSettings(panel){
+ panel.hidden=false;
+ const slot=panel.querySelector('[data-promo-fields]');
+ if(slot.hasChildNodes())return;
+ slot.textContent='Loading promo settings…';
+ try{
+  const settings=await request('homepagePromoSettings');
+  slot.innerHTML=form('homepagePromoSettings',
+   '<p role="status" data-promo-status></p><input type="hidden" name="revision">'+
+   '<label><input type="checkbox" name="enabled"> Show promo on homepage</label>'+
+   '<label>Video title<input name="title" maxlength="120"></label>'+
+   '<label>YouTube link<input name="videoUrl" type="url" maxlength="500" placeholder="https://youtu.be/…"></label>'+
+   '<label>Button label <small>(optional)</small><input name="buttonLabel" maxlength="40" placeholder="Shop Merch"></label>'+
+   '<label>Button page <small>(optional)</small><input name="buttonPath" maxlength="240" placeholder="/merch/"></label>',
+   'Save homepage promo');
+  updatePromoForm(slot.querySelector('form'),settings);
+ }catch(error){
+  const retry=document.createElement('button');
+  retry.type='button';
+  retry.textContent='Retry';
+  retry.onclick=()=>{slot.replaceChildren();openHomepagePromoSettings(panel);};
+  slot.replaceChildren(document.createTextNode(error.message+' '),retry);
+ }
+}
+
 function renderCombinedOffice(states,picker){
  const offices=new Map();
  const snapshots=new Map(states.map(state=>[state.productionId,state]));
@@ -437,7 +476,7 @@ function renderCombinedOffice(states,picker){
   '<div class="people-toolbar"><label>Search name, role or email<input type="search" data-roster-search></label><label>Show<select data-roster-filter>'+options+'</select></label></div>'+
   '<p class="directory-count" data-roster-count role="status"></p><ul class="people-directory" data-accounts></ul><div data-pending-people></div>'+
   '<details data-combined-directory><summary></summary><ul class="people-directory" data-catalog></ul></details></div><div data-person-editor></div></div>'+
-  '<div data-main-filming hidden><div data-availability-slot></div></div><div data-main-reports hidden><div data-reports-slot></div></div><div data-offices></div>';
+  '<div data-main-filming hidden><div data-availability-slot></div></div><div data-main-reports hidden><div data-reports-slot></div></div>'+homepagePromoPanel+'<div data-offices></div>';
  const find=selector=>app.querySelector(selector);
  const inbox=find('[data-main-inbox]');
  const personEditor=find('[data-person-editor]');
@@ -592,12 +631,15 @@ function renderCombinedOffice(states,picker){
   find('[data-shared-settings]').hidden=view!=='settings';
   find('[data-main-filming]').hidden=view!=='availability';
   find('[data-main-reports]').hidden=view!=='reports';
-  find('[data-offices]').hidden=['availability','reports'].includes(view)||(view==='people'&&!film);
+  const website=find('[data-homepage-promo-settings]');
+  website.hidden=view!=='website';
+  find('[data-offices]').hidden=['availability','reports','website'].includes(view)||(view==='people'&&!film);
   const picker=find('.office-header .production-picker');
-  if(picker)picker.hidden=['availability','reports'].includes(view);
+  if(picker)picker.hidden=['availability','reports','website'].includes(view);
   for(const button of app.querySelectorAll('[data-main-tab]'))button.setAttribute('aria-current',button.dataset.mainTab===view?'page':'false');
   if(view==='availability')openAvailability(find('[data-main-filming] [data-availability-slot]'));
   else if(view==='reports')openReports(find('[data-main-reports] [data-reports-slot]'));
+  else if(view==='website')openHomepagePromoSettings(website);
   else{
    for(const child of offices.values())child.show(view);
    if(view==='people'&&film)offices.get(film.id)?.open(film,false);
@@ -752,7 +794,11 @@ async function load(initial){
   document.querySelector('main > small').hidden=true;
  }
  if(admin&&!selected.length){
-  app.innerHTML='<div class="office-header">'+productionPicker+adminProfileShortcut(s)+form('logout','','Sign out')+'</div><h2>People &amp; profiles <span class="count">0</span></h2><p>Select a production to see its cast and crew.</p>';
+  const websiteParams=new URLSearchParams(location.search);
+  websiteParams.set('view','website');
+  app.innerHTML='<div class="office-header">'+productionPicker+adminProfileShortcut(s)+form('logout','','Sign out')+'</div>'+
+   (activeView==='website'?homepagePromoPanel:'<h2>People &amp; profiles <span class="count">0</span></h2><p>Select a production to see its cast and crew.</p><a href="?'+escape(websiteParams.toString())+'">Website settings</a>');
+  if(activeView==='website')openHomepagePromoSettings(app.querySelector('[data-homepage-promo-settings]'));
   return;
  }
  if(admin&&!office){
@@ -1093,6 +1139,19 @@ listen('submit',async e=>{
  const photoInputs=photoForm(a)?[...f.querySelectorAll('input,select,textarea')].filter(control=>!control.disabled):[];
  for(const control of photoInputs)control.disabled=true;
  try{
+  if(a==='homepagePromoSettings'){
+   const fields=[...f.querySelectorAll('input')];
+   for(const field of fields)field.disabled=true;
+   try{
+    const settings=await request(a,{...data,enabled:f.elements.enabled.checked});
+    updatePromoForm(f,settings);
+    delete f.dataset.dirty;
+    message.textContent=settings.enabled?'Homepage promo saved and visible.':'Homepage promo turned off.';
+   }finally{
+    for(const field of fields)field.disabled=false;
+   }
+   return;
+  }
   if(a==='logout'){
    try{await request('logout',{});}catch(error){if(error.status!==401)throw error;}
    sessionStorage.removeItem('hmf-directory-search');
