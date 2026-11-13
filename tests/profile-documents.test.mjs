@@ -732,7 +732,7 @@ test('posted messages and files are announced as Film Portal email, with the fil
  assert.equal(subject,'New message on your Film Portal · Parking for Saturday');
  assert.ok(text.startsWith('The following message is on your Film Portal for Written in the Dark:\n\nParking for Saturday\n\nPark behind the building.\n\n'),text);
  assert.ok(text.endsWith('https://heidimikacfilms.com/members/?production=written-in-the-dark'));
- assert.deepEqual(options,{},'A message without a file carries no attachment.');
+ assert.deepEqual(options,{resourceKey:'resources/'+event,production:dark},'A message without a file carries no attachment, only what the mail worker needs to re-check its audience.');
  assert.ok((await context.store.get('resources/'+event)).text);
 
  const before=context.notifications.length,pdf=new Blob(['%PDF-1.7\nCall sheet\n%%EOF']);
@@ -742,7 +742,7 @@ test('posted messages and files are announced as Film Portal email, with the fil
  [,member,event,subject,text,,options]=context.notifications.at(-1);
  assert.equal(subject,'New file on your Film Portal · Call sheet · Day 3 / rev 11/08');
  assert.ok(text.includes('The following file is on your Film Portal for Wherein Lies Continue:')&&text.includes('\n\nBring layers.\n\n')&&text.includes('The file is attached to this email.'),text);
- assert.deepEqual(options,{attachmentKey:'productions/'+lies+'/files/'+event,attachmentName:'Call sheet - Day 3 - rev 11-08.pdf'});
+ assert.deepEqual(options,{resourceKey:'productions/'+lies+'/resources/'+event,production:lies,attachmentKey:'productions/'+lies+'/files/'+event,attachmentName:'Call sheet - Day 3 - rev 11-08.pdf'});
  assert.ok(await context.store.get(options.attachmentKey),'The attachment points at the stored file for that production.');
  assert.equal((await context.store.get('productions/'+lies+'/resources/'+event)).text,'Bring layers.');
  const long=await call('resource',{body:pdf,params:{title:'Too long',text:'x'.repeat(1001),audience:'selected',recipient:actor}});

@@ -1,6 +1,7 @@
 import {AGREEMENT_CYCLE,currentAgreementKey} from '../lib/agreement-cycle.mjs';
 import {manualAgreementKey,resourceTrackingKey,normalizePaperworkReason,manualPaperworkStatus,readAgreementTracking} from '../lib/paperwork.mjs';
 import {COUNTERSIGN_EMAIL} from '../lib/signing.mjs';
+import {practiceName} from '../lib/practice.mjs';
 import {adminActions} from '../lib/admin-actions.mjs';
 import {adminProfileCandidates,adminProfileOwner,adminProfilesKey,loadAdminProfiles} from '../lib/admin-profiles.mjs';
 import {reportSnapshot,reportMatch,reportRecords,validateSavedReport} from '../lib/reports.mjs';
@@ -24,7 +25,6 @@ async function credential(password){
 const hash = x => createHash('sha256').update(x).digest('hex');
 const token = () => randomBytes(32).toString('hex');
 // Practice accounts must never be linked to or published on a public film website.
-const practiceName=name=>/^test(?:\s+testers[oe]n)?$/i.test(name.trim());
 const allowPublicProfile=m=>requireThat(!practiceName(m.name),'Practice accounts cannot appear on a public website.',403);
 const productions=[{id:'written-in-the-dark',name:'Written in the Dark'},{id:'wherein-lies-continue',name:'Wherein Lies Continue'}];
 const catalogs={'written-in-the-dark':darkCatalog,'wherein-lies-continue':whereinCatalog};
@@ -147,7 +147,7 @@ export default async function handle(req, context) {
   const url=new URL(req.url), action=url.searchParams.get('action')||'home';
   const production=['heidimikacfilms.com','www.heidimikacfilms.com'].includes(url.hostname);
   let productionId=url.searchParams.get('production')||'written-in-the-dark';
-  requireThat(catalogs[productionId],'Unknown production.');
+  requireThat(Object.hasOwn(catalogs,productionId),'Unknown production.');
   const rawStore=getStore({name:production?'hmf-members-v1':'hmf-preview-'+(process.env.DEPLOY_ID||'local'),consistency:'strong'});
   // Each contract round has independent signing state. Prior files and records stay in their original scope.
   const legacyScoped=key=>productionId!=='written-in-the-dark'&&/^(tasks|agreements|agreement-history|resources|files|offline|offline-history|contract)\//.test(key)?'productions/'+productionId+'/'+key:key;
@@ -264,7 +264,9 @@ export default async function handle(req, context) {
   async function announce(m,id,resource,file){
     if(!production||!m.email)return;
     const text=['The following '+(file?'file':'message')+' is on your Film Portal for '+film+':',resource.title,resource.text,file?'The file is attached to this email. It also stays in your Film Portal under Documents.':'',portalUrl+'?production='+productionId].filter(Boolean).join('\n\n');
-    await enqueue(store,m,id,file?'New file on your Film Portal · '+resource.title:'New message on your Film Portal · '+resource.title,text,0,file?{attachmentKey:scoped('files/'+id),attachmentName:attachmentName(resource.title)}:{});
+    // The board entry and production travel with the queued email so the mail worker can confirm,
+    // at send time, that this person is still meant to have it.
+    await enqueue(store,m,id,file?'New file on your Film Portal · '+resource.title:'New message on your Film Portal · '+resource.title,text,0,{resourceKey:scoped('resources/'+id),production:productionId,...(file?{attachmentKey:scoped('files/'+id),attachmentName:attachmentName(resource.title)}:{})});
   }
   function invitationCatalogIdentity(member){
     for(const {id} of productions){
@@ -300,6 +302,21 @@ export default async function handle(req, context) {
       requireThat(other.revoked||!await get('passwords/'+other.id),'A portal account is already set up for this film credit. Contact production before continuing.',409);
     }
   }
+  // Every setup link is issued here, so an invitation from People, a resend, a corrected
+  // address and account recovery all replace the earlier link and bind the new one the same way.
+  async function issueInvitation(current,address,conflict){
+    const ticket=token(),digest=hash(ticket),issuedAt=Date.now(),expires=issuedAt+invitationLifetime;
+    const updated={...current.data,email:address,ticket:digest,inviteIssuedAt:issuedAt};
+    await set('tickets/'+digest,{id:updated.id,email:address,issuedAt,expires});
+    requireThat((await store.setJSON('members/'+updated.id,updated,{onlyIfMatch:current.etag})).modified,conflict,409);
+    return {updated,ticket,digest,expires};
+  }
+  // The digest lets the mail worker drop this message if a newer link replaces it before it is sent.
+  const queueInvitation=({updated,ticket,digest,expires},recovery=false)=>enqueue(store,updated,'invite/'+digest,
+    recovery?'Heidi Mikac Films — finish setting up your account':'Heidi Mikac Films — your Film Portal invitation',
+    recovery?'Hi '+updated.name+',\n\nYour Film Portal account has no password yet. Choose one here to open it:\n'+portalUrl+'#invite='+ticket+'\n\nThis link replaces any earlier invitation and expires in seven days. If you did not ask for it, ignore this message.'
+      :'Hi '+updated.name+',\n\nCreate your Film Portal account, choose your productions, and add your biography, headshot and credits here:\n'+portalUrl+'#invite='+ticket+'\n\nThis invitation expires in seven days. If you receive another invitation, use the newest link.',
+    expires,{invitationDigest:digest});
   const recoveryAddress=id=>process.env['HMF_'+id.toUpperCase()+'_RECOVERY_EMAIL']||(id==='Nick'?'nick@heidimikacfilms.com':'heidi@heidimikacfilms.com');
   if(action==='requestReset'&&post){
     requireThat(production&&mailReady(),'Password recovery email is unavailable. Contact production.',503);
@@ -314,14 +331,25 @@ export default async function handle(req, context) {
         await set('resets/'+hash(ticket),{id:m.id,expires,passwordDigest:old.digest,adminDigest:adm?.[1]||null});
         await enqueue(store,m,'reset/'+hash(ticket),'Reset your Film Portal password','Use this link within one hour to choose a new password. If you did not request this, ignore this message.\n\n'+portalUrl+'#reset='+ticket,expires);
       }else if(!adm&&m&&!await isAdminProfile(m)&&!await get('passwords/'+m.id)){
-        // Invited but never set a password: there is nothing to reset, so send a fresh invitation instead of silence.
-        const current=await store.getWithMetadata('members/'+m.id,{type:'json'});
-        if(active(current?.data)&&current.data.email===who){
-          const ticket=token(),digest=hash(ticket),issuedAt=Date.now(),expires=issuedAt+invitationLifetime;
-          await set('tickets/'+digest,{id:m.id,email:who,issuedAt,expires});
-          if((await store.setJSON('members/'+m.id,{...current.data,ticket:digest,inviteIssuedAt:issuedAt},{onlyIfMatch:current.etag})).modified)
-            await enqueue(store,m,'invite/'+digest,'Heidi Mikac Films — finish setting up your account','Hi '+m.name+',\n\nYour Film Portal account has no password yet. Choose one here to open it:\n'+portalUrl+'#invite='+ticket+'\n\nThis link replaces any earlier invitation and expires in seven days. If you did not ask for it, ignore this message.',expires);
-        }
+        // Invited but never set a password: there is nothing to reset, so renew the setup link.
+        // It follows the same reservation, rotation and queue rules as an invitation from People.
+        let release;
+        try{
+          release=await holdInvitation(m);
+          const current=await store.getWithMetadata('members/'+m.id,{type:'json'}),member=current?.data;
+          if(active(member)&&member.email===who&&!member.pendingContact&&!await get('passwords/'+m.id)){
+            // Recovery may only renew the invitation that is already the newest one for this film
+            // credit. An older record for the same credit, such as one first sent to a wrong
+            // address, must not jump ahead of the corrected invitation by asking for a reset.
+            const prior=member.ticket?await get('tickets/'+member.ticket):null;
+            const issuedAt=member.inviteIssuedAt??prior?.issuedAt??(prior?.expires?prior.expires-invitationLifetime:0);
+            await requireLatestCatalogInvite(member,{issuedAt,expires:issuedAt+invitationLifetime});
+            await queueInvitation(await issueInvitation(current,who,'This profile changed.'),true);
+          }
+        }catch(error){
+          // Busy, replaced or changed: stay silent so the public reply never shows whether an account exists.
+          if(!error.status)throw error;
+        }finally{if(release)await release();}
       }
     }
     return json({ok:true,message:'If that account is eligible, a password reset email will arrive shortly. Check spam too.'});
@@ -730,16 +758,21 @@ export default async function handle(req, context) {
       const base=sharedBase(original);
       row.paperworkExempt=!!row.adminProfile;
       if(admin)row.websitePlacement=placementByProfile.get(row.filmProfile||'member-'+row.id)||null;
+      // Archived paperwork follows a confirmed profile link only. Admins also see the status
+      // for a name match so they can decide whether to confirm it.
+      const owned=await ownedProfile(original,accounts);
+      const paperProfile=admin?row.filmProfile:owned;
+      if(admin)row.confirmedProfile=owned||'';
       const [published,offlineMetadata,previous]=await Promise.all([
         base?get('published/'+base.id):null,
-        assignments(original)[productionId]&&row.filmProfile?store.getMetadata('offline/'+row.filmProfile):null,
+        assignments(original)[productionId]&&paperProfile?store.getMetadata('offline/'+paperProfile):null,
         rawStore.get(legacyScoped('agreements/'+row.id),{type:'json'}),
       ]);
       row.previousOfflineStatus=offlineMetadata?.metadata?.status||null;
       row.offlineStatus=null;
       row.previousAgreement=previous?.id?{status:previous.status,completed:previous.status==='Complete'}:null;
       {
-        const profile=await ownedProfile(original,accounts);
+        const profile=owned;
         row.documents=[];
         if(row.agreement?.id&&row.agreement.status==='Complete')row.documents.push({kind:'signed',title:'Signed agreement and audit record'});
         if(previous?.id&&previous.status==='Complete')row.documents.push({kind:'previous-signed',title:'Previous signed agreement and audit record · replaced'});
@@ -856,11 +889,9 @@ export default async function handle(req, context) {
         reserved=(await store.setJSON(index,{id:m.id},{onlyIfNew:true})).modified;
         requireThat(reserved||(await get(index))?.id===m.id,'That email is already used by another profile.',409);
       }
-      const ticket=token(),digest=hash(ticket),issuedAt=Date.now(),expires=issuedAt+invitationLifetime;
-      const updated={...current.data,email:address,ticket:digest,inviteIssuedAt:issuedAt};
+      let invitation;
       try{
-        await set('tickets/'+digest,{id:m.id,email:address,issuedAt,expires});
-        requireThat((await store.setJSON('members/'+m.id,updated,{onlyIfMatch:current.etag})).modified,'This person’s profile changed. Refresh and send the invitation again.',409);
+        invitation=await issueInvitation(current,address,'This person’s profile changed. Refresh and send the invitation again.');
       }catch(error){
         if(reserved&&(await get('members/'+m.id))?.email!==address)await store.delete(index);
         throw error;
@@ -869,7 +900,7 @@ export default async function handle(req, context) {
         const oldIndex='active-email/'+hash(m.email);
         if((await get(oldIndex))?.id===m.id)await store.delete(oldIndex);
       }
-      await enqueue(store,updated,'invite/'+digest,'Heidi Mikac Films — your Film Portal invitation','Hi '+updated.name+',\n\nCreate your Film Portal account, choose your productions, and add your biography, headshot and credits here:\n'+portalUrl+'#invite='+ticket+'\n\nThis invitation expires in seven days. If you receive another invitation, use the newest link.',expires,{invitationDigest:digest});
+      await queueInvitation(invitation);
       await invalidate();
       return json({ok:true});
     }catch(error){
@@ -1075,7 +1106,10 @@ export default async function handle(req, context) {
           requireThat(legacyRole.trim()===(existing.role||'')||(!existing.character&&!existing.crewTitle),'Refresh the portal to edit character and crew title separately.',409);
           assignment={...existing,role:legacyRole.trim()};
         }
-        const filmProfile=base?.id||existing.filmProfile||'';
+        // Carry forward only a link someone confirmed. A matching name still places the public
+        // profile on the right card, but it must never become ownership of private paperwork.
+        const confirmed=existing.filmProfile||member.profileLinks?.[id]||(id==='written-in-the-dark'?member.filmProfile:'')||'';
+        const filmProfile=catalogs[id].some(item=>item.id===confirmed)?confirmed:'';
         next[id]={...assignment,filmProfile};
         if(filmProfile)profileLinks[id]=filmProfile;
         if(member.generalInvite&&!member.approvedProfiles?.[id])requests[id]??=randomUUID();
@@ -1389,7 +1423,8 @@ export default async function handle(req, context) {
     }
     return json({status,paperworkStatus:manualPaperworkStatus(latestTracking)||status,url:signingUrl,...(signingUrl&&countersign?{recipientName:'Heidi Mikac'}:{})});
   }
-  return json({error:'Unknown action.'});
+  // A request the portal does not understand is an error, so no screen can report it as saved.
+  requireThat(false,'The portal did not recognise that request. Reload the page and try again.',post?404:405);
  }catch(e){return Response.json({error:e.status?e.message:'The request could not be completed.'},{status:e.status||500,headers});}
 }
 

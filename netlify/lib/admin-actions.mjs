@@ -1,3 +1,4 @@
+import {practiceName} from './practice.mjs';
 import {createHash} from 'node:crypto';
 import {enqueue,portalUrl} from './mail.mjs';
 import {COUNTERSIGN_EMAIL,refreshAgreement,SIGNING_REFRESH_INTERVAL} from './signing.mjs';
@@ -17,7 +18,7 @@ export async function adminActions(store,production,{refresh=false,members,membe
  const agreementReads=[];
  const rowsById=new Map((memberRows||[]).map(row=>[row.id,row]));
  for(const m of roster){
-  if(!m||m.revoked||adminProfileOwner(adminProfiles,m)||/^test(?:\s|$)/i.test(m.name))continue;
+  if(!m||m.revoked||adminProfileOwner(adminProfiles,m)||practiceName(m.name))continue;
   const assignment=(m.productions??{'written-in-the-dark':{filmProfile:m.filmProfile}})[production];
   if(m.productionRequests?.[production])add('any','Review production request from '+m.name,'production-request/'+production+'/'+m.productionRequests[production],'settings',m.id);
   if(!assignment)continue;

@@ -7,7 +7,8 @@ export const mailReady=()=>Boolean(process.env.RESEND_API_KEY&&process.env.HMF_M
 export const portalUrl='https://heidimikacfilms.com/members/';
 export const TRACKING_KEY='mail-status/tracking';
 const TRACKING_PAUSE=6*3600000;
-const invitationSubjects=new Set(['Heidi Mikac Films — your Film Portal invitation','Heidi Mikac Films — your cast & crew invitation','Written in the Dark — your cast & crew invitation','Wherein Lies Continue — your cast & crew invitation','Your invitation to Heidi Mikac Films']);
+const FILE_SENDS_PER_RUN=3;
+const invitationSubjects=new Set(['Heidi Mikac Films — your Film Portal invitation','Heidi Mikac Films — finish setting up your account','Heidi Mikac Films — your cast & crew invitation','Written in the Dark — your cast & crew invitation','Wherein Lies Continue — your cast & crew invitation','Your invitation to Heidi Mikac Films']);
 const personalNotices=new Set([...invitationSubjects,'Reset your Film Portal password','Reset your portal password','New production task','Document ready for signature','Agreement ready for your signature']);
 const mailKey=(member,event)=>createHash('sha256').update(member.id+'/'+event).digest('hex');
 const calendarReceipt=(email,event)=>'calendar/recipients/'+event+'/'+createHash('sha256').update(email.trim().toLowerCase()).digest('hex');
@@ -21,7 +22,7 @@ export async function enqueue(store, member, event, subject, text, expires=0, op
  const id=mailKey(member,event),key='outbox/'+id;
  const [,calendarEvent,notice]=event.startsWith('calendar/')?event.split('/'):[];
  if(calendarEvent&&(await store.getMetadata('mail-log/'+id)||await store.getMetadata('failed-mail/'+id)))return;
- await store.setJSON(key,{id:member.id,to:member.email,...(calendarEvent?{calendarEvent,...(notice==='cancelled'?{calendarCancellation:true}:{}),...(options.calendarRevision?{calendarRevision:options.calendarRevision}:{})}:{}),subject,text,expires,...(options.invitationDigest?{invitationDigest:options.invitationDigest}:{}),...(options.agreementCycle?{agreementCycle:options.agreementCycle}:{}),...(options.requirementKey?{requirementKey:options.requirementKey}:{}),...(options.attachmentKey?{attachmentKey:options.attachmentKey,attachmentName:options.attachmentName}:{}),created:Date.now(),attempts:0,nextAttempt:0},{onlyIfNew:true});
+ await store.setJSON(key,{id:member.id,to:member.email,...(calendarEvent?{calendarEvent,...(notice==='cancelled'?{calendarCancellation:true}:{}),...(options.calendarRevision?{calendarRevision:options.calendarRevision}:{})}:{}),subject,text,expires,...(options.invitationDigest?{invitationDigest:options.invitationDigest}:{}),...(options.agreementCycle?{agreementCycle:options.agreementCycle}:{}),...(options.requirementKey?{requirementKey:options.requirementKey}:{}),...(options.attachmentKey?{attachmentKey:options.attachmentKey,attachmentName:options.attachmentName}:{}),...(options.resourceKey?{resourceKey:options.resourceKey,production:options.production}:{}),created:Date.now(),attempts:0,nextAttempt:0},{onlyIfNew:true});
 }
 
 function queuedInvitationDigest(message){
@@ -49,10 +50,12 @@ export async function deliver(store,{currentCalendarEvent}={}){
  const adminProfiles=entries.length?await loadAdminProfiles(store):{};
  let processed=0,sentWithFile=0;const deadline=Date.now()+22000;let lastRequest=0;
  const pace=async()=>{const delay=600-(Date.now()-lastRequest);if(delay>0)await new Promise(r=>setTimeout(r,delay));lastRequest=Date.now();};
- for(const {key} of entries){
+ // Email without attachments goes first. A sign-in or signing email is short-lived and must
+ // never wait behind a file that is being sent to a whole production.
+ for(const withFile of [false,true])for(const {key} of entries){
   if(processed>=20||Date.now()>deadline-5000)break;
-  if(sentWithFile>=3)break; // Large sends are spread over later runs to stay inside the time limit.
-  const record=await store.getWithMetadata(key,{type:'json'}),msg=record?.data;if(!msg||msg.nextAttempt>Date.now())continue;
+  if(withFile&&sentWithFile>=FILE_SENDS_PER_RUN)break; // Large sends are spread over later runs to stay inside the time limit.
+  const record=await store.getWithMetadata(key,{type:'json'}),msg=record?.data;if(!msg||msg.nextAttempt>Date.now()||!!msg.attachmentKey!==withFile)continue;
   const member=!msg.calendarEvent&&['Nick','Heidi'].includes(msg.id)?{id:msg.id}:await store.get('members/'+msg.id,{type:'json'});
   const logKey='mail-log/'+key.split('/')[1];
   const log=async(status,extra={})=>store.setJSON(logKey,{to:msg.to,subject:msg.subject,updated:Date.now(),status,...extra});
@@ -66,6 +69,14 @@ export async function deliver(store,{currentCalendarEvent}={}){
   if(msg.requirementKey&&manualPaperworkStatus(await store.get(msg.requirementKey,{type:'json'}))){await log('Not sent — document requirement completed');await store.delete(key);continue;}
   if((msg.expires&&msg.expires<Date.now())||!member||member.revoked){await log('Not sent — expired or access revoked');await store.delete(key);continue;}
   if(invitation&&!currentInvitation(member)){await discardInvitation();continue;}
+  // Anything queued for an address that was corrected afterwards stays out of the old inbox.
+  if(!invitation&&member.email&&msg.to&&member.email!==msg.to){await log('Not sent — email address changed');await store.delete(key);continue;}
+  if(msg.resourceKey){
+   // A posted message or file is only for the people it is still shared with when the email is sent.
+   const resource=await store.get(msg.resourceKey,{type:'json'});
+   const assigned=member.productions??{'written-in-the-dark':{}};
+   if(!resource||!Object.hasOwn(assigned,msg.production)||(resource.audience&&!resource.audience.includes(member.id))){await log('Not sent — no longer shared with this person');await store.delete(key);continue;}
+  }
   if(msg.calendarEvent||msg.subject==='New event on the production calendar'){
    const state=msg.calendarEvent&&await store.get('calendar/event-state/'+msg.calendarEvent,{type:'json'});
    const audience=msg.calendarCancellation?(state?.cancelled?state.cancelledAudience:[]):

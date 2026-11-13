@@ -170,3 +170,61 @@ test('a queued file notice is sent with its PDF attached, and never after the fi
  assert.ok(logs.some(log=>log.subject.includes('Removed')&&log.status==='Not sent — file removed'));
  assert.equal([...store.data.keys()].filter(key=>key.startsWith('outbox/')).length,0);
 });
+
+test('a short-lived email is never held behind files being sent to a whole production',async()=>{
+ const store=fixture();process.env.RESEND_API_KEY='test-only';process.env.HMF_MAIL_FROM='Production <test@example.invalid>';
+ store.data.set('files/sheet',{value:Buffer.from('%PDF-1.7\nCall sheet\n%%EOF'),etag:'f1'});
+ await store.setJSON('resources/sheet',{id:'sheet',title:'Call sheet',type:'PDF',audience:null});
+ const people=[];
+ for(let n=0;n<5;n++){
+  const person={id:'00000000-0000-4000-8000-00000000008'+n,name:'Crew '+n,email:'crew'+n+'@example.invalid',productions:{'written-in-the-dark':{}}};
+  people.push(person);await store.setJSON('members/'+person.id,person);
+  await enqueue(store,person,'sheet','New file on your Film Portal · Call sheet','Body',0,{attachmentKey:'files/sheet',attachmentName:'Call sheet.pdf',resourceKey:'resources/sheet',production:'written-in-the-dark'});
+ }
+ // Queued last, so the earlier limit on file emails used to stop the run before reaching it.
+ await enqueue(store,people[0],'reset/abc','Reset your Film Portal password','Use this link within one hour.',Date.now()+3600000);
+ const sent=[];
+ globalThis.fetch=async(url,options)=>{if(options?.method==='POST')sent.push(JSON.parse(options.body));return Response.json({id:'provider-'+sent.length});};
+ await deliver(store);
+ assert.equal(sent[0].subject,'Reset your Film Portal password','Email without an attachment is sent first.');
+ assert.equal(sent.filter(mail=>mail.attachments).length,3,'File emails are still spread across runs.');
+ await deliver(store);
+ assert.equal(sent.filter(mail=>mail.attachments).length,5,'The rest follow on the next run.');
+ assert.equal(sent.length,6);
+});
+
+test('a posted file or message is emailed only to people it is still shared with when it is sent',async()=>{
+ const store=fixture();process.env.RESEND_API_KEY='test-only';process.env.HMF_MAIL_FROM='Production <test@example.invalid>';
+ const dark='written-in-the-dark';
+ const person=(n,productions)=>({id:'00000000-0000-4000-8000-00000000009'+n,name:'Person '+n,email:'person'+n+'@example.invalid',productions});
+ const stays=person(1,{[dark]:{}}),left=person(2,{}),dropped=person(3,{[dark]:{}}),legacy=person(4,undefined);
+ for(const member of [stays,left,dropped,legacy])await store.setJSON('members/'+member.id,member);
+ store.data.set('files/script',{value:Buffer.from('%PDF-1.7\nScript\n%%EOF'),etag:'f1'});
+ // The audience was narrowed after the notices were queued.
+ await store.setJSON('resources/script',{id:'script',title:'Script',type:'PDF',audience:[stays.id,left.id,legacy.id]});
+ const options={attachmentKey:'files/script',attachmentName:'Script.pdf',resourceKey:'resources/script',production:dark};
+ for(const member of [stays,left,dropped,legacy])await enqueue(store,member,'script','New file on your Film Portal · Script','Body',0,options);
+ await enqueue(store,stays,'gone','New message on your Film Portal · Removed','Body',0,{resourceKey:'resources/gone',production:dark});
+ const sent=[];
+ globalThis.fetch=async(url,options)=>{if(options?.method==='POST')sent.push(JSON.parse(options.body));return Response.json({id:'provider-'+sent.length});};
+ await deliver(store);
+ assert.deepEqual(sent.map(mail=>mail.to[0]).sort(),[legacy.email,stays.email].sort(),'Only people still on the production and in the audience receive it. Older profiles without a production list count as Written in the Dark.');
+ const skipped=[...store.data].filter(([key])=>key.startsWith('mail-log/')).map(([,record])=>record.value).filter(row=>row.status==='Not sent — no longer shared with this person');
+ assert.deepEqual(skipped.map(row=>row.to).sort(),[dropped.email,left.email,stays.email].sort(),'Each skipped email is recorded with its reason, including the message that was removed from the board.');
+ assert.equal([...store.data.keys()].filter(key=>key.startsWith('outbox/')).length,0);
+});
+
+test('email queued before an address was corrected never goes to the old address',async()=>{
+ const store=fixture();process.env.RESEND_API_KEY='test-only';process.env.HMF_MAIL_FROM='Production <test@example.invalid>';
+ const member={id:'00000000-0000-4000-8000-0000000000a9',name:'Sample Actor',email:'wrong@example.invalid',productions:{'written-in-the-dark':{}}};
+ await store.setJSON('members/'+member.id,member);
+ await enqueue(store,member,'task-1','New production task','You have a new task.');
+ await store.setJSON('members/'+member.id,{...member,email:'right@example.invalid'});
+ await enqueue(store,{...member,email:'right@example.invalid'},'task-2','New production task','You have another task.');
+ const sent=[];
+ globalThis.fetch=async(url,options)=>{if(options?.method==='POST')sent.push(JSON.parse(options.body));return Response.json({id:'provider-'+sent.length});};
+ await deliver(store);
+ assert.deepEqual(sent.map(mail=>mail.to[0]),['right@example.invalid']);
+ const log=[...store.data].filter(([key])=>key.startsWith('mail-log/')).map(([,record])=>record.value);
+ assert.ok(log.some(row=>row.to==='wrong@example.invalid'&&row.status==='Not sent — email address changed'));
+});
