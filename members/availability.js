@@ -33,6 +33,9 @@ function el(tag,attributes={},...children){
  return node;
 }
 const button=(text,action,attributes={})=>el('button',{type:'button',onclick:action,...attributes},text);
+// A day left blank in a month the person has otherwise filled in counts as unavailable.
+// Admin screens say so, so a blank is not mistaken for an answer.
+const statusText=value=>value.implicit?'Unavailable · left blank':STATUSES[value.status]||STATUSES.unknown;
 function field(text,control){return el('label',{},el('span',{},text),control);}
 function stamp(date,time){
  if(time==='24:00'){date=addDays(date,1);time='00:00';}
@@ -194,7 +197,7 @@ export function mountAvailability(container,options){
   const cycle=['unknown','available','unavailable','maybe'],current=before.status;
   const status=cycle[(Math.max(0,cycle.indexOf(current))+1)%cycle.length];
   draft.exceptions[date]={status,windows:status==='available'?(savedHours.has(date)?clone(savedHours.get(date)):[{start:'00:00',end:'24:00'}]):[]};
-  queueDaySave();
+  queueDaySave(dayLabel(date)+' set to '+{unknown:'blank',available:savedHours.has(date)?'available for your saved hours':'available all day',unavailable:'unavailable',maybe:'maybe'}[status]+'.');
  }
  function undoDay(){
   if(!lastQuickChange||saving||quickSaving||loading||!canEdit())return;
@@ -206,9 +209,9 @@ export function mountAvailability(container,options){
   queueDaySave();
   body.querySelector('[data-availability-date="'+selectedDate+'"]')?.focus({preventScroll:true});
  }
- function queueDaySave(){
+ function queueDaySave(spoken=''){
   quickVersion++;markDirty(true);render();
-  if(!quickBlocked)note('Saving calendar changes…');
+  if(!quickBlocked)note((spoken?spoken+' ':'')+'Saving calendar changes…');
   clearTimeout(quickTimer);if(!quickBlocked)quickTimer=setTimeout(saveClickedDays,250);
  }
  function retryClickedDays(){
@@ -242,7 +245,7 @@ export function mountAvailability(container,options){
   const section=el('section',{class:'availability-calendar'});
   section.append(el('div',{class:'availability-month-nav'},button('Previous month',()=>shift(-1),{'data-availability-focus':'previous-month'}),el('h4',{},heading),button('Next month',()=>shift(1),{'data-availability-focus':'next-month'})));
   if(admin)section.append(el('p',{class:'availability-help'},'Calendar for '+(currentMember()?.name||'this person')+'. Select a date to see everyone’s availability.'));
-  else section.append(el('p',{class:'availability-help'},'Tap a date to cycle through available all day, unavailable, maybe, and blank. Changes save automatically.'));
+  else section.append(el('p',{class:'availability-help'},'Tap a date to cycle through available all day, unavailable, maybe, and blank. Changes save automatically. On a keyboard, the arrow keys move between dates.'));
   const grid=el('div',{class:'availability-month-grid',role:'group','aria-label':heading+' availability'});
   const totals=Object.fromEntries(Object.keys(STATUSES).map(status=>[status,0]));
   DAYS.forEach(name=>grid.append(el('div',{class:'availability-day-heading','aria-label':name},name.slice(0,3))));
@@ -252,12 +255,18 @@ export function mountAvailability(container,options){
    totals[value.status]++;
    const status=!admin&&raw.status==='unknown'?'unknown':value.status;
    const label=!admin&&status==='unknown'?(value.implicit?'Blank · counts as unavailable':'Blank'):(STATUSES[status]||STATUSES.unknown);
-   const cell=button('',()=>{if(!admin&&canEdit())cycleDay(date);else{selectedDate=date;render();}},{class:'availability-date availability-'+status+(date===selectedDate?' availability-selected':''),'aria-label':dayLabel(date)+' · '+label,'aria-pressed':date===selectedDate?'true':'false','data-availability-date':date});
-   cell.append(el('b',{},String(day)),el('span',{},admin?STATUSES[status]||label:({available:'✓',unavailable:'×',maybe:'?','needs-confirmation':'!'}[status]||'')));
+   const cell=button('',()=>{if(!admin&&canEdit())cycleDay(date);else{selectedDate=date;render();}},{class:'availability-date availability-'+status+(date===selectedDate?' availability-selected':''),'aria-label':dayLabel(date)+' · '+(admin&&value.implicit?statusText(value):label),...(admin?{'aria-pressed':date===selectedDate?'true':'false'}:{}),'data-availability-date':date,
+    onkeydown:event=>{
+     const delta={ArrowLeft:-1,ArrowRight:1,ArrowUp:-7,ArrowDown:7}[event.key];
+     if(delta===undefined)return;
+     const next=grid.querySelector('[data-availability-date="'+addDays(date,delta)+'"]');
+     if(next){event.preventDefault();next.focus();}
+    }});
+   cell.append(el('b',{},String(day)),el('span',{},admin?(value.implicit?'Left blank':STATUSES[status]||label):({available:'✓',unavailable:'×',maybe:'?','needs-confirmation':'!'}[status]||'')));
    if(admin&&Object.hasOwn(draft.exceptions,date))cell.append(el('span',{class:'availability-changed'},'Changed'));
    grid.append(cell);
   }
-  section.append(grid,el('p',{class:'availability-legend'},el('span',{class:'availability-key availability-available'},'Available'),el('span',{class:'availability-key availability-unavailable'},'Unavailable'),el('span',{class:'availability-key availability-maybe'},'Maybe'),el('span',{class:'availability-key availability-unknown'},admin?'Not answered':'Blank')));
+  section.append(grid,el('p',{class:'availability-legend'},el('span',{class:'availability-key availability-available'},admin?'Available':'✓ Available'),el('span',{class:'availability-key availability-unavailable'},admin?'Unavailable':'× Unavailable'),el('span',{class:'availability-key availability-maybe'},admin?'Maybe':'? Maybe'),el('span',{class:'availability-key availability-unknown'},admin?'Not answered':'Blank')));
   if(!admin){
    const summary=totals.available+' available · '+totals.unavailable+' unavailable · '+totals.maybe+' maybe · '+totals.unknown+' not answered'+(totals['needs-confirmation']?' · '+totals['needs-confirmation']+' to check':'');
    section.append(el('p',{class:'availability-month-summary'},summary),
@@ -314,7 +323,7 @@ export function mountAvailability(container,options){
   const list=el('ul',{class:'availability-people-day','aria-label':'Availability for '+dayLabel(teamDate)});
   for(const member of data.members){
    const value=viewDay(member,teamDate);
-   const row=el('li',{},el('div',{},el('strong',{},member.name),member.role?el('span',{class:'availability-role'},member.role):null),el('div',{class:'availability-status availability-'+value.status},el('strong',{},STATUSES[value.status]||STATUSES.unknown),value.status==='available'?el('span',{},windowsLabel(value.windows)):null));
+   const row=el('li',{},el('div',{},el('strong',{},member.name),member.role?el('span',{class:'availability-role'},member.role):null),el('div',{class:'availability-status availability-'+value.status},el('strong',{},statusText(value)),value.status==='available'?el('span',{},windowsLabel(value.windows)):null));
    if(value.warning)row.append(el('small',{},value.warning));
    list.append(row);
   }
@@ -330,7 +339,7 @@ export function mountAvailability(container,options){
   days.sort((a,b)=>comparePeople(a.member,b.member));
   function row({member,value}){
    const person=el('div',{},button(member.name,()=>openPerson(member.id),{class:'availability-person-link','aria-label':'View or edit availability for '+member.name}),member.role?el('span',{class:'availability-role'},member.role):null);
-   const hours=el('div',{class:'availability-daily-hours'},value.status==='available'?el('strong',{},windowsLabel(value.windows)):null,el('span',{class:'availability-badge availability-'+value.status},STATUSES[value.status]||STATUSES.unknown));
+   const hours=el('div',{class:'availability-daily-hours'},value.status==='available'?el('strong',{},windowsLabel(value.windows)):null,el('span',{class:'availability-badge availability-'+value.status},statusText(value)));
    return el('li',{},person,hours,value.warning?el('small',{class:'availability-daily-warning'},value.warning):null);
   }
   const answered=days.filter(day=>day.value.status!=='unknown'),unanswered=days.filter(day=>day.value.status==='unknown');
@@ -387,7 +396,7 @@ export function mountAvailability(container,options){
    for(const day of blocked){
     const reasons=[];
     if(day.missing?.length)reasons.push('Not answered: '+sortPeople(day.missing).map(person=>person.name).join(', '));
-    if(day.unavailable?.length)reasons.push('Unavailable: '+sortPeople(day.unavailable).map(person=>person.name).join(', '));
+    if(day.unavailable?.length)reasons.push('Unavailable: '+sortPeople(day.unavailable).map(person=>person.name+(person.implicit?' (left blank)':'')).join(', '));
     if(day.maybe?.length)reasons.push('Maybe: '+sortPeople(day.maybe).map(person=>person.name).join(', '));
     if(day.needsConfirmation?.length)reasons.push('Check clock change: '+sortPeople(day.needsConfirmation).map(person=>person.name).join(', '));
     list.append(el('li',{},el('strong',{},shortDate(day.date)),el('span',{},reasons.join(' · ')||'Available hours do not overlap for the requested duration.')));

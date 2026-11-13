@@ -393,13 +393,21 @@ function accountEmail(m){
 function contactName(m){
  return !m.needsEmail?'':panel('Edit name',form('savePendingPerson',input('name','Name','text',m.name)+Object.keys(m.productions).map(id=>'<input type="hidden" name="pendingProduction" value="'+escape(id)+'">').join(''),'Save name',m.pendingPersonId||m.id));
 }
+const namedPractice=m=>/^test(?:\s|$)/i.test(String(m.name||'').trim());
+const practiceEffect='It never appears on a public film website, in reports, in the Action Inbox or in reminders.';
+function practiceControl(m){
+ if(namedPractice(m))return panel('Practice account','<p>This is a practice account because its name starts with “Test”. '+practiceEffect+'</p>');
+ return panel('Practice account',form('practice','<input type="hidden" name="practice" value="'+(m.practice?'no':'yes')+'"><p>'+
+  (m.practice?'This is marked as a practice account. '+practiceEffect:'Use this for an account made to rehearse the portal, whatever it is named. Once marked, '+practiceEffect.charAt(0).toLowerCase()+practiceEffect.slice(1))+'</p>',
+  m.practice?'Make this a regular account':'Mark as a practice account',m.id));
+}
 function accessControls(m,state){
  if(m.adminProfile)return '';
  const invitation=!m.needsEmail&&!m.activated&&state.mailReady?form('resend',
   input('email','Invitation email','email',m.email)+'<input type="hidden" name="expectedEmail" value="'+escape(m.email)+'">'+
   '<p>Use the saved email or enter a corrected one. Each new invitation replaces all earlier links for this account.</p>',
   'Send new invitation',m.id):'';
- return panel('Manage access',invitation+
+ return practiceControl(m)+panel('Manage access',invitation+
   form('revoke','<label><input type="checkbox" name="keepPublic" checked> Keep public film credits and profile visible</label><p>Uncheck to also remove this account’s public profiles. Access is revoked immediately.</p>','Revoke portal access',m.id));
 }
 function renderPendingPeople(host,state,selected){
@@ -1077,6 +1085,7 @@ listen('submit',async e=>{
  }
  if(a==='publishProfile'&&!confirm('Publish this member’s saved biography and headshot on the public Written in the Dark website?'))return;
  if(a==='recoverAgreement'&&f.elements.replaceEnded&&!confirm('Set this ended signing request aside? It stays in SignWell and in the agreement history, and you can then prepare a new agreement.'))return;
+ if(a==='practice'&&!confirm(data.practice==='yes'?'Mark this as a practice account? Its public profile comes off the film websites right away.':'Make this a regular account again? It can then be reviewed and published like anyone else.'))return;
  if(a==='removeResource'&&!confirm('Remove this from the production board for everyone? Email already delivered about it cannot be recalled.'))return;
  if((a==='revoke'||a==='sendAgreement'||(a==='agreement'&&button.value==='send'))&&!confirm(a==='revoke'?'Revoke this member’s access immediately?':a==='sendAgreement'?'Send this pending contract to its recipients?':'Create a signing request for this person and Heidi?'))return;
  button.disabled=true;message.textContent='';
@@ -1132,6 +1141,7 @@ listen('submit',async e=>{
   if(a==='resetPassword')data.ticket=resetTicket;
   if(a==='revoke')data.keepPublic=f.elements.keepPublic.checked;
   if(a==='publication')data.visible=f.elements.visible.checked;
+  if(a==='practice')data.practice=data.practice==='yes';
   if(a==='recoverAgreement'){data.confirmAbsent=!!f.elements.confirmAbsent?.checked;data.replaceEnded=data.replaceEnded==='yes';}
   if(a==='requestProductions'){
    data.selections=[...f.querySelectorAll('[name="selection"]:checked')].map(box=>box.value);
