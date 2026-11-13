@@ -35,6 +35,42 @@ function renderAnnouncement() {
     <a class="text-link" href="${safeHref(a.buttonUrl)}">${a.buttonText} <span aria-hidden="true">→</span></a>`;
 }
 
+async function renderHomepagePromo() {
+  const promo = document.querySelector("#homepage-promo");
+  if (!promo) return;
+
+  try {
+    const response = await fetch("/.netlify/functions/portal?action=homepagePromo", {
+      cache: "no-store",
+      credentials: "omit",
+      signal: AbortSignal.timeout(3500)
+    });
+    if (!response.ok) return;
+    const {enabled, videoId, title, buttonLabel, buttonPath} = await response.json();
+    if (!enabled || !/^[\w-]{11}$/.test(videoId || "") || !title) return;
+
+    promo.querySelector("h1").textContent = title;
+    const player = document.createElement("iframe");
+    player.src = "https://www.youtube-nocookie.com/embed/" + videoId + "?playsinline=1";
+    player.title = title;
+    player.allow = "encrypted-media; picture-in-picture; fullscreen";
+    player.allowFullscreen = true;
+    promo.querySelector(".promo-player").append(player);
+    promo.querySelector("[data-promo-youtube]").href = "https://www.youtube.com/watch?v=" + videoId;
+    if (buttonLabel && buttonPath && new URL(buttonPath, location.origin).origin === location.origin) {
+      const button = promo.querySelector("[data-promo-button]");
+      button.textContent = buttonLabel;
+      button.href = buttonPath;
+      button.hidden = false;
+    }
+
+    document.querySelector("#top").hidden = true;
+    promo.hidden = false;
+  } catch {
+    // The site's original banner is the fallback if promo settings are unavailable.
+  }
+}
+
 function initNavigation() {
   const button = document.querySelector("#menu-toggle");
   const nav = document.querySelector("#main-nav");
@@ -68,3 +104,4 @@ function initNavigation() {
 renderFeatured();
 renderAnnouncement();
 initNavigation();
+renderHomepagePromo();

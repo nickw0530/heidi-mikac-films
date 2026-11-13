@@ -20,9 +20,10 @@ const {default:handle}=await import('data:text/javascript;base64,'+Buffer.from(s
 
 const sha=value=>createHash('sha256').update(value).digest('hex');
 const dark='written-in-the-dark';
-const tokens={Nick:'a'.repeat(64),member:'c'.repeat(64)};
+const tokens={Nick:'a'.repeat(64),Heidi:'b'.repeat(64),member:'c'.repeat(64)};
 const practice='00000000-0000-4000-8000-0000000000b1',real='00000000-0000-4000-8000-0000000000b2';
 process.env.HMF_NICK_LOGIN_SHA256='safety-test-nick';
+process.env.HMF_HEIDI_LOGIN_SHA256='safety-test-heidi';
 
 async function fixture(){
  const data=new Map();let revision=0;
@@ -31,13 +32,14 @@ async function fixture(){
   async get(key){return clone(data.get(key)?.value)??null;},
   async getMetadata(key){const r=data.get(key);return r?{etag:r.etag,metadata:clone(r.metadata)}:null;},
   async getWithMetadata(key){const r=data.get(key);return r?{data:clone(r.value),etag:r.etag,metadata:clone(r.metadata)}:null;},
-  async set(key,value,options={}){const old=data.get(key);if(options.onlyIfNew&&old||options.onlyIfMatch&&old?.etag!==options.onlyIfMatch)return {modified:false};data.set(key,{value:clone(value),metadata:clone(options.metadata)||{},etag:String(++revision)});return {modified:true};},
+  async set(key,value,options={}){const old=data.get(key);if(options.onlyIfNew&&old||options.onlyIfMatch&&old?.etag!==options.onlyIfMatch)return {modified:false};const etag=String(++revision);data.set(key,{value:clone(value),metadata:clone(options.metadata)||{},etag});return {etag,modified:true};},
   async setJSON(key,value,options){return this.set(key,value,options);},
   async delete(key){data.delete(key);},
   list({prefix,paginate}){const page={blobs:[...data.keys()].filter(key=>key.startsWith(prefix)).map(key=>({key}))};return paginate?(async function*(){yield page;})():Promise.resolve(page);}
  };
  globalThis.__portalSafetyStore=store;
  await store.setJSON('sessions/'+sha(tokens.Nick),{id:'Nick',admin:true,adminDigest:'safety-test-nick',expires:Date.now()+3600000});
+ await store.setJSON('sessions/'+sha(tokens.Heidi),{id:'Heidi',admin:true,adminDigest:'safety-test-heidi',expires:Date.now()+3600000});
  await store.setJSON('sessions/'+sha(tokens.member),{id:real,admin:false,adminDigest:null,expires:Date.now()+3600000});
  const profile={bio:'A fictional biography.',photo:'https://heidimikacfilms.com/assets/logo.webp',imageVersion:''};
  const member=(id,name)=>({id,name,email:id+'@example.invalid',generalInvite:true,productions:{[dark]:{role:'Extra',character:'Extra',crewTitle:'',filmProfile:''}},approvedProfiles:{[dark]:profile},publication:{[dark]:true}});
@@ -46,11 +48,38 @@ async function fixture(){
  await store.setJSON('members/'+real,member(real,'Robin Vale'));
  return store;
 }
-async function call(action,{who='Nick',body,id='',method}={}){
- const url=new URL('https://heidimikacfilms.com/.netlify/functions/portal');url.search=new URLSearchParams({action,production:dark,id});
- const response=await handle(new Request(url,{method:method||(body===undefined?'GET':'POST'),headers:{origin:url.origin,'content-type':'application/json',...(who?{cookie:'__Host-hmf='+tokens[who]}:{})},body:body===undefined?undefined:JSON.stringify(body)}),{ip:'198.51.100.7'});
+async function call(action,{who='Nick',body,id='',method,origin,production=dark}={}){
+ const url=new URL('https://heidimikacfilms.com/.netlify/functions/portal');url.search=new URLSearchParams({action,production,id});
+ const response=await handle(new Request(url,{method:method||(body===undefined?'GET':'POST'),headers:{origin:origin??url.origin,'content-type':'application/json',...(who?{cookie:'__Host-hmf='+tokens[who]}:{})},body:body===undefined?undefined:JSON.stringify(body)}),{ip:'198.51.100.7'});
  return {status:response.status,data:await response.json()};
 }
+
+test('only admins can change the site-wide homepage promo',async()=>{
+ await fixture();
+ const settings='homepagePromoSettings',feed='homepagePromo';
+ const initial=(await call(settings)).data;
+ assert.deepEqual((await call(feed,{who:null})).data,{
+  enabled:true,videoId:'f8t4gAIy5t0',title:initial.title,buttonLabel:'Shop Merch',buttonPath:'/merch/'
+ });
+ for(const [who,status] of [[null,401],['member',403]]){
+  assert.equal((await call(settings,{who})).status,status);
+  assert.equal((await call(settings,{who,body:initial})).status,status);
+ }
+ assert.equal((await call(settings,{body:initial,origin:'https://elsewhere.example'})).status,403);
+ assert.equal((await call(settings,{body:{...initial,videoUrl:'https://youtu.be.evil.example/f8t4gAIy5t0'}})).status,400);
+ assert.equal((await call(settings,{body:{...initial,buttonPath:'/\\elsewhere.example'}})).status,400);
+
+ const disabled=await call(settings,{who:'Heidi',production:'wherein-lies-continue',body:{...initial,enabled:false}});
+ assert.equal(disabled.status,200);
+ assert.ok(disabled.data.revision);
+ assert.deepEqual((await call(feed,{who:null})).data,{enabled:false});
+ assert.equal((await call(settings,{body:initial})).status,409);
+
+ const enabled=await call(settings,{body:{...disabled.data,enabled:true,videoUrl:'https://www.youtube.com/shorts/abcdefghijk?feature=share',title:'Next promo',buttonLabel:'',buttonPath:''}});
+ assert.equal(enabled.status,200);
+ assert.equal(enabled.data.videoUrl,'https://youtu.be/abcdefghijk');
+ assert.deepEqual((await call(feed,{who:null})).data,{enabled:true,videoId:'abcdefghijk',title:'Next promo',buttonLabel:'',buttonPath:''});
+});
 
 test('any name that starts with the word Test is a practice account everywhere',async()=>{
  for(const name of ['Test','test','Test Testerson','Test Cast Member','TEST actor 2','  Test  '])assert.equal(practiceName(name),true,name);
