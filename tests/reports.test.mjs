@@ -93,3 +93,41 @@ test('saved settings exclude audience, dates, member selection, ownership and ar
  const csv=reportCsv(['Name','Note'],[['=IMPORTXML("x")','a,b\nsecond line'],['@command','"quoted"']]);
  assert.match(csv,/"'=IMPORTXML\(""x""\)"/);assert.match(csv,/"a,b\nsecond line"/);assert.match(csv,/"'@command"/);
 });
+
+test('only days a person answered themselves count as a response in the chosen dates',()=>{
+ // The member's one answer is 20 December. The calendar treats every other December day as
+ // unavailable, but for 1–10 December they have not told production anything.
+ const record=normalizeAvailability({...emptyAvailability(),exceptions:{'2026-12-20':{status:'available',windows:[{start:'00:00',end:'24:00'}]}}});
+ const early=['2026-12-01','2026-12-05','2026-12-10'].map(date=>availabilityForDate(record,date));
+ assert.ok(early.every(day=>day.status==='unavailable'&&day.implicit),'Blank days in an answered month are implied unavailable for overlap.');
+ const person=row('b','Blank Days',dark,{days:early});
+ assert.equal(personReportValue({name:'Blank Days',assignments:[person]},'availability'),'No answer in selected dates');
+ assert.equal(personReportValue({name:'Blank Days',assignments:[person]},'answeredDays'),'0 / 3');
+ assert.equal(personReportValue({name:'Blank Days',assignments:[person]},'unavailableDays'),'0');
+ assert.equal(runPeopleReport([{rows:[person]}],settings({type:'availability',status:'unanswered'})).total,1);
+ assert.equal(runPeopleReport([{rows:[person]}],settings({type:'availability',status:'answered'})).total,0);
+ // An explicit "unavailable" is an answer.
+ const refused=normalizeAvailability({...emptyAvailability(),exceptions:{'2026-12-05':{status:'unavailable',windows:[]}}});
+ const said=row('c','Said No',dark,{days:['2026-12-01','2026-12-05'].map(date=>availabilityForDate(refused,date))});
+ assert.equal(personReportValue({name:'Said No',assignments:[said]},'availability'),'Answered');
+ assert.equal(personReportValue({name:'Said No',assignments:[said]},'answeredDays'),'1 / 2');
+ assert.equal(personReportValue({name:'Said No',assignments:[said]},'unavailableDays'),'1');
+});
+
+test('reports leave out practice accounts and list a request to join only under approvals',()=>{
+ const snapshot={rows:[row('a','Real Person',dark),row('t','Test Actor',dark,{practice:true}),
+  row('r','Asked To Join',dark,{requested:true,approvalPending:true,productionName:'Written in the Dark · asked to join, not yet approved',character:'Self-proposed lead'})]};
+ const names=type=>runPeopleReport([snapshot],settings({type})).people.map(person=>person.name);
+ for(const type of ['roster','availability','documents','profiles','accounts'])assert.deepEqual(names(type),['Real Person'],type);
+ assert.deepEqual(names('pending'),['Asked To Join','Real Person'],'The approvals report still shows who is waiting.');
+ const pending=runPeopleReport([snapshot],settings({type:'pending'})).people.find(person=>person.name==='Asked To Join');
+ assert.equal(personReportValue(pending,'productions'),'Written in the Dark · asked to join, not yet approved');
+});
+
+test('spreadsheet downloads neutralise every formula-like cell',()=>{
+ const risky=['=1+1','+1','-1','@sum',' =1+1','\t=1+1','\r=1+1','﻿=1+1','​=1+1','⁠@x','＝1+1','＋1','－1','＠x','\tplain','\rplain'];
+ const safe=['plain','a=b','1-2','name@example.invalid','  spaced text','Tess (Grip)'];
+ const lines=reportCsv(['Value'],[...risky,...safe].map(value=>[value])).split('\r\n').slice(1);
+ risky.forEach((value,index)=>assert.ok(lines[index].startsWith('"\''),'Stored as text: '+JSON.stringify(value)));
+ safe.forEach((value,index)=>assert.equal(lines[risky.length+index],'"'+value+'"','Left alone: '+value));
+});

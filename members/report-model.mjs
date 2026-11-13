@@ -19,8 +19,10 @@ const text=value=>String(value??'');
 const folded=value=>text(value).normalize('NFKC').toLocaleLowerCase('en-US').trim();
 const identity=row=>JSON.stringify([row.profileId,folded(row.name)]);
 export function availabilityCounts(row){
- const days=row.days||[],answered=days.filter(day=>answeredStatus(day.status)).length;
- return {answered,total:days.length,available:days.filter(day=>day.status==='available').length,unavailable:days.filter(day=>day.status==='unavailable').length,maybe:days.filter(day=>day.status==='maybe').length,check:days.filter(day=>day.status==='needs-confirmation').length};
+ // Only a day the person answered counts as a response. A blank day the calendar treats as
+ // unavailable, because the same month has other answers, is not something they told us.
+ const days=row.days||[],given=days.filter(day=>!day.implicit),answered=given.filter(day=>answeredStatus(day.status)).length;
+ return {answered,total:days.length,available:given.filter(day=>day.status==='available').length,unavailable:given.filter(day=>day.status==='unavailable').length,maybe:given.filter(day=>day.status==='maybe').length,check:given.filter(day=>day.status==='needs-confirmation').length};
 }
 export function reportField(row,field){
  const counts=availabilityCounts(row);
@@ -81,6 +83,9 @@ function readyMatch(row,settings){
 }
 export function runPeopleReport(snapshots,settings){
  let rows=snapshots.flatMap(snapshot=>[...(snapshot.rows||[]),...(settings.includeUnassigned?snapshot.unassigned||[]:[])]);
+ // Practice accounts never count. Someone who has only asked to join a film is not on its roster
+ // yet, so they appear in the approvals report and nowhere else.
+ rows=rows.filter(row=>!row.practice&&(!row.requested||settings.type==='pending'));
  rows=rows.filter(row=>settings.productions.includes(row.productionId)||settings.includeUnassigned&&!row.productionId);
  let people=groupReportPeople(rows);
  if(settings.audience==='accounts')people=people.filter(p=>p.assignments.some(r=>r.hasAccount));
@@ -121,6 +126,9 @@ export function normalizedReportConfig(value){
  return {type:value.type,columns:['name',...columns.filter(key=>key!=='name')],status,match:value.match||'all',conditions:conditions.map(({field,operator,value})=>({field,operator,value})),search:typeof value.search==='string'?value.search.slice(0,200):'',minMinutes,weekendsFirst:value.weekendsFirst!==false};
 }
 export function reportCsv(headers,rows){
- const cell=value=>{let s=text(value);if(/^[\s\uFEFF]*[=+@-]/.test(s))s="'"+s;return '"'+s.replaceAll('"','""')+'"';};
+ // A cell a spreadsheet could run as a formula is stored as plain text. That covers the usual
+ // = + - @ starts, their full-width forms, a leading tab or return, and any of them hidden
+ // behind spaces or invisible characters.
+ const cell=value=>{let s=text(value);if(/^[\t\r]/.test(s)||/^[\s\uFEFF\u200B-\u200D\u2060]*[=+@\-\uFF1D\uFF0B\uFF0D\uFF20]/.test(s))s="'"+s;return '"'+s.replaceAll('"','""')+'"';};
  return '\uFEFF'+[headers,...rows].map(row=>row.map(cell).join(',')).join('\r\n');
 }
