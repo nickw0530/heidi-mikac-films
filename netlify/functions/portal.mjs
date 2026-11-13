@@ -147,7 +147,7 @@ export default async function handle(req, context) {
   const url=new URL(req.url), action=url.searchParams.get('action')||'home';
   const production=['heidimikacfilms.com','www.heidimikacfilms.com'].includes(url.hostname);
   let productionId=url.searchParams.get('production')||'written-in-the-dark';
-  requireThat(catalogs[productionId],'Unknown production.');
+  requireThat(Object.hasOwn(catalogs,productionId),'Unknown production.');
   const rawStore=getStore({name:production?'hmf-members-v1':'hmf-preview-'+(process.env.DEPLOY_ID||'local'),consistency:'strong'});
   // Each contract round has independent signing state. Prior files and records stay in their original scope.
   const legacyScoped=key=>productionId!=='written-in-the-dark'&&/^(tasks|agreements|agreement-history|resources|files|offline|offline-history|contract)\//.test(key)?'productions/'+productionId+'/'+key:key;

@@ -75,6 +75,10 @@ test('a request the portal does not understand is an error, never a silent succe
  assert.equal((await globalThis.__portalSafetyStore.get('members/'+real)).revoked,undefined);
  assert.equal((await call('noSuchAction',{who:null,body:{}})).status,401,'Signed-out visitors learn nothing about which requests exist.');
  assert.equal((await call('noSuchAction',{who:'member',body:{}})).status,404);
+ for(const production of ['constructor','__proto__','toString','no-such-film']){
+  const url=new URL('https://heidimikacfilms.com/.netlify/functions/portal');url.search=new URLSearchParams({action:'published',production});
+  assert.equal((await handle(new Request(url),{ip:'198.51.100.7'})).status,400,'An unknown production is refused cleanly: '+production);
+ }
 });
 
 test('scheduled jobs refuse to run from a deploy that is not the published one',async()=>{
