@@ -136,6 +136,9 @@ export async function deliver(store,{currentCalendarEvent}={}){
    }
    if(!r.ok){await store.setJSON(key,{...v,lastProviderCheck:Date.now(),error:'Delivery status unavailable (Resend returned '+r.status+').'});continue;}
    if(tracking?.blocked){await store.delete(TRACKING_KEY);tracking=null;}
-   const data=await r.json();const status=['delivered','bounced','complained','failed','suppressed','delivery_delayed'].includes(data.last_event)?data.last_event:v.status;await store.setJSON(key,{...v,status,error:null,lastProviderCheck:Date.now(),updated:status===v.status?v.updated:Date.now()});}catch{}
+   const data=await r.json();
+   // Opened or clicked means it arrived; record it as delivered so it stops being re-checked.
+   const event=['opened','clicked'].includes(data.last_event)?'delivered':data.last_event;
+   const status=['delivered','bounced','complained','failed','suppressed','delivery_delayed'].includes(event)?event:v.status;await store.setJSON(key,{...v,status,error:null,lastProviderCheck:Date.now(),updated:status===v.status?v.updated:Date.now()});}catch{}
  }
 }

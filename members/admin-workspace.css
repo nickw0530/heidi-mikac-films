@@ -93,3 +93,18 @@ main:has(.admin-workspace) > h1 {
   .admin-workspace .person-editor-heading, .admin-workspace .production-workspace { padding: 12px; }
   .admin-workspace .action-inbox { padding: 12px; }
 }
+
+/* What the public and the member can each see, at the top of a person's film tab. */
+.visibility-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0 0 18px; }
+.visibility-summary > div { padding: 14px 16px; border: 1px solid #66545d; border-left: 4px solid #98bba1; border-radius: 8px; background: #221d23; }
+.visibility-summary > div + div { border-left-color: #93b5c7; }
+.visibility-summary dt { font-size: 13px; letter-spacing: .04em; text-transform: uppercase; color: #e0cbd4; }
+.visibility-summary dd { margin: 6px 0 0; }
+.metrics small { display: block; margin-top: 6px; font-size: 13px; line-height: 1.4; color: #e0cbd4; }
+.next-step { padding: 12px 14px; border-left: 4px solid #efbf68; background: #29231c; border-radius: 6px; }
+@media (max-width: 700px) { .visibility-summary { grid-template-columns: 1fr; } }
+
+/* Comfortable tap targets for every disclosure row, the picker and the header link. */
+main details > summary { min-height: 44px; padding-block: 10px; box-sizing: border-box; }
+.admin-workspace .production-picker label { padding: 10px 0; }
+body > header a { display: inline-block; padding: 10px 0; }

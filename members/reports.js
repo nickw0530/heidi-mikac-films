@@ -209,11 +209,17 @@ export function mountReports(container,{request,productions,owner}){
   const rows=result.shared.flatMap(comparison=>comparison.days.filter(day=>status==='all'||status==='follow-up'&&(day.missing.length||day.maybe?.length||day.needsConfirmation.length)||status==='matches'&&day.windows.length).map(day=>({...day,productionId:comparison.productionId,productionName:comparison.film})));
   return rows.sort((a,b)=>(weekendsFirst?Number(![0,5,6].includes(new Date(a.date+'T12:00:00Z').getUTCDay()))-Number(![0,5,6].includes(new Date(b.date+'T12:00:00Z').getUTCDay())):0)||a.date.localeCompare(b.date)||a.productionName.localeCompare(b.productionName));
  }
- function sharedStatus(day){return day.windows.length?'Confirmed':day.maybe?.length?'Maybe / needs confirmation':day.missing.length||day.needsConfirmation.length?'Missing / check hours':'No shared window';}
+ // Each film is compared using only the selected people who are on that film.
+ const coveredPeople=productionId=>result.people.filter(person=>person.assignments.some(row=>row.productionId===productionId));
+ const coversEveryone=productionId=>coveredPeople(productionId).length===result.people.length;
+ function sharedStatus(day){
+  if(day.windows.length)return coversEveryone(day.productionId)?'Confirmed':'Confirmed for '+coveredPeople(day.productionId).length+' of '+result.people.length+' selected';
+  return day.maybe?.length?'Maybe / needs confirmation':day.missing.length||day.needsConfirmation.length?'Missing / check hours':'No shared window';
+ }
  const windowText=day=>day.windows.map(window=>timeLabel(window.start)+'–'+timeLabel(window.end)+' ('+Math.round(window.minutes/60*100)/100+'h)').join('\n');
  function exportReport(){
   if(!result)return;
-  const type=REPORT_TYPES.find(type=>type.id===result.settings.type),rows=result.settings.type==='shared'?sharedDays().map(day=>[day.date,day.productionName,windowText(day),sharedStatus(day),result.people.filter(p=>p.assignments.some(row=>row.productionId===day.productionId)).map(p=>p.name).join('; ')]):result.people.map(person=>result.settings.columns.map(key=>personReportValue(person,key)));
+  const type=REPORT_TYPES.find(type=>type.id===result.settings.type),rows=result.settings.type==='shared'?sharedDays().map(day=>[day.date,day.productionName,windowText(day),sharedStatus(day),coveredPeople(day.productionId).map(p=>p.name).join('; ')]):result.people.map(person=>result.settings.columns.map(key=>personReportValue(person,key)));
   const headers=result.settings.type==='shared'?['Date','Production','Shared filming windows','Status','Selected people']:result.settings.columns.map(key=>REPORT_COLUMNS[key]);
   const range=usesDates(result.settings)?result.from+'_to_'+result.to:today();
   const blob=new Blob([reportCsv(headers,rows)],{type:'text/csv;charset=utf-8'}),url=URL.createObjectURL(blob),link=el('a',{href:url,download:'Heidi-Mikac-Films-'+type.id+'-'+range+'.csv'});document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
@@ -250,12 +256,13 @@ export function mountReports(container,{request,productions,owner}){
   output.replaceChildren(heading,metrics,el('div',{class:'reports-result-actions'},button('Download spreadsheet (.csv)',exportReport),button('Print / Save PDF',printReport)));
   if(!result.people.length){output.append(el('p',{class:'reports-empty'},'No people match these parameters.'));renderAdminTasks();return;}
   if(result.settings.type==='shared'){
-   const days=sharedDays();metrics.append(el('div',{},el('b',{},String(result.shared.reduce((sum,comparison)=>sum+comparison.matches.length,0))),el('span',{},'Confirmed filming dates')));
+   const days=sharedDays();metrics.append(el('div',{},el('b',{},String(result.shared.filter(comparison=>coversEveryone(comparison.productionId)).reduce((sum,comparison)=>sum+comparison.matches.length,0))),el('span',{},'Dates confirmed for everyone selected')));
+   if(result.shared.some(comparison=>!coversEveryone(comparison.productionId)))output.append(el('p',{class:'reports-note'},'Each film is compared using only the selected people who are on that film. The “Compared” column shows who each row covers.'));
    const people=el('p',{class:'reports-participants'},'People selected: ');result.people.forEach((person,index)=>{if(index)people.append(' · ');people.append(personLink(person));});output.append(people);
    if(!days.length)output.append(el('p',{class:'reports-empty'},'No dates match this view. Maybe and unanswered days do not count as confirmed time. Choose “Dates needing responses / confirmation” to see missing answers.'));
-   else output.append(resultTable(['Date','Production','Shared time','Status'],days.map(day=>{
+   else output.append(resultTable(['Date','Production','Shared time','Status','Compared'],days.map(day=>{
     const names=[...day.missing,...day.maybe||[],...day.needsConfirmation].map(person=>person.name).sort((a,b)=>a.localeCompare(b));
-    return [dayLabel(day.date),day.productionName,windowText(day)||'—',el('div',{},sharedStatus(day),names.length?el('small',{},names.join(' · ')):null)];
+    return [dayLabel(day.date),day.productionName,windowText(day)||'—',el('div',{},sharedStatus(day),names.length?el('small',{},names.join(' · ')):null),coveredPeople(day.productionId).map(person=>person.name).join(' · ')];
    }),'Shared filming dates'));
   }else{
    if(result.settings.type==='availability'){

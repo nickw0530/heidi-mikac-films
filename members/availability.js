@@ -181,13 +181,19 @@ export function mountAvailability(container,options){
   details.append(week,button('Copy Monday to Tuesday–Friday',()=>{for(const index of [2,3,4,5])draft.weekly[index]=clone(draft.weekly[1]);markDirty();render();},{class:'availability-small'}),el('p',{class:'availability-help'},'For overnight availability, enter one window ending at midnight and another starting on the following date. Saving also includes any unsaved date changes.'),button('Save weekly availability',()=>save('Weekly availability saved.'),{disabled:saving||quickSaving?'disabled':null}));
   return details;
  }
+ // Exact on-set hours saved earlier are kept. Tapping a day back round to Available restores
+ // those hours instead of quietly widening the day to all day.
+ const savedHours=new Map();
+ const allDay=windows=>windows.length===1&&windows[0].start==='00:00'&&windows[0].end==='24:00';
  function cycleDay(date){
   if(!canEdit()||saving||loading)return;
   selectedDate=date;
   lastQuickChange={date,exception:Object.hasOwn(draft.exceptions,date)?clone(draft.exceptions[date]):null};
-  const cycle=['unknown','available','unavailable','maybe'],current=rawAvailabilityDay(draft,date).status;
+  const before=rawAvailabilityDay(draft,date);
+  if(!savedHours.has(date)&&before.status==='available'&&before.windows?.length&&!allDay(before.windows))savedHours.set(date,clone(before.windows));
+  const cycle=['unknown','available','unavailable','maybe'],current=before.status;
   const status=cycle[(Math.max(0,cycle.indexOf(current))+1)%cycle.length];
-  draft.exceptions[date]={status,windows:status==='available'?[{start:'00:00',end:'24:00'}]:[]};
+  draft.exceptions[date]={status,windows:status==='available'?(savedHours.has(date)?clone(savedHours.get(date)):[{start:'00:00',end:'24:00'}]):[]};
   queueDaySave();
  }
  function undoDay(){

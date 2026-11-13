@@ -748,3 +748,26 @@ test('posted messages and files are announced as Film Portal email, with the fil
  const long=await call('resource',{body:pdf,params:{title:'Too long',text:'x'.repeat(1001),audience:'selected',recipient:actor}});
  assert.equal(long.status,400);
 });
+
+test('an admin can set aside a request SignWell reports as ended, and only then',async()=>{
+ const context=await fixture();await setAgreement(context,{status:'Waiting on actor'});
+ const key=currentAgreementKey(dark,actor),document=context.documents.get('active-doc');
+ const setAside=(options={})=>call('recoverAgreement',{body:{replaceEnded:true,documentId:'active-doc'},...options});
+ assert.equal((await setAside()).status,409,'A request SignWell still shows as open cannot be set aside.');
+ assert.equal((await context.store.get(key)).cleared,undefined);
+ document.status='declined';
+ for(const options of [{who:null},{who:'member'},{who:'Nick',origin:'https://other.invalid'}])assert.ok([401,403].includes((await setAside(options)).status));
+ assert.equal((await call('recoverAgreement',{body:{replaceEnded:true,documentId:'some-other-doc'}})).status,409,'The request must be the one on screen.');
+ const done=await setAside({who:'Heidi'});
+ assert.equal(done.status,200,JSON.stringify(done.data));assert.equal(done.data.status,'declined');
+ const record=await context.store.get(key);
+ assert.equal(record.cleared,true);assert.equal(record.id,'active-doc','The ended request stays on record.');assert.equal(record.clearedBy,'Heidi');
+ const history=[...context.store.records.keys()].filter(item=>item.includes('agreement-history/'+actor+'/'));
+ assert.equal(history.length,1,'A copy goes to the agreement history.');
+ assert.equal((await context.store.get(history[0])).status,'declined');
+ assert.ok(context.calls.every(item=>item.method==='GET'),'Nothing is cancelled, deleted or sent at SignWell.');
+ const member=await row(dark,'Nick');
+ assert.equal(member.paperworkStatus,'No agreement on file','A new agreement can now be prepared.');
+ assert.ok((await adminActions(context.store,dark)).some(item=>item.member===actor&&item.label.startsWith('Prepare a new agreement')));
+ assert.equal((await setAside()).status,400,'There is nothing left to set aside.');
+});
