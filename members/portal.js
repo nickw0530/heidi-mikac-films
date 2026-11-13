@@ -11,6 +11,7 @@ const directoryFilters=[
  ['missing','No agreement on file'],['progress','Signing in progress'],['bio','Biography needed'],
  ['headshot','Headshot needed'],['tasks','Open tasks']
 ];
+const plural=(count,one,many)=>count+' '+(count===1?one:many);
 function matchesDirectoryFilter(person,filter){
  if(filter==='all')return true;
  if(person.member?.adminProfile)return false;
@@ -601,8 +602,11 @@ function renderCombinedOffice(states,picker){
   renderEditor();
   show('people');
   const child=editor.filmId&&offices.get(editor.filmId);
-  const target=child?.sectionTarget(section)||personEditor.querySelector('h2');
-  target?.scrollIntoView({block:'start'});
+  let target=child?.sectionTarget(section)||personEditor.querySelector('h2');
+  // "Add email and invite" from the inbox opens straight at the email field.
+  const invite=section==='shared'&&personEditor.querySelector('form[data-action="invite"]')?.closest('details');
+  if(invite){invite.open=true;target=invite.querySelector('input[name="email"]')||target;}
+  target?.scrollIntoView({block:'center'});
   target?.focus({preventScroll:true});
  }
  function refreshRows(next){
@@ -770,7 +774,7 @@ async function load(initial){
  }
  const audit=people.map(outstanding);
  const group=(label,items,detail)=>'<details class="audit-group"><summary>'+label+' <b>'+items.length+'</b></summary>'+
-  (items.length?'<ul>'+sortPeople(items).map(row=>'<li><button type="button" '+(row.member?'data-open-person':'data-open-catalog')+'="'+escape(row.id)+'">'+escape(row.name)+'</button><span>'+escape(detail(row))+'</span></li>').join('')+'</ul>':'<p>Nothing outstanding.</p>')+'</details>';
+  (items.length?'<ul>'+sortPeople(items).map(row=>'<li><button type="button" '+(row.member?'data-open-person':'data-open-catalog')+'="'+escape(row.id)+'">'+escape(row.name)+'</button><span>'+escape(detail(row))+(row.member?'':' · website credit only, not invited yet')+'</span></li>').join('')+'</ul>':'<p>Nothing outstanding.</p>')+'</details>';
  const attention='<section class="audit"><small>'+escape(s.film)+' · PRODUCTION OFFICE</small><h2>Needs attention</h2><p>Open a category to see who needs follow-up.</p>'+group('No agreement on file',audit.filter(x=>!x.exempt&&x.status==='No agreement on file'),x=>x.status)+group('Paperwork in progress',audit.filter(x=>!x.exempt&&!['Complete','Document N/A','Not required','No agreement on file'].includes(x.status)),x=>x.status)+group('Missing profile items or open tasks',audit.filter(x=>!x.exempt&&x.gaps.length),x=>x.gaps.join(' · '))+'</section>';
  const websitePlacement=profile=>{
   const placement=profile.websitePlacement,lead=placement?.castPlacement==='lead';
@@ -884,8 +888,31 @@ async function load(initial){
   const film=escape(s.film);
   const ended=m.agreement?.id&&!tracked&&endedSigning[actual]?form('recoverAgreement','<input type="hidden" name="replaceEnded" value="yes"><input type="hidden" name="documentId" value="'+escape(m.agreement.id)+'"><p><strong>'+escape(endedSigning[actual])+'.</strong> This request can no longer be signed. Set it aside to prepare a new agreement. The ended request stays in SignWell and in the agreement history.</p>','Set aside and prepare a new agreement',m.id):'';
   const needsMaster=!tracked&&!s.agreementReady&&(!m.agreement||m.agreement.cleared)?'<p class="next-step"><strong>An agreement cannot be prepared yet.</strong> The approved contract master for '+film+' is not installed. Install it under Documents, in Agreement setup, then return here.</p><p><button type="button" data-go-view="documents">Open Documents for '+film+'</button></p>':'';
-  const review=m.agreement?.id&&actual&&actual!=='Complete'&&!endedSigning[actual]?'<button data-status=""'+escape(m.id)+'">'+(actual==='Waiting on Heidi'?'Open for Heidi’s signature':'Check signing request status')+'</button>':'';
+  const review=m.agreement?.id&&actual&&actual!=='Complete'&&!endedSigning[actual]?'<button data-status="'+escape(m.id)+'">'+(actual==='Waiting on Heidi'?'Open for Heidi’s signature':'Check signing request status')+'</button>':'';
   return '<section class="member-paperwork"><h4>Documents &amp; agreements</h4>'+requirement+signing+review+'<p>Use Complete for paperwork handled outside the portal, or Document N/A when it is not needed. An existing SignWell request stays active.</p>'+documentControls(m,'agreement',tracked?.reason)+(tracked?'<p>Reopen the requirement to prepare or send a new contract.</p>':'')+draft+ended+needsMaster+(!tracked&&s.agreementReady&&(!m.agreement||m.agreement.cleared)?agreement(m):'')+recover(m)+(m.agreement?.syncError?'<p>'+escape(m.agreement.syncError)+'</p>':'')+saved+resources.map(d=>trackDocument(m,d)).join('')+'<div data-signing></div></section>';
+ }
+ // One place that answers: what does the public see for this film, and what does this person see?
+ function visibilitySummary(m){
+  const state=m.publication?.[s.productionId]?.state,credit=m.role||'no credit entered yet';
+  let shown;
+  if(m.practice)shown='Nothing. Practice accounts are never public.';
+  else if(m.pendingContact)shown='Nothing. A saved contact stays private until they are invited and approved.';
+  else if(state==='Published')shown='Their name, the credit “'+credit+'”, and the approved biography and headshot.'+(m.productionRequests?.[s.productionId]&&!m.adminProfile?' Newer edits are waiting for approval and are not public.':'');
+  else if(state==='Hidden from website')shown='Nothing. This profile is switched off for this film’s website.';
+  else if(state==='Awaiting approval')shown='Nothing yet. This profile is not published until an admin approves it.';
+  else if(state==='Needs bio and headshot')shown='Nothing yet. It needs a biography and a headshot first.';
+  else if(state==='Sync failed')shown='Nothing right now. The profile should be public but is missing from the website feed. Save the profile again, then check here.';
+  else shown='Nothing yet.';
+  let theirs;
+  if(m.adminProfile)theirs='This is an admin’s own cast profile. It has no separate member sign-in.';
+  else if(m.needsEmail)theirs='Nothing. They have no email address on file, so no invitation has been sent.';
+  else if(!m.activated)theirs='Nothing yet. They were invited but have not set a password.';
+  else{
+   const board=s.resources.filter(item=>!item.audience||item.audience.includes(m.id)).length,open=(m.tasks||[]).filter(task=>!task.done).length;
+   const agreementNote=m.paperworkTracking?'the agreement requirement as '+trackingLabel(m.paperworkTracking.reason).toLowerCase():m.agreement?.id&&!m.agreement.cleared?'their agreement as “'+signingLabel(m.agreement.status,true)+'”':'no agreement yet';
+   theirs='Their own profile, '+plural(board,'message or file','messages and files')+' on the production board, '+plural(open,'open task','open tasks')+', and '+agreementNote+'.';
+  }
+  return '<dl class="visibility-summary"><div><dt>On the public '+escape(s.film)+' website</dt><dd>'+escape(shown)+'</dd></div><div><dt>In their Film Portal</dt><dd>'+escape(theirs)+'</dd></div></dl>';
  }
  const personalReview=m=>m.adminProfile?'':(s.productionReviews||[]).filter(r=>r.id===m.id).map(reviewCard).join('');
  const personalMessage=m=>panel(m.needsEmail?'Save a message for this person':'Send a message',form('notice','<p>For '+escape(m.name)+' · '+escape(s.film)+'</p><input type="hidden" name="audience" value="selected"><input type="hidden" name="recipient" value="'+escape(m.id)+'">'+input('title','Subject')+'<label>Message<textarea required name="text"></textarea></label>',m.needsEmail?'Save message':'Send to '+escape(m.name),m.id));
@@ -899,7 +926,7 @@ async function load(initial){
   const activity=profileActivityPanel(member,s.productionId);
   const documentActions=member.paperworkExempt?'':panel(member.needsEmail?'Save a document for this person':'Send a document',form('resource',documentFields,member.needsEmail?'Save document':'Send to '+escape(member.name),member.id));
   const taskActions=member.adminProfile?'':tasks(member)+panel('Assign a task',form('task',input('title','Task'),'Assign task',member.id));
-  return '<div class="film-person-card" data-person="'+escape(member.id)+'">'+heading+personalReview(member)+publication(member)+personPaperwork(member)+
+  return '<div class="film-person-card" data-person="'+escape(member.id)+'">'+heading+visibilitySummary(member)+personalReview(member)+publication(member)+personPaperwork(member)+
    availability+documentActions+personalMessage(member)+taskActions+(member.filmProfile&&library.find(x=>x.id===member.filmProfile)?offline(library.find(x=>x.id===member.filmProfile)):'')+linkControls(member)+activity+'</div>';
  }
  renderOfficePerson=film=>{
@@ -913,7 +940,12 @@ async function load(initial){
  const account=s.passwordSet?'':'<section><h2>Set your password</h2><p>Your sign-in name is <strong>'+escape(admin?s.self:s.members[0].email)+'</strong>.</p>'+form('choosePassword',newPassword,'Save my password')+'</section>';
  const updates=s.resources.map(r=>'<section><small>'+escape(new Date(r.created).toLocaleDateString())+' · '+escape(r.type)+'</small><h3>'+escape(r.title)+'</h3>'+(r.type==='PDF'?(r.text?'<p>'+escape(r.text)+'</p>':'')+'<a href="'+escape(url('resource',r.id))+'">Download PDF</a>':'<p>'+escape(r.text)+'</p>')+(admin?form('removeResource','',r.type==='PDF'?'Remove file':'Remove message',r.id):'')+'</section>').join('');
  const castAccounts=s.members.filter(m=>!m.adminProfile&&!m.needsEmail);
- const counts='<div class="metrics"><div><b>'+people.length+'</b><span>Production roster</span></div><div><b>'+castAccounts.length+'</b><span>Portal accounts</span></div><div><b>'+castAccounts.filter(m=>m.activated).length+'</b><span>Activated accounts</span></div><div><b>'+castAccounts.filter(m=>!outstanding(m).gaps.some(x=>['Bio','Headshot'].includes(x))).length+'</b><span>Complete account profiles</span></div></div>';
+ // Each count says who it counts, so the numbers can be checked against the lists below.
+ const counts='<div class="metrics">'+
+  '<div><b>'+people.length+'</b><span>People on this film</span><small>'+plural(s.members.length,'portal profile','portal profiles')+(available.length?' and '+plural(available.length,'website credit','website credits')+' with no portal profile yet':'')+'</small></div>'+
+  '<div><b>'+castAccounts.length+'</b><span>Invited to the portal</span><small>Have an email address on file. Admin profiles are not counted.</small></div>'+
+  '<div><b>'+castAccounts.filter(m=>m.activated).length+'</b><span>Accounts set up</span><small>Chose a password and can sign in.</small></div>'+
+  '<div><b>'+castAccounts.filter(m=>!outstanding(m).gaps.some(x=>['Bio','Headshot'].includes(x))).length+'</b><span>Profiles complete</span><small>Invited people who have a biography and a headshot.</small></div></div>';
  const mailRows=[...(s.mailQueue||[]).map(x=>({...x,status:x.lastError?'Retry scheduled':'Queued'})),...(s.mailLog||[])];
  // Plain words for what happened to each email. Stored values from the email provider stay as they are.
  const mailStatus={
@@ -1243,7 +1275,7 @@ listen('click',async e=>{
  }
  if(status)status.textContent=label;
  message.textContent=label;
- if(!r.url&&['Draft ready to send','Complete'].includes(r.status)){await load();message.textContent=label;return;}
+ if(!r.url&&(['Draft ready to send','Complete'].includes(r.status)||endedSigning[r.status])){await load();message.textContent=label;return;}
  if(!container)return;
  const view=container.closest('[data-view]');if(view&&r.url){activeView=view.dataset.view;applyView();}
  if(r.url)await showSigning(r.url,b.dataset.status,container,attempt,r.recipientName);
