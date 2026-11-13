@@ -1568,7 +1568,8 @@ return {
    const panel=card?.querySelector('form[data-action="'+action+'"]')?.closest('details');
    if(panel){panel.open=true;return panel.querySelector('summary');}
   }
-  const target=area==='paperwork'&&card?.querySelector('.member-paperwork')||office.section;
+  // With no agreement form to open, land on the paperwork section, which explains what is missing.
+  const target=['paperwork','prepare'].includes(area)&&card?.querySelector('.member-paperwork')||office.section;
   target.tabIndex=-1;
   return target;
  },
