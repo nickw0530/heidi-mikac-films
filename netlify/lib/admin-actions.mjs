@@ -1,7 +1,7 @@
 import {practiceName} from './practice.mjs';
 import {createHash} from 'node:crypto';
 import {enqueue,portalUrl} from './mail.mjs';
-import {COUNTERSIGN_EMAIL,refreshAgreement,SIGNING_REFRESH_INTERVAL} from './signing.mjs';
+import {COUNTERSIGN_EMAIL,refreshAgreement,SIGNING_REFRESH_INTERVAL,ENDED_STATUSES,transientSyncError} from './signing.mjs';
 import {AGREEMENT_CYCLE,currentAgreementPrefix,currentAgreementKey} from './agreement-cycle.mjs';
 import {manualAgreementKey,readAgreementTracking} from './paperwork.mjs';
 import {adminProfileOwner,loadAdminProfiles} from './admin-profiles.mjs';
@@ -45,14 +45,20 @@ export async function adminActions(store,production,{refresh=false,members,membe
   }
  }
  for(const {m,k,a,tracked} of agreements){
-  if(a?.id&&!a.cleared&&a.status==='Waiting on Heidi'&&!a.syncError){
+  // A brief failure to reach SignWell is not something to act on; the last known status still stands.
+  const syncProblem=a?.syncError&&!transientSyncError(a);
+  if(a?.id&&!a.cleared&&a.status==='Waiting on Heidi'&&!syncProblem){
    add('any','Open for Heidi’s signature · '+m.name,k+'/countersign/'+a.id,'people',m.id,true);
    if(tracked)result.at(-1).suppressNotice=true;
    continue;
   }
   if(tracked)continue;
-  if(a?.status==='Draft ready to send'&&!a.syncError)add('any','Send the pending agreement for '+m.name,k+'/send/'+a.id,'people',m.id);
-  else if(a?.syncError||/recovery|declined|cancel|expired|bounced|failed/i.test(a?.status||''))add('any','Review the signing request for '+m.name,k+'/'+(a.id||a.created)+'/review','people',m.id);
+  // A reservation that never received a document, and has sat for ten minutes, was interrupted.
+  const interrupted=a&&!a.id&&!a.cleared&&/^Preparing/.test(a.status||'')&&Date.now()-(a.created||0)>600000;
+  if(a?.status==='Draft ready to send'&&!syncProblem)add('any','Send the pending agreement for '+m.name,k+'/send/'+a.id,'people',m.id);
+  // An ended request has its own notice, so an earlier connection problem never uses it up.
+  else if(a?.id&&!a.cleared&&ENDED_STATUSES.has(a.status))add('any','Signing request '+a.status+' · review for '+m.name,k+'/'+a.id+'/ended/'+a.status,'people',m.id);
+  else if(syncProblem||interrupted||/recovery|bounced|failed|^error$/i.test(a?.status||''))add('any','Review the signing request for '+m.name,k+'/'+(a.id||a.created)+'/review','people',m.id);
   else if(!a||a.cleared)add('any','Prepare a new agreement for '+m.name,k+'/prepare/'+(a?.created||'initial'),'people',m.id);
  }
  const adminTasks=await Promise.all(['Nick','Heidi','any'].map(async owner=>{

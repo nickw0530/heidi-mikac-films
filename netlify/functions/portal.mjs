@@ -8,7 +8,7 @@ import {reportSnapshot,reportMatch,reportRecords,validateSavedReport} from '../l
 import {AVAILABILITY_TIME_ZONE,normalizeAvailability,availabilityForDate,listDates,matchAvailability} from '../lib/availability.mjs';
 import {begin as beginCalendar,events as calendarEvents} from './calendar-callback.mjs';
 import sharp from 'sharp';
-import {signwell,documentStatus,refreshAgreement,completedAgreementPdf} from '../lib/signing.mjs';
+import {signwell,documentStatus,refreshAgreement,completedAgreementPdf,ENDED_STATUSES} from '../lib/signing.mjs';
 import {offlineSigningKey,refreshOfflineCountersign} from '../lib/offline-signing.mjs';
 import darkCatalog, {whereinCatalog} from '../lib/film-profiles.mjs';
 import { getStore } from '@netlify/blobs';
@@ -61,6 +61,7 @@ const profileActivityLabels={
  'agreement-complete':'Agreement requirement marked complete',
  'agreement-not-required':'Agreement marked not required',
  'agreement-reopened':'Agreement requirement reopened',
+ 'agreement-ended':'Ended signing request set aside for a new agreement',
  'document-complete':'Document requirement marked complete',
  'document-not-required':'Document marked not required',
  'document-reopened':'Document requirement reopened'
@@ -1374,6 +1375,22 @@ export default async function handle(req, context) {
   }
   if(action==='recoverAgreement'&&post){
     onlyAdmin();const m=await target(),key='agreements/'+uid,rec=await store.getWithMetadata(key,{type:'json'});
+    if(body.replaceEnded===true){
+      // A request SignWell itself reports as declined, expired or cancelled can be set aside so a
+      // new agreement can be prepared. Nothing is cancelled or deleted: the ended request stays in
+      // SignWell and a copy of this record goes to the agreement history.
+      requireThat(rec?.data?.id&&!rec.data.cleared,'There is no signing request to set aside.');
+      requireThat(body.documentId===rec.data.id,'This agreement changed. Reload the profile.',409);
+      const d=await signwell('documents/'+encodeURIComponent(rec.data.id)+'/');
+      requireThat(!d.id||d.id===rec.data.id,'SignWell returned a different agreement.',409);
+      const status=documentStatus(d);
+      requireThat(ENDED_STATUSES.has(status),'SignWell still shows this request as open, so it cannot be set aside here.',409);
+      const ended={...rec.data,status,providerStatus:String(d.status||'').toLowerCase(),checkedAt:Date.now(),syncError:null,syncErrorSince:null};
+      await set('agreement-history/'+uid+'/'+token(),{...ended,setAsideBy:self,setAsideAt:Date.now()});
+      requireThat((await store.setJSON(key,{...ended,cleared:true,clearedReason:'ended',clearedBy:self,clearedAt:Date.now()},{onlyIfMatch:rec.etag})).modified,'Record changed; reload.',409);
+      await recordProfileActivity(productionId,'agreement-ended');
+      return json({ok:true,status});
+    }
     requireThat(rec?.data&&!rec.data.id,'No interrupted request to recover.');
     if(body.documentId){
       const id=string(body.documentId);requireThat(uuid.test(id),'Enter the SignWell document ID.');

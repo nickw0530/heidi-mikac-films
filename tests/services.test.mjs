@@ -61,3 +61,25 @@ for(const key of [replaced,wrongAddress,activated,racing]){
 records.set('agreements/a',{id:'doc',status:'Waiting on actor'});globalThis.fetch=async()=>Response.json({status:'sent',recipients:[{id:'1',status:'signed'}]});assert.equal((await refreshAgreement(store,'agreements/a')).status,'Waiting on Heidi');
 globalThis.fetch=async()=>{throw Error('Network down')};assert.equal((await refreshAgreement(store,'agreements/a',true)).status,'Waiting on Heidi');assert((await store.get('agreements/a')).syncError);
 console.log('PASS: contextual email buttons, escaping, reset links, stale invitation suppression, queue isolation, delivery logs and signing refresh failures. No external requests.');
+// A failed status check records when the trouble started, and a later success clears it.
+{
+ const {refreshAgreement:refresh,transientSyncError,SYNC_ERROR_GRACE}=await import('../netlify/lib/signing.mjs');
+ const {default:assertStrict}=await import('node:assert/strict');
+ const data=new Map();let revision=0;
+ const local={async getWithMetadata(k){const r=data.get(k);return r?{data:structuredClone(r.value),etag:r.etag}:null;},async get(k){return data.get(k)?.value??null;},async setJSON(k,v,o={}){const old=data.get(k);if(o.onlyIfMatch&&old?.etag!==o.onlyIfMatch)return {modified:false};data.set(k,{value:structuredClone(v),etag:String(++revision)});return {modified:true};}};
+ process.env.SIGNWELL_API_KEY='mock';const originalFetch=globalThis.fetch;
+ await local.setJSON('agreements/x',{id:'doc-x',status:'Waiting on actor'});
+ globalThis.fetch=async()=>{throw Error('Network down');};
+ const first=await refresh(local,'agreements/x',true);
+ assertStrict.ok(first.syncError&&Number.isFinite(first.syncErrorSince));assertStrict.equal(first.status,'Waiting on actor','The last known status is kept.');
+ assertStrict.equal(transientSyncError(first),true);
+ const second=await refresh(local,'agreements/x',true);
+ assertStrict.equal(second.syncErrorSince,first.syncErrorSince,'The start of the outage is remembered across failed checks.');
+ assertStrict.equal(transientSyncError(second,first.syncErrorSince+SYNC_ERROR_GRACE+1),false);
+ assertStrict.equal(transientSyncError({syncError:'Refresh the agreement status before attempting another send.'}),false,'An uncertain send is never treated as a brief outage.');
+ globalThis.fetch=async()=>Response.json({id:'doc-x',status:'sent',recipients:[{id:'1',status:'signed'}]});
+ const recovered=await refresh(local,'agreements/x',true);
+ assertStrict.equal(recovered.syncError,null);assertStrict.equal(recovered.syncErrorSince,null);assertStrict.equal(recovered.status,'Waiting on Heidi');
+ globalThis.fetch=originalFetch;
+ console.log('PASS: status-check outages are timed and cleared.');
+}

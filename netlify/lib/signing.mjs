@@ -21,6 +21,11 @@ export function documentStatus(d){
  return hasSigned(actor)?'Waiting on Heidi':'Waiting on actor';
 }
 export const SIGNING_REFRESH_INTERVAL=300000;
+// SignWell's own words for a request that has ended without being completed.
+export const ENDED_STATUSES=new Set(['declined','expired','canceled','cancelled']);
+// A refresh that fails is usually a brief outage. It only needs an admin's attention if it lasts.
+export const SYNC_ERROR_GRACE=30*60000;
+export const transientSyncError=(agreement,now=Date.now())=>!!agreement?.syncError&&Number.isFinite(agreement.syncErrorSince)&&now-agreement.syncErrorSince<SYNC_ERROR_GRACE;
 
 // maxAge is how long a stored status is trusted before asking SignWell again.
 export async function refreshAgreement(store,key,force=false,timeoutMs=15000,maxAge=SIGNING_REFRESH_INTERVAL){
@@ -30,9 +35,9 @@ export async function refreshAgreement(store,key,force=false,timeoutMs=15000,max
  try{
   const d=await signwell('documents/'+encodeURIComponent(a.id)+'/',undefined,timeoutMs);
   if(d.id&&d.id!==a.id)throw Error('SignWell returned a different agreement.');
-  next={...a,status:documentStatus(d),providerStatus:String(d.status||'').toLowerCase(),...(typeof d.test_mode==='boolean'?{testMode:d.test_mode}:{}),checkedAt:Date.now(),syncError:null};
+  next={...a,status:documentStatus(d),providerStatus:String(d.status||'').toLowerCase(),...(typeof d.test_mode==='boolean'?{testMode:d.test_mode}:{}),checkedAt:Date.now(),syncError:null,syncErrorSince:null};
  }catch{
-  next={...a,checkedAt:Date.now(),syncError:'Status could not be refreshed. Last known status shown.'};
+  next={...a,checkedAt:Date.now(),syncError:'Status could not be refreshed. Last known status shown.',syncErrorSince:a.syncErrorSince||Date.now()};
  }
  const saved=await store.setJSON(key,next,{onlyIfMatch:record.etag});
  return saved.modified?next:await store.get(key,{type:'json'});

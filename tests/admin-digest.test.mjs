@@ -228,3 +228,35 @@ test('email queued before an address was corrected never goes to the old address
  const log=[...store.data].filter(([key])=>key.startsWith('mail-log/')).map(([,record])=>record.value);
  assert.ok(log.some(row=>row.to==='wrong@example.invalid'&&row.status==='Not sent — email address changed'));
 });
+
+test('the action inbox ignores a brief SignWell outage and surfaces ended or stuck requests',async()=>{
+ const store=fixture(),production='written-in-the-dark',now=Date.now();
+ const person=async(id,agreement)=>{
+  await store.setJSON('members/'+id,{id,name:'Person '+id,email:id+'@example.invalid',productions:{[production]:{role:'Actor'}}});
+  if(agreement)await store.setJSON(currentAgreementKey(production,id),agreement);
+ };
+ const refreshError='Status could not be refreshed. Last known status shown.';
+ await person('blip',{id:'doc-blip',status:'Waiting on actor',syncError:refreshError,syncErrorSince:now-60000});
+ await person('down',{id:'doc-down',status:'Waiting on actor',syncError:refreshError,syncErrorSince:now-45*60000});
+ await person('countersign',{id:'doc-counter',status:'Waiting on Heidi',syncError:refreshError,syncErrorSince:now-60000});
+ await person('declined',{id:'doc-declined',status:'declined'});
+ await person('expired',{id:'doc-expired',status:'expired'});
+ await person('fresh',{status:'Preparing — check SignWell before retrying',created:now-60000});
+ await person('stuck',{status:'Preparing — check SignWell before retrying',created:now-11*60000});
+ await person('error',{id:'doc-error',status:'error'});
+ await person('unknown',{id:'doc-unknown',status:'Send status unknown — check SignWell',syncError:'Refresh the agreement status before attempting another send.'});
+ const actions=await adminActions(store,production);
+ const labelFor=id=>actions.filter(item=>item.member===id).map(item=>item.label);
+ assert.deepEqual(labelFor('blip'),[],'One failed status check is not something to act on.');
+ assert.deepEqual(labelFor('down'),['Review the signing request for Person down'],'A problem that lasts is.');
+ assert.deepEqual(labelFor('countersign'),['Open for Heidi’s signature · Person countersign'],'A brief outage does not hide the countersignature step.');
+ assert.deepEqual(labelFor('declined'),['Signing request declined · review for Person declined']);
+ assert.deepEqual(labelFor('expired'),['Signing request expired · review for Person expired']);
+ assert.deepEqual(labelFor('fresh'),[],'A request being prepared right now is left alone.');
+ assert.deepEqual(labelFor('stuck'),['Review the signing request for Person stuck'],'A reservation that never got a document is surfaced after ten minutes.');
+ assert.deepEqual(labelFor('error'),['Review the signing request for Person error']);
+ assert.deepEqual(labelFor('unknown'),['Review the signing request for Person unknown'],'An uncertain send still needs review straight away.');
+ // The ended request has its own notice key, so an earlier connection problem never uses it up.
+ const ended=actions.find(item=>item.member==='declined'),review=actions.find(item=>item.member==='down');
+ assert.ok(ended.key.endsWith('/doc-declined/ended/declined'));assert.ok(review.key.endsWith('/doc-down/review'));
+});

@@ -227,8 +227,10 @@ app.addEventListener('toggle',async event=>{
  }
 },true);
 const trackingLabel=reason=>['complete','hard-copy'].includes(reason)?'Recorded complete':reason==='not-required'?'Not required':'';
+const endedSigning={declined:'Declined in SignWell',expired:'Expired in SignWell',canceled:'Cancelled in SignWell',cancelled:'Cancelled in SignWell'};
 function signingLabel(status,member=false){
  if(status==='Complete')return 'Signed by both';
+ if(endedSigning[status])return endedSigning[status];
  if(status==='Waiting on actor')return member?'Awaiting your signature':'Awaiting cast or crew signature';
  if(status==='Waiting on Heidi')return 'Awaiting Heidi Mikac’s signature';
  return status||'No agreement on file';
@@ -878,8 +880,12 @@ async function load(initial){
   const draft=m.agreement?.id&&actual==='Draft ready to send'&&!tracked&&!m.needsEmail?form('sendAgreement','<input type="hidden" name="documentId" value="'+escape(m.agreement.id)+'"><p>Send this prepared contract to '+escape(m.name)+'.</p>','Send pending contract',m.id):'';
   const requirement=tracked?'<p>Agreement requirement · <strong>'+escape(trackingLabel(tracked.reason))+'</strong> · '+escape(recordedDetails(tracked))+'</p>':'';
   const signing='<p>Signing request · <strong data-signing-status>'+escape(signingLabel(actual))+'</strong></p>';
-  const review=m.agreement?.id&&actual&&actual!=='Complete'?'<button data-status="'+escape(m.id)+'">'+(actual==='Waiting on Heidi'?'Open for Heidi’s signature':'Check signing request status')+'</button>':'';
-  return '<section class="member-paperwork"><h4>Documents &amp; agreements</h4>'+requirement+signing+review+'<p>Use Complete for paperwork handled outside the portal, or Document N/A when it is not needed. An existing SignWell request stays active.</p>'+documentControls(m,'agreement',tracked?.reason)+(tracked?'<p>Reopen the requirement to prepare or send a new contract.</p>':'')+draft+(!tracked&&s.agreementReady&&(!m.agreement||m.agreement.cleared)?agreement(m):'')+recover(m)+(m.agreement?.syncError?'<p>'+escape(m.agreement.syncError)+'</p>':'')+saved+resources.map(d=>trackDocument(m,d)).join('')+'<div data-signing></div></section>';
+  // Two dead ends get a plain explanation and the way out.
+  const film=escape(s.film);
+  const ended=m.agreement?.id&&!tracked&&endedSigning[actual]?form('recoverAgreement','<input type="hidden" name="replaceEnded" value="yes"><input type="hidden" name="documentId" value="'+escape(m.agreement.id)+'"><p><strong>'+escape(endedSigning[actual])+'.</strong> This request can no longer be signed. Set it aside to prepare a new agreement. The ended request stays in SignWell and in the agreement history.</p>','Set aside and prepare a new agreement',m.id):'';
+  const needsMaster=!tracked&&!s.agreementReady&&(!m.agreement||m.agreement.cleared)?'<p class="next-step"><strong>An agreement cannot be prepared yet.</strong> The approved contract master for '+film+' is not installed. Install it under Documents, in Agreement setup, then return here.</p><p><button type="button" data-go-view="documents">Open Documents for '+film+'</button></p>':'';
+  const review=m.agreement?.id&&actual&&actual!=='Complete'&&!endedSigning[actual]?'<button data-status=""'+escape(m.id)+'">'+(actual==='Waiting on Heidi'?'Open for Heidi’s signature':'Check signing request status')+'</button>':'';
+  return '<section class="member-paperwork"><h4>Documents &amp; agreements</h4>'+requirement+signing+review+'<p>Use Complete for paperwork handled outside the portal, or Document N/A when it is not needed. An existing SignWell request stays active.</p>'+documentControls(m,'agreement',tracked?.reason)+(tracked?'<p>Reopen the requirement to prepare or send a new contract.</p>':'')+draft+ended+needsMaster+(!tracked&&s.agreementReady&&(!m.agreement||m.agreement.cleared)?agreement(m):'')+recover(m)+(m.agreement?.syncError?'<p>'+escape(m.agreement.syncError)+'</p>':'')+saved+resources.map(d=>trackDocument(m,d)).join('')+'<div data-signing></div></section>';
  }
  const personalReview=m=>m.adminProfile?'':(s.productionReviews||[]).filter(r=>r.id===m.id).map(reviewCard).join('');
  const personalMessage=m=>panel(m.needsEmail?'Save a message for this person':'Send a message',form('notice','<p>For '+escape(m.name)+' · '+escape(s.film)+'</p><input type="hidden" name="audience" value="selected"><input type="hidden" name="recipient" value="'+escape(m.id)+'">'+input('title','Subject')+'<label>Message<textarea required name="text"></textarea></label>',m.needsEmail?'Save message':'Send to '+escape(m.name),m.id));
@@ -909,7 +915,20 @@ async function load(initial){
  const castAccounts=s.members.filter(m=>!m.adminProfile&&!m.needsEmail);
  const counts='<div class="metrics"><div><b>'+people.length+'</b><span>Production roster</span></div><div><b>'+castAccounts.length+'</b><span>Portal accounts</span></div><div><b>'+castAccounts.filter(m=>m.activated).length+'</b><span>Activated accounts</span></div><div><b>'+castAccounts.filter(m=>!outstanding(m).gaps.some(x=>['Bio','Headshot'].includes(x))).length+'</b><span>Complete account profiles</span></div></div>';
  const mailRows=[...(s.mailQueue||[]).map(x=>({...x,status:x.lastError?'Retry scheduled':'Queued'})),...(s.mailLog||[])];
- const mailPanel='<section><h2>Email delivery</h2><p>Provider acceptance is not proof of inbox delivery. Delivery updates appear when available.</p>'+(s.mailTracking?'<p><strong>Delivery updates are switched off at Resend.</strong> Email is still being sent, but Resend refuses this site’s requests to look up what happened to each message (HTTP '+escape(s.mailTracking.status)+'). This usually means the API key is limited to sending. Replace RESEND_API_KEY in Netlify with a full-access key to see delivered and bounced statuses here.</p>':'')+(mailRows.length?'<div class="table-scroll"><table><thead><tr><th>Recipient</th><th>Subject</th><th>Status</th></tr></thead><tbody>'+mailRows.map(x=>'<tr><td>'+escape(x.to)+'</td><td>'+escape(x.subject)+'</td><td>'+escape(x.status)+(x.lastError||x.error?'<br>'+escape(x.lastError||x.error):'')+'</td></tr>').join('')+'</tbody></table></div>':'<p>No email activity recorded yet.</p>')+'</section>';
+ // Plain words for what happened to each email. Stored values from the email provider stay as they are.
+ const mailStatus={
+  Queued:'Queued · sends within five minutes',
+  'Retry scheduled':'Not sent yet · will try again',
+  'Accepted by email provider':'Sent · delivery not confirmed yet',
+  delivered:'Delivered',
+  delivery_delayed:'Delayed by the recipient’s mail server',
+  bounced:'Bounced · the address rejected it',
+  complained:'Marked as spam by the recipient',
+  suppressed:'Not delivered · the provider has this address on its do-not-send list',
+  failed:'Failed at the email provider'
+ };
+ const mailWhen=new Intl.DateTimeFormat('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit',timeZone:'America/Indiana/Indianapolis'});
+ const mailPanel='<section><h2>Email delivery</h2><p>The 30 most recent emails. “Sent” means the email provider accepted it. “Delivered” means the recipient’s mail server took it.</p>'+(s.mailTracking?'<p><strong>Delivery updates are switched off at Resend.</strong> Email is still being sent, but Resend refuses this site’s requests to look up what happened to each message (HTTP '+escape(s.mailTracking.status)+'). This usually means the API key is limited to sending. Replace RESEND_API_KEY in Netlify with a full-access key to see delivered and bounced statuses here.</p>':'')+(mailRows.length?'<div class="table-scroll"><table><thead><tr><th scope="col">Recipient</th><th scope="col">Subject</th><th scope="col">What happened</th><th scope="col">Updated (ET)</th></tr></thead><tbody>'+mailRows.map(x=>'<tr><td>'+escape(x.to)+'</td><td>'+escape(x.subject)+'</td><td>'+escape(mailStatus[x.status]||x.status)+(x.lastError||x.error?'<br>'+escape(x.lastError||x.error):'')+'</td><td>'+(Number.isFinite(x.updated)?escape(mailWhen.format(x.updated)):'')+'</td></tr>').join('')+'</tbody></table></div>':'<p>No email activity recorded yet.</p>')+'</section>';
  clearSigning();
  if(admin){
   app.innerHTML='<div class="office-layout"><div class="office-main">'+
@@ -1025,6 +1044,7 @@ listen('submit',async e=>{
   if(data.email!==data.expectedEmail&&!confirm('Change the account email to '+data.email+' and send a new invitation?'))return;
  }
  if(a==='publishProfile'&&!confirm('Publish this member’s saved biography and headshot on the public Written in the Dark website?'))return;
+ if(a==='recoverAgreement'&&f.elements.replaceEnded&&!confirm('Set this ended signing request aside? It stays in SignWell and in the agreement history, and you can then prepare a new agreement.'))return;
  if(a==='removeResource'&&!confirm('Remove this from the production board for everyone? Email already delivered about it cannot be recalled.'))return;
  if((a==='revoke'||a==='sendAgreement'||(a==='agreement'&&button.value==='send'))&&!confirm(a==='revoke'?'Revoke this member’s access immediately?':a==='sendAgreement'?'Send this pending contract to its recipients?':'Create a signing request for this person and Heidi?'))return;
  button.disabled=true;message.textContent='';
@@ -1080,7 +1100,7 @@ listen('submit',async e=>{
   if(a==='resetPassword')data.ticket=resetTicket;
   if(a==='revoke')data.keepPublic=f.elements.keepPublic.checked;
   if(a==='publication')data.visible=f.elements.visible.checked;
-  if(a==='recoverAgreement')data.confirmAbsent=f.elements.confirmAbsent.checked;
+  if(a==='recoverAgreement'){data.confirmAbsent=!!f.elements.confirmAbsent?.checked;data.replaceEnded=data.replaceEnded==='yes';}
   if(a==='requestProductions'){
    data.selections=[...f.querySelectorAll('[name="selection"]:checked')].map(box=>box.value);
    data.credits=Object.fromEntries(data.selections.map(pid=>[pid,{character:data['character_'+pid],crewTitle:data['crewTitle_'+pid]}]));
@@ -1453,6 +1473,14 @@ function applyView(){
  ensureAvailability();
 }
 listen('click',e=>{
+ const go=e.target.closest('[data-go-view]');
+ if(go){
+  if(office)office.show(go.dataset.goView);else{activeView=go.dataset.goView;applyView();}
+  const zone=app.querySelector('[data-tool-zone="'+go.dataset.goView+'"]');
+  const setup=zone?.querySelector('details');
+  if(setup){setup.open=true;setup.scrollIntoView({block:'start'});setup.querySelector('summary')?.focus({preventScroll:true});}
+  return;
+ }
  const ownProfile=e.target.closest('[data-own-admin-profile]');
  if(ownProfile){
   const id=ownProfile.dataset.ownAdminProfile;
