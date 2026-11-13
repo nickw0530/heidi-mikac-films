@@ -86,3 +86,42 @@ test('scheduled jobs refuse to run from a deploy that is not the published one',
   await assert.rejects(run(request,{deploy:{context:'production',published:true}}),undefined,file+' proceeds only when published.');
  }
 });
+
+test('a name that matches a website profile never unlocks that profile’s archived paperwork by itself',async()=>{
+ const store=await fixture();
+ const {default:catalog}=await import('../netlify/lib/film-profiles.mjs');
+ const profile=catalog.find(item=>!['nick','heidi'].includes(item.id));
+ const sameName='00000000-0000-4000-8000-0000000000b3';
+ // An account that happens to carry a credited name, with no confirmed link to the website profile.
+ await store.setJSON('members/'+sameName,{id:sameName,name:profile.name,email:'same.name@example.invalid',generalInvite:true,productions:{}});
+ await store.setJSON('sessions/'+sha('d'.repeat(64)),{id:sameName,admin:false,adminDigest:null,expires:Date.now()+3600000});
+ tokens.sameName='d'.repeat(64);
+ await store.set('offline/'+profile.id,'%PDF-1.7 archived paper agreement',{metadata:{status:'Complete'}});
+
+ const assigned=await call('enrollments',{id:sameName,body:{productions:[dark],credits:{[dark]:{character:'Extra',crewTitle:''}}}});
+ assert.equal(assigned.status,200,JSON.stringify(assigned.data));
+ assert.equal((await store.get('members/'+sameName)).productions[dark].filmProfile,'','Assigning a production does not turn a name match into a link.');
+
+ const own=(await call('home',{who:'sameName'})).data.members[0];
+ assert.equal(own.previousOfflineStatus,null,'The member is not told an archived agreement exists.');
+ assert.deepEqual(own.documents,[]);
+ const blocked=await call('memberDocument',{who:'sameName',id:sameName,method:'GET'});
+ assert.equal(blocked.status,404);
+ const url=new URL('https://heidimikacfilms.com/.netlify/functions/portal');url.search=new URLSearchParams({action:'memberDocument',production:dark,id:sameName,kind:'uploaded'});
+ const download=()=>handle(new Request(url,{headers:{cookie:'__Host-hmf='+tokens.sameName}}),{ip:'198.51.100.7'});
+ assert.equal((await download()).status,404,'The archived paper agreement stays locked.');
+
+ const adminRow=(await call('home')).data.members.find(member=>member.id===sameName);
+ assert.equal(adminRow.filmProfile,profile.id,'Admins still see which website profile the name matches.');
+ assert.equal(adminRow.confirmedProfile,'','and that nobody has confirmed it.');
+
+ // The existing explicit control is the only way to connect the two.
+ assert.equal((await call('linkProfile',{id:sameName,body:{filmProfile:profile.id}})).status,200);
+ assert.equal((await download()).status,200,'After an admin confirms the match, the member can download it.');
+ assert.equal((await call('home')).data.members.find(member=>member.id===sameName).confirmedProfile,profile.id);
+
+ // A link that was already confirmed survives a later change of productions.
+ const again=await call('enrollments',{id:sameName,body:{productions:[dark],credits:{[dark]:{character:'Extra',crewTitle:'Grip'}}}});
+ assert.equal(again.status,200,JSON.stringify(again.data));
+ assert.equal((await store.get('members/'+sameName)).productions[dark].filmProfile,profile.id);
+});

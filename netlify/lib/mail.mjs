@@ -69,6 +69,8 @@ export async function deliver(store,{currentCalendarEvent}={}){
   if(msg.requirementKey&&manualPaperworkStatus(await store.get(msg.requirementKey,{type:'json'}))){await log('Not sent — document requirement completed');await store.delete(key);continue;}
   if((msg.expires&&msg.expires<Date.now())||!member||member.revoked){await log('Not sent — expired or access revoked');await store.delete(key);continue;}
   if(invitation&&!currentInvitation(member)){await discardInvitation();continue;}
+  // Anything queued for an address that was corrected afterwards stays out of the old inbox.
+  if(!invitation&&member.email&&msg.to&&member.email!==msg.to){await log('Not sent — email address changed');await store.delete(key);continue;}
   if(msg.resourceKey){
    // A posted message or file is only for the people it is still shared with when the email is sent.
    const resource=await store.get(msg.resourceKey,{type:'json'});

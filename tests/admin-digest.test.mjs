@@ -213,3 +213,18 @@ test('a posted file or message is emailed only to people it is still shared with
  assert.deepEqual(skipped.map(row=>row.to).sort(),[dropped.email,left.email,stays.email].sort(),'Each skipped email is recorded with its reason, including the message that was removed from the board.');
  assert.equal([...store.data.keys()].filter(key=>key.startsWith('outbox/')).length,0);
 });
+
+test('email queued before an address was corrected never goes to the old address',async()=>{
+ const store=fixture();process.env.RESEND_API_KEY='test-only';process.env.HMF_MAIL_FROM='Production <test@example.invalid>';
+ const member={id:'00000000-0000-4000-8000-0000000000a9',name:'Sample Actor',email:'wrong@example.invalid',productions:{'written-in-the-dark':{}}};
+ await store.setJSON('members/'+member.id,member);
+ await enqueue(store,member,'task-1','New production task','You have a new task.');
+ await store.setJSON('members/'+member.id,{...member,email:'right@example.invalid'});
+ await enqueue(store,{...member,email:'right@example.invalid'},'task-2','New production task','You have another task.');
+ const sent=[];
+ globalThis.fetch=async(url,options)=>{if(options?.method==='POST')sent.push(JSON.parse(options.body));return Response.json({id:'provider-'+sent.length});};
+ await deliver(store);
+ assert.deepEqual(sent.map(mail=>mail.to[0]),['right@example.invalid']);
+ const log=[...store.data].filter(([key])=>key.startsWith('mail-log/')).map(([,record])=>record.value);
+ assert.ok(log.some(row=>row.to==='wrong@example.invalid'&&row.status==='Not sent — email address changed'));
+});

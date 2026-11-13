@@ -758,16 +758,21 @@ export default async function handle(req, context) {
       const base=sharedBase(original);
       row.paperworkExempt=!!row.adminProfile;
       if(admin)row.websitePlacement=placementByProfile.get(row.filmProfile||'member-'+row.id)||null;
+      // Archived paperwork follows a confirmed profile link only. Admins also see the status
+      // for a name match so they can decide whether to confirm it.
+      const owned=await ownedProfile(original,accounts);
+      const paperProfile=admin?row.filmProfile:owned;
+      if(admin)row.confirmedProfile=owned||'';
       const [published,offlineMetadata,previous]=await Promise.all([
         base?get('published/'+base.id):null,
-        assignments(original)[productionId]&&row.filmProfile?store.getMetadata('offline/'+row.filmProfile):null,
+        assignments(original)[productionId]&&paperProfile?store.getMetadata('offline/'+paperProfile):null,
         rawStore.get(legacyScoped('agreements/'+row.id),{type:'json'}),
       ]);
       row.previousOfflineStatus=offlineMetadata?.metadata?.status||null;
       row.offlineStatus=null;
       row.previousAgreement=previous?.id?{status:previous.status,completed:previous.status==='Complete'}:null;
       {
-        const profile=await ownedProfile(original,accounts);
+        const profile=owned;
         row.documents=[];
         if(row.agreement?.id&&row.agreement.status==='Complete')row.documents.push({kind:'signed',title:'Signed agreement and audit record'});
         if(previous?.id&&previous.status==='Complete')row.documents.push({kind:'previous-signed',title:'Previous signed agreement and audit record · replaced'});
@@ -1101,7 +1106,10 @@ export default async function handle(req, context) {
           requireThat(legacyRole.trim()===(existing.role||'')||(!existing.character&&!existing.crewTitle),'Refresh the portal to edit character and crew title separately.',409);
           assignment={...existing,role:legacyRole.trim()};
         }
-        const filmProfile=base?.id||existing.filmProfile||'';
+        // Carry forward only a link someone confirmed. A matching name still places the public
+        // profile on the right card, but it must never become ownership of private paperwork.
+        const confirmed=existing.filmProfile||member.profileLinks?.[id]||(id==='written-in-the-dark'?member.filmProfile:'')||'';
+        const filmProfile=catalogs[id].some(item=>item.id===confirmed)?confirmed:'';
         next[id]={...assignment,filmProfile};
         if(filmProfile)profileLinks[id]=filmProfile;
         if(member.generalInvite&&!member.approvedProfiles?.[id])requests[id]??=randomUUID();
