@@ -81,3 +81,30 @@ test('clock changes cannot silently alter an actor’s exact on-set time',()=>{
  const result=matchAvailability([{id:'a',name:'A',availability:normalizeAvailability(record)}],{from:'2027-03-14',to:'2027-03-14',minMinutes:150});
  assert.equal(result.matches.length,0,'A two-hour spring-forward window cannot meet a two-and-a-half-hour shoot.');
 });
+
+test('an unreadable saved day is flagged for follow-up and never counts as available',()=>{
+ const good={weekly:[],exceptions:{'2026-11-16':{status:'available',windows:[{start:'09:00',end:'17:00'}]}}};
+ const broken={weekly:[],exceptions:{'2026-11-16':{status:'yes please',windows:[]}}};
+ const day=availabilityForDate(broken,'2026-11-16');
+ assert.equal(day.status,'needs-confirmation');
+ assert.match(day.warning,/could not be read/);
+ const result=matchAvailability([{id:'a',name:'Ava',availability:good},{id:'b',name:'Luis',availability:broken}],{from:'2026-11-16',to:'2026-11-16'});
+ assert.equal(result.matches.length,0,'One unreadable record does not break the search or create a shared window.');
+ assert.deepEqual(result.days[0].needsConfirmation,[{id:'b',name:'Luis'}]);
+});
+
+test('shoot-date results say when “unavailable” is a day the person left blank',()=>{
+ const answered={weekly:[],exceptions:{'2026-11-16':{status:'unavailable',windows:[]},'2026-11-17':{status:'available',windows:[{start:'09:00',end:'17:00'}]}}};
+ const partial={weekly:[],exceptions:{'2026-11-17':{status:'available',windows:[{start:'09:00',end:'17:00'}]}}};
+ const result=matchAvailability([{id:'a',name:'Ava',availability:answered},{id:'b',name:'Luis',availability:partial}],{from:'2026-11-16',to:'2026-11-16'});
+ assert.deepEqual(result.days[0].unavailable,[{id:'a',name:'Ava'},{id:'b',name:'Luis',implicit:true}]);
+ assert.equal(result.matches.length,0);
+});
+
+test('a person can keep several years of date-by-date answers',()=>{
+ const exceptions={};
+ for(let index=0;index<800;index++)exceptions[new Date(Date.UTC(2026,0,1)+index*86400000).toISOString().slice(0,10)]={status:'unavailable',windows:[]};
+ assert.equal(Object.keys(normalizeAvailability({weekly:[],exceptions}).exceptions).length,800);
+ for(let index=800;index<1101;index++)exceptions[new Date(Date.UTC(2026,0,1)+index*86400000).toISOString().slice(0,10)]={status:'unavailable',windows:[]};
+ assert.throws(()=>normalizeAvailability({weekly:[],exceptions}),/1100 dates or fewer/);
+});

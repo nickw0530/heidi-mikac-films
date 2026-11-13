@@ -3,7 +3,7 @@
 import {monthHasAvailability} from '../../members/availability-state.mjs';
 export const AVAILABILITY_TIMEZONE='America/Indiana/Indianapolis';
 export const AVAILABILITY_TIME_ZONE=AVAILABILITY_TIMEZONE;
-const MAX_EXCEPTIONS=366,MAX_WINDOWS=8,MAX_MATCH_DAYS=93,MAX_PEOPLE=100;
+const MAX_EXCEPTIONS=1100,MAX_WINDOWS=8,MAX_MATCH_DAYS=93,MAX_PEOPLE=100;
 const DAY_MS=86400000;
 const own=(value,key)=>Object.prototype.hasOwnProperty.call(value,key);
 const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
@@ -120,7 +120,13 @@ export function availabilityForDate(record,date){
  validateDate(date);
  const exception=object(record?.exceptions)&&own(record.exceptions,date);
  const weekday=new Date(date+'T12:00:00Z').getUTCDay();
- const entry=normalizeDay(exception?record.exceptions[date]:record?.weekly?.[weekday]);
+ let entry;
+ try{entry=normalizeDay(exception?record.exceptions[date]:record?.weekly?.[weekday]);}
+ catch(error){
+  if(error.status!==400)throw error;
+  // One unreadable saved day is flagged for follow-up. It never counts as available.
+  return {date,status:'needs-confirmation',source:exception?'exception':'weekly',windows:[],warning:'This saved day could not be read. Ask this person to set it again.'};
+ }
  const result={date,status:entry.status,source:exception?'exception':'weekly',windows:[]};
  if(entry.status==='unknown'&&monthHasAvailability(record,date.slice(0,7)))return {...result,status:'unavailable',implicit:true};
  if(entry.status!=='available')return result;
@@ -148,7 +154,7 @@ export function matchAvailability(people,{from,to,minMinutes=60}={}){
  requireThat(Number.isInteger(minMinutes)&&minMinutes>=1&&minMinutes<=1440,'Choose a minimum shared window between 1 minute and 24 hours.');
  const days=listDates(from,to).map(date=>{
   const evaluated=people.map(person=>({person,day:availabilityForDate(person.availability,date)}));
-  const rows=status=>evaluated.filter(row=>row.day.status===status).map(({person})=>({id:person.id,name:person.name||'Member'}));
+  const rows=status=>evaluated.filter(row=>row.day.status===status).map(({person,day})=>({id:person.id,name:person.name||'Member',...(day.implicit?{implicit:true}:{})}));
   const missing=rows('unknown'),unavailable=rows('unavailable'),maybe=rows('maybe'),needsConfirmation=rows('needs-confirmation');
   let common=[];
   if(!missing.length&&!unavailable.length&&!maybe.length&&!needsConfirmation.length){

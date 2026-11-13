@@ -1,7 +1,7 @@
 import {AGREEMENT_CYCLE,currentAgreementKey} from '../lib/agreement-cycle.mjs';
 import {manualAgreementKey,resourceTrackingKey,normalizePaperworkReason,manualPaperworkStatus,readAgreementTracking} from '../lib/paperwork.mjs';
 import {COUNTERSIGN_EMAIL} from '../lib/signing.mjs';
-import {practiceName} from '../lib/practice.mjs';
+import {isPractice,practiceName} from '../lib/practice.mjs';
 import {adminActions} from '../lib/admin-actions.mjs';
 import {adminProfileCandidates,adminProfileOwner,adminProfilesKey,loadAdminProfiles} from '../lib/admin-profiles.mjs';
 import {reportSnapshot,reportMatch,reportRecords,validateSavedReport} from '../lib/reports.mjs';
@@ -25,7 +25,7 @@ async function credential(password){
 const hash = x => createHash('sha256').update(x).digest('hex');
 const token = () => randomBytes(32).toString('hex');
 // Practice accounts must never be linked to or published on a public film website.
-const allowPublicProfile=m=>requireThat(!practiceName(m.name),'Practice accounts cannot appear on a public website.',403);
+const allowPublicProfile=m=>requireThat(!isPractice(m),'Practice accounts cannot appear on a public website.',403);
 const productions=[{id:'written-in-the-dark',name:'Written in the Dark'},{id:'wherein-lies-continue',name:'Wherein Lies Continue'}];
 const catalogs={'written-in-the-dark':darkCatalog,'wherein-lies-continue':whereinCatalog};
 const castPlacements=new Set(['','lead','supporting','additional','crew']);
@@ -64,7 +64,16 @@ const profileActivityLabels={
  'agreement-ended':'Ended signing request set aside for a new agreement',
  'document-complete':'Document requirement marked complete',
  'document-not-required':'Document marked not required',
- 'document-reopened':'Document requirement reopened'
+ 'document-reopened':'Document requirement reopened',
+ 'invitation-sent':'Film Portal invitation sent',
+ 'invitation-resent':'Film Portal invitation sent again',
+ 'access-removed':'Film Portal access removed',
+ 'website-shown':'Shown on the film website',
+ 'website-hidden':'Hidden from the film website',
+ 'placement-updated':'Website cast placement changed',
+ 'profile-linked':'Linked to an existing website profile',
+ 'practice-on':'Marked as a practice account',
+ 'practice-off':'Practice account mark removed'
 };
 const profileActivityKey=(production,member)=>'profile-activity/'+production+'/'+member;
 const profileActivityLimit=40;
@@ -197,11 +206,11 @@ export default async function handle(req, context) {
     const cached=await get(key);if(cached?.revision===revision)return cached.items;
     const items=pid==='written-in-the-dark'?(await list('published/')).filter(Boolean):[];
     for(const m of (await list('members/')).filter(Boolean).sort((a,b)=>Number(!!b.revoked)-Number(!!a.revoked))){
-      if(practiceName(m.name))continue;
+      if(isPractice(m))continue;
       const membership=assignments(m)[pid],base=findProfile(m,pid),id=base?.id||'member-'+m.id;
       if(m.generalInvite&&!m.approvedProfiles?.[pid])continue;
       const index=items.findIndex(x=>x.id===id);if(index>=0)items.splice(index,1);
-      if(practiceName(m.name)||!membership||m.publication?.[pid]===false||(m.revoked&&!m.keepPublic)){
+      if(isPractice(m)||!membership||m.publication?.[pid]===false||(m.revoked&&!m.keepPublic)){
         if(base||membership)items.push({id,name:m.name,hidden:true});continue;
       }
       const approved=m.approvedProfiles?.[pid];
@@ -232,7 +241,7 @@ export default async function handle(req, context) {
   if(!post&&action==='memberPhoto'){
     const id=url.searchParams.get('id');requireThat(uuid.test(id),'Invalid image.');
     const m=await get('members/'+id);
-    requireThat(m&&(!m.revoked||m.keepPublic)&&!practiceName(m.name)&&Object.keys(assignments(m)).some(id=>m.publication?.[id]!==false),'Image unavailable.',404);
+    requireThat(m&&(!m.revoked||m.keepPublic)&&!isPractice(m)&&Object.keys(assignments(m)).some(id=>m.publication?.[id]!==false),'Image unavailable.',404);
     const versionRequested=url.searchParams.get('v');
     const approvedImage=Object.keys(assignments(m)).some(pid=>m.publication?.[pid]!==false&&m.approvedProfiles?.[pid]?.imageVersion===versionRequested&&!!versionRequested);
     const file=await store.getWithMetadata(approvedImage?'profile-images/'+id+'/'+versionRequested:'photos/'+id,{type:'arrayBuffer'});requireThat(file,'Image unavailable.',404);
@@ -477,7 +486,7 @@ export default async function handle(req, context) {
     // Availability is private to the current production and deliberately has a
     // smaller response than member administration. No email, profile draft,
     // invitation, document or authentication fields belong in this projection.
-    const roster=(await globalRecords('members/')).filter(m=>active(m)&&uuid.test(m.id)&&assignments(m)[productionId]&&(admin||!!m.email)&&(admin||m.id===self||!practiceName(m.name))).sort((a,b)=>a.name.localeCompare(b.name));
+    const roster=(await globalRecords('members/')).filter(m=>active(m)&&uuid.test(m.id)&&assignments(m)[productionId]&&(admin||!!m.email)&&(admin||m.id===self||!isPractice(m))).sort((a,b)=>a.name.localeCompare(b.name));
     const key=id=>'availability/'+productionId+'/'+id;
     const schedule=record=>record?{
       ...normalizeAvailability(record),
@@ -567,8 +576,9 @@ export default async function handle(req, context) {
     }
     await invalidate();return json({ok:true});
   }
-  async function recordProfileActivity(pid,action){
-    const key=profileActivityKey(pid,uid);
+  async function recordProfileActivity(pid,action,member=uid){
+    if(!uuid.test(member||''))return;
+    const key=profileActivityKey(pid,member);
     const item={action,by:self,at:Date.now()};
     try{
       for(let attempt=0;attempt<4;attempt++){
@@ -801,7 +811,7 @@ export default async function handle(req, context) {
       row.publication=Object.fromEntries(await Promise.all(Object.keys(assignments(original)).map(async pid=>{
         const id=findProfile(original,pid)?.id||'member-'+row.id;
         const ready=!!original.approvedProfiles?.[pid]||!!row.profile.bio?.trim()&&!!(row.hasPhoto||row.referencePhoto);
-        const hidden=practiceName(row.name)||original.publication?.[pid]===false;
+        const hidden=isPractice(row)||original.publication?.[pid]===false;
         if(original.generalInvite&&!original.approvedProfiles?.[pid])return [pid,{state:row.adminProfile?'Ready for admin edits':'Awaiting approval',visible:false}];
         let state=hidden?'Hidden from website':ready?'Sync failed':'Needs bio and headshot';
         if(!hidden&&ready){try{state=(await publicationFor(pid)).some(x=>x.id===id&&!x.hidden)?'Published':'Sync failed';}catch{}}
@@ -822,7 +832,7 @@ export default async function handle(req, context) {
       const member=allAccounts.find(m=>m.id===(p.memberId||p.id)),activated=!!member?.email&&!!await get('passwords/'+member.id);
       return {id:p.id,name:member?.name||p.name,profileId:member?.id||p.id,productions:member?Object.keys(assignments(member)):p.productions||[],created:p.created,updated:p.updated,...(member?.email?{memberId:member.id,archived:false}:{}),activated,status:member?.email?(member.revoked?'Access revoked':activated?'Account created':'Invitation pending'):'Email needed'};
     })):[];
-    return json({pendingPeople,adminProfileId,adminProfileCandidates:profileCandidates,unassignedProfiles:admin?rows.filter(row=>!Object.keys(assignments(row)).length).map(({ticket,...row})=>({...row,practice:practiceName(row.name)})):[],agreementCycle:AGREEMENT_CYCLE,unassigned:admin?await Promise.all(accounts.filter(m=>!Object.keys(assignments(m)).length).map(async m=>({id:m.id,name:m.name,needsEmail:!ownerOf(m)&&!m.email,adminProfile:ownerOf(m),pendingPersonId:m.pendingPersonId,activated:!!ownerOf(m)||!!m.email&&!!await get('passwords/'+m.id)}))):[],productionReviews,productionChoices:productions,waiting,productionId,productions:admin?productions:productions.filter(p=>memberProductions[p.id]),revokedAccounts:admin?allAccounts.filter(m=>m.revoked).map(m=>({id:m.id,name:m.name,keepPublic:m.keepPublic,productions:assignments(m),publication:m.publication||{}})):[],accounts:admin?accounts.map(m=>({id:m.id,name:m.name,needsEmail:!ownerOf(m)&&!m.email,adminProfile:ownerOf(m),pendingPersonId:m.pendingPersonId,productions:assignments(m)})):[],agreementReady:!!await store.getMetadata('contract/master'),agreementSupported:true,welcome:await get('settings/welcome'),welcomePlayed:!!await get('welcome-played/'+self),catalog:adminCatalog,admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),mailTracking,mailLog:admin?(await list('mail-log/')).filter(Boolean).sort((a,b)=>b.updated-a.updated).slice(0,30).map(row=>mailTracking&&/^Delivery status unavailable/.test(row.error||'')?{...row,error:null}:row):[],mailQueue:admin?(await list('outbox/')).filter(Boolean).map(({to,subject,attempts,nextAttempt,lastError})=>({to,subject,attempts,nextAttempt,lastError})):[],members:rows.filter(row=>!admin||assignments(row)[productionId]).map(({ticket,...row})=>({...row,practice:practiceName(row.name)})),resources:(await list('resources/')).filter(canReadResource).map(r=>admin?r:({...r,audience:undefined})).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
+    return json({pendingPeople,adminProfileId,adminProfileCandidates:profileCandidates,unassignedProfiles:admin?rows.filter(row=>!Object.keys(assignments(row)).length).map(({ticket,...row})=>({...row,practice:isPractice(row)})):[],agreementCycle:AGREEMENT_CYCLE,unassigned:admin?await Promise.all(accounts.filter(m=>!Object.keys(assignments(m)).length).map(async m=>({id:m.id,name:m.name,needsEmail:!ownerOf(m)&&!m.email,adminProfile:ownerOf(m),pendingPersonId:m.pendingPersonId,activated:!!ownerOf(m)||!!m.email&&!!await get('passwords/'+m.id)}))):[],productionReviews,productionChoices:productions,waiting,productionId,productions:admin?productions:productions.filter(p=>memberProductions[p.id]),revokedAccounts:admin?allAccounts.filter(m=>m.revoked).map(m=>({id:m.id,name:m.name,keepPublic:m.keepPublic,productions:assignments(m),publication:m.publication||{}})):[],accounts:admin?accounts.map(m=>({id:m.id,name:m.name,needsEmail:!ownerOf(m)&&!m.email,adminProfile:ownerOf(m),pendingPersonId:m.pendingPersonId,productions:assignments(m)})):[],agreementReady:!!await store.getMetadata('contract/master'),agreementSupported:true,welcome:await get('settings/welcome'),welcomePlayed:!!await get('welcome-played/'+self),catalog:adminCatalog,admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),mailTracking,mailLog:admin?(await list('mail-log/')).filter(Boolean).sort((a,b)=>b.updated-a.updated).slice(0,30).map(row=>mailTracking&&/^Delivery status unavailable/.test(row.error||'')?{...row,error:null}:row):[],mailQueue:admin?(await list('outbox/')).filter(Boolean).map(({to,subject,attempts,nextAttempt,lastError})=>({to,subject,attempts,nextAttempt,lastError})):[],members:rows.filter(row=>!admin||assignments(row)[productionId]).map(({ticket,...row})=>({...row,practice:isPractice(row)})),resources:(await list('resources/')).filter(canReadResource).map(r=>admin?r:({...r,audience:undefined})).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
   }
   if((action==='invite'||action==='resend')&&post){
     onlyAdmin();requireThat(production&&mailReady(),'Invitation email is awaiting sender setup. No invitation was sent.',503);
@@ -902,6 +912,7 @@ export default async function handle(req, context) {
         if((await get(oldIndex))?.id===m.id)await store.delete(oldIndex);
       }
       await queueInvitation(invitation);
+      await recordProfileActivity(productionId,action==='invite'?'invitation-sent':'invitation-resent',invitation.updated.id);
       await invalidate();
       return json({ok:true});
     }catch(error){
@@ -977,7 +988,7 @@ export default async function handle(req, context) {
       requireThat(active(m),'Account unavailable.',403);
       const pending={...m.productionRequests};
       const draftProfile={...m.draftProfile,...change};
-      const assigned=practiceName(m.name)?[]:Object.keys(assignments(m));
+      const assigned=isPractice(m)?[]:Object.keys(assignments(m));
       const updated={...m,draftProfile,productionRequests:pending};
       const publishedProductions=[];
       const publish=admin&&assigned.length&&!m.pendingContact;
@@ -1132,7 +1143,7 @@ export default async function handle(req, context) {
   if(action==='linkProfile'&&post){
     onlyAdmin();const record=await target({withMetadata:true}),m=record.data;allowPublicProfile(m);const base=entry(body.filmProfile);requireThat(base&&!assignments(m)[productionId]?.filmProfile,'Choose an unlinked member and a valid film profile.');
     requireThat(!(await list('members/')).some(x=>active(x)&&assignments(x)[productionId]?.filmProfile===base.id),'Profile already linked.');
-    await saveTarget(record,{...m,...(productionId==='written-in-the-dark'?{filmProfile:base.id}:{}),productions:{...assignments(m),[productionId]:{...assignments(m)[productionId],filmProfile:base.id}}});await invalidate();return json({ok:true});
+    await saveTarget(record,{...m,...(productionId==='written-in-the-dark'?{filmProfile:base.id}:{}),productions:{...assignments(m),[productionId]:{...assignments(m)[productionId],filmProfile:base.id}}});await recordProfileActivity(productionId,'profile-linked');await invalidate();return json({ok:true});
   }
   if(action==='publishProfile'&&post){
     requireThat(productionId==='written-in-the-dark','Profiles now synchronize automatically.');
@@ -1199,12 +1210,29 @@ export default async function handle(req, context) {
       const emailKey='active-email/'+hash(m.email);
       if((await get(emailKey))?.id===m.id)await store.delete(emailKey);
     }
+    await recordProfileActivity(productionId,'access-removed');
+    await invalidate();return json({ok:true});
+  }
+  if(action==='practice'&&post){
+    // An explicit switch for accounts used to rehearse the portal. A name that starts
+    // with "Test" is always a practice account, so the switch cannot turn those back on.
+    onlyAdmin();const record=await target({withMetadata:true}),m=record.data;
+    requireThat(m&&!m.pendingContact,'Member unavailable.',404);
+    requireThat(typeof body.practice==='boolean','Choose whether this is a practice account.');
+    requireThat(!await isAdminProfile(m),'An admin profile cannot be a practice account.');
+    requireThat(body.practice||!practiceName(m.name),'A name that starts with “Test” is always a practice account. Rename the person first.');
+    requireThat(!body.practice||!m.filmProfile&&!Object.values(assignments(m)).some(credit=>credit?.filmProfile),'This account is linked to a website credit, so it is not a practice account. Hide it from the website instead.');
+    if((m.practice===true)===body.practice)return json({ok:true});
+    const {practice:_,...rest}=m;
+    await saveTarget(record,body.practice?{...rest,practice:true}:rest);
+    await recordProfileActivity(productionId,body.practice?'practice-on':'practice-off');
     await invalidate();return json({ok:true});
   }
   if(action==='publication'&&post){
     onlyAdmin();const record=await target({withMetadata:true}),m=record.data;
     if(body.visible)allowPublicProfile(m);
     await saveTarget(record,{...m,...(m.revoked&&body.visible?{keepPublic:true}:{}),publication:{...m.publication,[productionId]:body.visible===true}});
+    if((m.publication?.[productionId]!==false)!==(body.visible===true))await recordProfileActivity(productionId,body.visible===true?'website-shown':'website-hidden');
     await invalidate();return json({ok:true});
   }
   if(action==='saveWebsitePlacement'&&post){
@@ -1231,6 +1259,7 @@ export default async function handle(req, context) {
     if(castPlacement===(current?.data?.castPlacement||'')&&billingOrder===(current?.data?.billingOrder??null))return json({ok:true});
     const saved=await rawStore.setJSON(key,{castPlacement,billingOrder,revision:randomUUID()},current?{onlyIfMatch:current.etag}:{onlyIfNew:true});
     requireThat(saved.modified,conflict,409);
+    await recordProfileActivity(productionId,'placement-updated');
     return json({ok:true});
   }
   if(action==='bio'&&post){
