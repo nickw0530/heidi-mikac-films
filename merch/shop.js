@@ -55,7 +55,7 @@ function mountProduct(product,shop,sdk){
   }
   if(soldOut){status.textContent='Sold out';return;}
   if(!sdk||!available||!product.price){
-    if(product.id==='peach-tea-lady')status.textContent=product.price?'Online ordering is currently unavailable.':'Coming soon';
+    if(product.id==='peach-tea-lady')status.textContent=available&&product.price?'Online ordering is currently unavailable.':'Coming soon';
     return;
   }
 

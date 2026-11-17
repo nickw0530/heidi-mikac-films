@@ -6,7 +6,7 @@ export const products=[
   {id:'peach-tea-lady',name:'Peach Tea Lady',description:'T-shirt',image:'',variants:['S','M','L','XL','XXL'].map(size=>['shirt-'+size.toLowerCase(),size])}
 ];
 const initial={
-  settings:{enabled:false,shipping:null,prices:{'blu-ray':4000,'peach-tea-lady':null},
+  settings:{enabled:false,shipping:null,prices:{'blu-ray':4000,'peach-tea-lady':2500},
     stock:{'blu-ray':null,'shirt-s':null,'shirt-m':null,'shirt-l':null,'shirt-xl':null,'shirt-xxl':null}},
   sales:{}
 };
