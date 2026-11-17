@@ -54,6 +54,12 @@ function mountProduct(product,shop,sdk){
     buy.append(sizes);
   }
   if(soldOut){status.textContent='Sold out';return;}
+  if(shop.shipping!==null){
+    const shipping=document.createElement('p');
+    shipping.className='merch-note';
+    shipping.textContent=shop.shipping?usd(shop.shipping)+' shipping per order · U.S. only':'Free U.S. shipping';
+    buy.append(shipping);
+  }
   if(!sdk||!available||!product.price){
     if(product.id==='peach-tea-lady')status.textContent=available&&product.price?'Online ordering is currently unavailable.':'Coming soon';
     return;
@@ -66,12 +72,9 @@ function mountProduct(product,shop,sdk){
   Object.assign(quantity,{type:'number',min:'1',max:'20',value:'1',required:true});
   quantityLabel.append(quantity);
 
-  const shipping=document.createElement('p');
-  shipping.className='merch-note';
-  shipping.textContent=shop.shipping?usd(shop.shipping)+' shipping per order · U.S. only':'Free U.S. shipping';
   const buttons=document.createElement('div');
   buttons.className='merch-checkout';
-  buy.append(quantityLabel,shipping,buttons);
+  buy.append(quantityLabel,buttons);
 
   let specificError=false;
   const selection=()=>product.variants.length===1?product.variants[0].id:sizes.querySelector(':checked')?.value;

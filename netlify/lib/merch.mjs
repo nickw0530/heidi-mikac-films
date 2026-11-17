@@ -6,8 +6,8 @@ export const products=[
   {id:'peach-tea-lady',name:'Peach Tea Lady',description:'T-shirt',image:'',variants:['S','M','L','XL','XXL'].map(size=>['shirt-'+size.toLowerCase(),size])}
 ];
 const initial={
-  settings:{enabled:false,shipping:null,prices:{'blu-ray':4000,'peach-tea-lady':2500},
-    stock:{'blu-ray':null,'shirt-s':null,'shirt-m':null,'shirt-l':null,'shirt-xl':null,'shirt-xxl':null}},
+  settings:{enabled:false,shipping:500,prices:{'blu-ray':4000,'peach-tea-lady':2500},
+    stock:{'blu-ray':30,'shirt-s':1,'shirt-m':4,'shirt-l':1,'shirt-xl':4,'shirt-xxl':2}},
   sales:{}
 };
 
@@ -20,8 +20,17 @@ export function check(ok,message,status=400){
 }
 
 export async function readShop(store){
-  const record=await store.getWithMetadata(key,{type:'json'});
-  return {shop:record?.data??structuredClone(initial),revision:record?.etag??''};
+  for(let attempt=0;attempt<8;attempt++){
+    const record=await store.getWithMetadata(key,{type:'json'});
+    if(record?.data.openingInventorySet)return {shop:record.data,revision:record.etag};
+    const shop=record?.data??structuredClone(initial);
+    // Apply confirmed opening quantities once, preserving recorded stock and sales.
+    for(const [sku,quantity] of Object.entries(initial.settings.stock))shop.settings.stock[sku]??=quantity;
+    shop.settings.shipping??=initial.settings.shipping;
+    shop.openingInventorySet=true;
+    await store.setJSON(key,shop,record?{onlyIfMatch:record.etag}:{onlyIfNew:true});
+  }
+  check(false,'The shop is busy. Please try again.',409);
 }
 
 export async function updateShop(store,change){

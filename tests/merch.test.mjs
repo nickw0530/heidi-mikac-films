@@ -26,6 +26,23 @@ async function fixture(stock){
   return store;
 }
 
+test('opening stock fills unconfirmed inventory once and preserves sold-out stock and sales',async()=>{
+  const store=memoryStore();
+  await store.setJSON('shop',{
+    settings:{enabled:false,shipping:null,prices:{'blu-ray':4000,'peach-tea-lady':2500},
+      stock:{'blu-ray':null,'shirt-s':0,'shirt-m':null,'shirt-l':null,'shirt-xl':null,'shirt-xxl':null}},
+    sales:{previous:{status:'paid',quantity:1}}
+  });
+  const [{shop}]=await Promise.all([readShop(store),readShop(store)]);
+  assert.deepEqual(shop.settings.stock,{'blu-ray':30,'shirt-s':0,'shirt-m':4,'shirt-l':1,'shirt-xl':4,'shirt-xxl':2});
+  assert.equal(shop.settings.shipping,500);
+  assert.deepEqual(shop.sales,{previous:{status:'paid',quantity:1}});
+  await updateShop(store,current=>{current.settings.stock['shirt-m']=null;current.settings.shipping=0;});
+  const later=(await readShop(store)).shop;
+  assert.equal(later.settings.stock['shirt-m'],null);
+  assert.equal(later.settings.shipping,0);
+});
+
 test('stock zero is sold out and recording an offline sale twice consumes one unit',async()=>{
   const store=await fixture(1);
   const input={id:'c42aa717-af49-41fe-86ef-baaf90d03e58',sku:'blu-ray',quantity:1,channel:'Venmo',total:4000};
