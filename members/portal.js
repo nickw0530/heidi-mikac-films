@@ -1,6 +1,7 @@
 import {comparePeople,sortPeople,orderAdminPeople} from './people-order.mjs';
 import {mountAvailability} from './availability.js';
 import {mountFilmingAvailability} from './filming-availability.js';
+import {mountMerch} from './merch.js';
 import {mountReports} from './reports.js';
 import {mountBulkActions} from './bulk-actions.js';
 import {headshotAccept,selectHeadshot,prepareHeadshot,clearHeadshotPreview} from './headshot-editor.js';
@@ -31,7 +32,7 @@ const message=document.querySelector('#message');
 let combined=null;
 function listen(type,handler){
  app.addEventListener(type,event=>{
-  if(event.target.closest('[data-office-root]')===app&&!event.target.closest('[data-availability-root],[data-reports-root],[data-bulk-root]'))handler(event);
+  if(event.target.closest('[data-office-root]')===app&&!event.target.closest('[data-availability-root],[data-reports-root],[data-bulk-root],[data-merch-root]'))handler(event);
  });
 }
 app.dataset.officeRoot='';
@@ -418,6 +419,7 @@ function renderPendingPeople(host,state,selected){
  for(const details of host.querySelectorAll('details'))if(expanded.includes(details.dataset.pendingPerson||details.querySelector(':scope > summary')?.textContent))details.open=true;
 }
 
+const merchPanel='<section data-merch-root hidden><h2>Merch and sales</h2><div data-merch-content></div></section>';
 const homepagePromoPanel='<section data-homepage-promo-settings hidden><h2>Homepage Promo</h2>'+
  '<p>Feature a video at the top of heidimikacfilms.com. Turn it off to bring back the standard homepage banner.</p>'+
  '<div data-promo-fields></div><p><a href="/" target="_blank" rel="noopener">View homepage ↗</a></p></section>';
@@ -476,7 +478,7 @@ function renderCombinedOffice(states,picker){
   '<div class="people-toolbar"><label>Search name, role or email<input type="search" data-roster-search></label><label>Show<select data-roster-filter>'+options+'</select></label></div>'+
   '<p class="directory-count" data-roster-count role="status"></p><ul class="people-directory" data-accounts></ul><div data-pending-people></div>'+
   '<details data-combined-directory><summary></summary><ul class="people-directory" data-catalog></ul></details></div><div data-person-editor></div></div>'+
-  '<div data-main-filming hidden><div data-availability-slot></div></div><div data-main-reports hidden><div data-reports-slot></div></div>'+homepagePromoPanel+'<div data-offices></div>';
+  '<div data-main-filming hidden><div data-availability-slot></div></div><div data-main-reports hidden><div data-reports-slot></div></div>'+homepagePromoPanel+merchPanel+'<div data-offices></div>';
  const find=selector=>app.querySelector(selector);
  const inbox=find('[data-main-inbox]');
  const personEditor=find('[data-person-editor]');
@@ -633,13 +635,15 @@ function renderCombinedOffice(states,picker){
   find('[data-main-reports]').hidden=view!=='reports';
   const website=find('[data-homepage-promo-settings]');
   website.hidden=view!=='website';
+  const merch=find('[data-merch-root]');
+  merch.hidden=view!=='website';
   find('[data-offices]').hidden=['availability','reports','website'].includes(view)||(view==='people'&&!film);
   const picker=find('.office-header .production-picker');
   if(picker)picker.hidden=['availability','reports','website'].includes(view);
   for(const button of app.querySelectorAll('[data-main-tab]'))button.setAttribute('aria-current',button.dataset.mainTab===view?'page':'false');
   if(view==='availability')openAvailability(find('[data-main-filming] [data-availability-slot]'));
   else if(view==='reports')openReports(find('[data-main-reports] [data-reports-slot]'));
-  else if(view==='website')openHomepagePromoSettings(website);
+  else if(view==='website'){openHomepagePromoSettings(website);mountMerch(merch,request);}
   else{
    for(const child of offices.values())child.show(view);
    if(view==='people'&&film)offices.get(film.id)?.open(film,false);
@@ -797,8 +801,13 @@ async function load(initial){
   const websiteParams=new URLSearchParams(location.search);
   websiteParams.set('view','website');
   app.innerHTML='<div class="office-header">'+productionPicker+adminProfileShortcut(s)+form('logout','','Sign out')+'</div>'+
-   (activeView==='website'?homepagePromoPanel:'<h2>People &amp; profiles <span class="count">0</span></h2><p>Select a production to see its cast and crew.</p><a href="?'+escape(websiteParams.toString())+'">Website settings</a>');
-  if(activeView==='website')openHomepagePromoSettings(app.querySelector('[data-homepage-promo-settings]'));
+   (activeView==='website'?homepagePromoPanel+merchPanel:'<h2>People &amp; profiles <span class="count">0</span></h2><p>Select a production to see its cast and crew.</p><a href="?'+escape(websiteParams.toString())+'">Website settings</a>');
+  if(activeView==='website'){
+   openHomepagePromoSettings(app.querySelector('[data-homepage-promo-settings]'));
+   const merch=app.querySelector('[data-merch-root]');
+   merch.hidden=false;
+   mountMerch(merch,request);
+  }
   return;
  }
  if(admin&&!office){

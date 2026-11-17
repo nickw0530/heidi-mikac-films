@@ -31,3 +31,13 @@ Canonical production URL: https://heidimikacfilms.com/
 
 CONTACT
 A dedicated studio email has not yet been supplied. The site currently directs visitors to official social channels and clearly notes that professional contact details are forthcoming.
+
+Merch checkout
+Set HMF_PAYPAL_MODE=live, HMF_PAYPAL_CLIENT_ID and HMF_PAYPAL_SECRET in
+Netlify's Functions environment for production. Use sandbox credentials and
+HMF_PAYPAL_MODE=sandbox in a separate deploy preview to test. The PayPal
+secret belongs in Netlify only. Configure product prices, stock quantities
+and the flat U.S. shipping rate in the Film Portal under Website > Merch
+and sales, then enable checkout. Check a sale's status from the same screen.
+The sales report shows gross collections before PayPal fees and refunds.
+Shipping details are available in the merchant's PayPal transaction.

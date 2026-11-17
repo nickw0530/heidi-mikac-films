@@ -108,3 +108,9 @@ main:has(.admin-workspace) > h1 {
 main details > summary { min-height: 44px; padding-block: 10px; box-sizing: border-box; }
 .admin-workspace .production-picker label { padding: 10px 0; }
 body > header a { display: inline-block; padding: 10px 0; }
+
+[data-merch-root] form { border-bottom: 1px solid #56434a; padding-bottom: 16px; margin-bottom: 24px; }
+.merch-admin-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,12rem),1fr)); gap: 10px 16px; }
+.merch-admin-scroll { overflow-x: auto; }
+.merch-admin-scroll table { width: 100%; border-collapse: collapse; text-align: left; }
+.merch-admin-scroll :is(th,td) { border-bottom: 1px solid #56434a; padding: 8px; vertical-align: top; }

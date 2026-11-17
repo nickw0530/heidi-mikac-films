@@ -11,6 +11,8 @@ import sharp from 'sharp';
 import {signwell,documentStatus,refreshAgreement,completedAgreementPdf,ENDED_STATUSES} from '../lib/signing.mjs';
 import {offlineSigningKey,refreshOfflineCountersign} from '../lib/offline-signing.mjs';
 import darkCatalog, {whereinCatalog} from '../lib/film-profiles.mjs';
+import {manualSale,merchStore,paypalConfig,readShop,saveSettings,updateShop} from '../lib/merch.mjs';
+import {captureOrder} from './merch.mjs';
 import { getStore } from '@netlify/blobs';
 import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
@@ -450,6 +452,35 @@ export default async function handle(req, context) {
   requireThat((session.passwordVersion||0)===((await get('passwords/'+self))?.version||0),'Please sign in again.',401);
   if(action==='logout'&&post){await store.delete(sessionKey);return json({}, {'Set-Cookie':cookie('',0)});}
   const onlyAdmin=()=>requireThat(admin,'Administrator access required.',403);
+  if(['merchSettings','merchSales','merchManualSale','merchCheckPayment'].includes(action)){
+    onlyAdmin();
+    const shopStore=merchStore(production),config=paypalConfig(production);
+    if(action==='merchSettings'){
+      if(post)await updateShop(shopStore,(shop,revision)=>{
+        requireThat(body.revision===revision,'Inventory changed. Reload the merch settings and try again.',409);
+        saveSettings(shop,body,requireThat,config);
+      });
+      const {shop,revision}=await readShop(shopStore);
+      return json({...shop.settings,revision,paypalReady:!!config});
+    }
+    if(action==='merchManualSale'){
+      requireThat(post,'Use the record sale button.',405);
+      await updateShop(shopStore,shop=>manualSale(shop,body));
+      return json({saved:true});
+    }
+    if(action==='merchCheckPayment'){
+      requireThat(post,'Use the check payment button.',405);
+      const {shop}=await readShop(shopStore);
+      requireThat(Object.hasOwn(shop.sales,body.orderId),'Sale not found.',404);
+      return await captureOrder(shopStore,config,body.orderId,{refresh:true});
+    }
+    requireThat(!post,'Use the report filters.',405);
+    const {shop}=await readShop(shopStore);
+    return json({sales:Object.entries(shop.sales).map(([id,sale])=>({
+      id,product:sale.name,variant:sale.variant,quantity:sale.quantity,channel:sale.channel,status:sale.status,
+      total:sale.total,shipping:sale.shipping,date:sale.paidAt||sale.createdAt,captureId:sale.captureId
+    })).sort((a,b)=>b.date-a.date)});
+  }
   if(action==='homepagePromoSettings'){
     onlyAdmin();
     const record=await store.getWithMetadata(homepagePromoKey,{type:'json'});

@@ -34,6 +34,16 @@
 .merch-actions{display:flex;flex-wrap:wrap;gap:12px;margin:24px 0}.merch-actions a{display:inline-block;padding:15px 22px;border:1px solid #bd555a;background:#a92b30;color:#fff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.1em}.merch-actions a+ a{background:transparent}
 .merch-note{font-size:13px;color:#b8aea7!important;max-width:510px}
 @media(max-width:700px){.merch-main{padding-top:120px}.merch-product{grid-template-columns:1fr}.merch-poster{max-width:380px}.merch-actions a{width:100%;text-align:center}}
+
+.merch-product+.merch-product{margin-top:70px;padding-top:54px;border-top:1px solid #624044}
+.merch-details{min-width:0}.merch-details [aria-live]{min-height:1.4em}
+.merch-sizes{display:flex;flex-wrap:wrap;gap:8px;border:0;padding:0;margin:18px 0}
+.merch-sizes legend{padding:0;margin-bottom:8px}.merch-sizes label{border:1px solid #9e7476;padding:10px;cursor:pointer}
+.merch-sizes label:has(:checked){background:#743138}.merch-sizes label:has(:disabled){background:#292626;color:#c4bdbd;cursor:default}
+.merch-unavailable .merch-poster{filter:grayscale(1);opacity:.65}.merch-unavailable h2{color:#c4bdbd}
+.merch-quantity input{width:70px;padding:8px;margin-left:8px;background:#161213;color:#fff;border:1px solid #9e7476}
+.merch-checkout{max-width:370px;margin:18px 0}.merch-product [hidden]{display:none}
+.merch-shirt{grid-column:1 / -1;max-width:650px}
 </style>
 </head>
 <body>
@@ -46,15 +56,25 @@
 </nav></header>
 <main class="merch-main" id="main"><div class="merch-wrap">
 <span class="merch-eyebrow">Support independent cinema</span><h1 class="merch-heading">The merch.</h1>
-<p class="merch-intro">Every signed <em>Written in the Light</em> Blu-ray you buy helps cover film festival entry fees for <em>Written in the Dark</em> and <em>Wherein Lies Continue</em>.</p>
-<article class="merch-product">
+<p class="merch-intro">Merch sales help cover film festival entry fees for <em>Written in the Dark</em> and <em>Wherein Lies Continue</em>.</p>
+<article class="merch-product" data-product="blu-ray">
 <img class="merch-poster" src="/assets/light-poster.webp" alt="Written in the Light official film poster">
-<div><span class="merch-eyebrow">Autographed edition</span><h2>Written in the Light</h2>
-<p>Autographed Blu-ray · Signed by Heidi Mikac</p><div class="merch-price">$40</div>
+<div class="merch-details"><span class="merch-eyebrow">Autographed edition</span><h2>Written in the Light</h2>
+<p>Autographed Blu-ray · Signed by Heidi Mikac</p><div class="merch-price" data-price>$40</div>
 <p>Support the film's festival journey. Proceeds from these signed Blu-rays help cover film festival entry fees.</p>
-<div class="merch-actions"><a href="https://venmo.com/u/heidiv90" target="_blank" rel="noopener noreferrer">Pay via Venmo @heidiv90</a><a href="mailto:hello@heidimikacfilms.com?subject=Written%20in%20the%20Light%20Autographed%20Blu-ray%20Order">Arrange your order</a></div>
-<p class="merch-note">Please email us to confirm availability and arrange delivery or shipping before paying. Shipping costs, if applicable, will be confirmed separately. Venmo payments are handled outside this website; clicking the payment link does not place an order.</p>
-</div></article></div></main>
+<div class="merch-actions" data-venmo><a href="https://venmo.com/u/heidiv90" target="_blank" rel="noopener noreferrer">Pay via Venmo @heidiv90</a><a href="mailto:hello@heidimikacfilms.com?subject=Written%20in%20the%20Light%20Autographed%20Blu-ray%20Order">Arrange your order</a></div>
+<p class="merch-note" data-venmo>Please email us to confirm availability and arrange delivery or shipping before paying. Shipping costs, if applicable, will be confirmed separately. Venmo payments are handled outside this website; clicking the payment link does not place an order.</p>
+
+<div data-buy></div><p data-status aria-live="polite"></p>
+</div></article>
+<article class="merch-product" data-product="peach-tea-lady">
+<div class="merch-details merch-shirt"><span class="merch-eyebrow">T-shirt</span>
+<h2>Peach Tea Lady</h2><div class="merch-price" data-price hidden></div>
+<p data-shirt-loading>Sizes S, M, L, XL and XXL</p>
+<div data-buy></div><p data-status aria-live="polite"></p>
+</div></article>
+</div></main>
 <footer class="footer"><span>© 2026 Heidi Mikac Films</span><span>Independent film production</span><a href="/members/">Film Portal Login</a><a href="https://mosaicmindsmedia.com" target="_blank" rel="noopener noreferrer">Site by Mosaic Minds Media</a></footer>
 <script src="/site.js"></script>
+<script type="module" src="/merch/shop.js"></script>
 </body></html>
