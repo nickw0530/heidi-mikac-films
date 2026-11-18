@@ -31,7 +31,7 @@
 .merch-poster{width:100%;max-height:630px;object-fit:contain;box-shadow:0 18px 70px #000a}
 .merch-product h2{font:400 clamp(38px,5vw,62px)/1.05 'Cormorant Garamond',Georgia,serif;margin:12px 0}
 .merch-product p{color:#cfc5bc;line-height:1.7}.merch-price{font-size:38px;color:#fff;font-weight:600;margin:20px 0}
-.merch-actions{display:flex;flex-wrap:wrap;gap:12px;margin:24px 0}.merch-actions a{display:inline-block;padding:15px 22px;border:1px solid #bd555a;background:#a92b30;color:#fff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.1em}.merch-actions a+ a{background:transparent}
+.merch-actions{display:flex;flex-wrap:wrap;gap:12px;margin:24px 0}.merch-actions[hidden]{display:none}.merch-actions a{display:inline-block;padding:15px 22px;border:1px solid #bd555a;background:#a92b30;color:#fff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.1em}.merch-actions a+ a{background:transparent}
 .merch-note{font-size:13px;color:#b8aea7!important;max-width:510px}
 @media(max-width:700px){.merch-main{padding-top:120px}.merch-product{grid-template-columns:1fr}.merch-poster{max-width:380px}.merch-actions a{width:100%;text-align:center}}
 
@@ -62,8 +62,10 @@
 <div class="merch-details"><span class="merch-eyebrow">Autographed edition</span><h2>Written in the Light</h2>
 <p>Autographed Blu-ray · Signed by Heidi Mikac</p><div class="merch-price" data-price>$40</div>
 <p>Support the film's festival journey. Proceeds from these signed Blu-rays help cover film festival entry fees.</p>
-<div class="merch-actions" data-venmo><a href="https://venmo.com/u/heidiv90" target="_blank" rel="noopener noreferrer">Pay via Venmo @heidiv90</a><a href="mailto:hello@heidimikacfilms.com?subject=Written%20in%20the%20Light%20Autographed%20Blu-ray%20Order">Arrange your order</a></div>
-<p class="merch-note" data-venmo>Please email us to confirm availability and arrange delivery or shipping before paying. U.S. shipping is $5 per order. Venmo payments are handled outside this website; clicking the payment link does not place an order.</p>
+<div class="merch-actions" data-paypal-link hidden><a href="https://www.paypal.com/ncp/payment/8XZDPRP9PL7CW">Pay $45 with PayPal · U.S. shipping included</a></div>
+<div class="merch-actions" data-venmo><a href="https://venmo.com/u/heidiv90" target="_blank" rel="noopener noreferrer">Pay via Venmo @heidiv90</a></div>
+<p class="merch-note" data-venmo>For Venmo orders, email us to confirm availability and arrange delivery before paying. U.S. shipping is $5 per order.</p>
+<p class="merch-note">Order questions? Email <a href="mailto:hello@heidimikacfilms.com">hello@heidimikacfilms.com</a>.</p>
 
 <div data-buy></div><p data-status aria-live="polite"></p>
 </div></article>

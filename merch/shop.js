@@ -34,6 +34,8 @@ function mountProduct(product,shop,sdk){
   price.textContent=product.price===null?'':usd(product.price);
   card.classList.toggle('merch-unavailable',soldOut);
   for(const link of card.querySelectorAll('[data-venmo]'))link.hidden=soldOut;
+  const hostedPayPal=card.querySelector('[data-paypal-link]');
+  if(hostedPayPal)hostedPayPal.hidden=Boolean(sdk)||!available||product.price!==4000||shop.shipping!==500;
   buy.replaceChildren();
 
   const sizes=document.createElement('fieldset');
