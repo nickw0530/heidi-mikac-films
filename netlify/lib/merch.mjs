@@ -52,11 +52,58 @@ export function paypalConfig(production){
 }
 export const dollars=cents=>(cents/100).toFixed(2);
 
+export function recognitionName(value){
+  check(typeof value==='string'&&value.length<=240,'Enter a display name of 60 characters or fewer.');
+  const name=value.normalize('NFKC').trim().replace(/\s+/gu,' ');
+  check(name&&[...name].length<=60&&!/[<>\p{Cc}\p{Cf}\p{Cs}]/u.test(value)&&!/[<>\p{Cc}\p{Cf}\p{Cs}]/u.test(name),
+    'Enter a plain-text display name of 60 characters or fewer.');
+  return name;
+}
+
+export function recognitionSettings(input){
+  if(input===undefined)return {public:false,name:''};
+  check(input&&typeof input==='object'&&!Array.isArray(input)&&typeof input.public==='boolean','Choose whether to show your display name.');
+  return input.public?{public:true,name:recognitionName(input.name)}:{public:false,name:''};
+}
+
+// Old orders and offline sales contain one item at the top level.
+export function orderItems(order){
+  return Array.isArray(order.items)?order.items:order.sku?[{
+    sku:order.sku,name:order.name,variant:order.variant,quantity:order.quantity,unit:order.unit
+  }]:[];
+}
+
+export function supporterNames(shop){
+  const seen=new Set(),names=[];
+  const sales=Object.values(shop.sales).filter(sale=>sale.status==='paid'&&sale.recognition?.public===true&&!sale.supporterHidden)
+    .sort((a,b)=>(b.paidAt||0)-(a.paidAt||0));
+  for(const sale of sales){
+    let name;
+    try{name=recognitionName(sale.recognition.name);}catch{continue;}
+    const key=name.toLocaleLowerCase('en-US');
+    if(seen.has(key))continue;
+    seen.add(key);names.push(name);
+    if(names.length===30)break;
+  }
+  return names;
+}
+
+export function setSupporterVisibility(shop,input){
+  check(input&&typeof input.orderId==='string'&&input.orderId.length<=80&&typeof input.hidden==='boolean','Choose a supporter and visibility.');
+  const sale=Object.hasOwn(shop.sales,input.orderId)?shop.sales[input.orderId]:null;
+  check(sale&&sale.recognition?.public===true,'This order has no public display-name permission.',404);
+  recognitionName(sale.recognition.name);
+  // Moderation cannot create consent or replace the display name the buyer chose.
+  sale.supporterHidden=input.hidden;
+  return {ok:true,orderId:input.orderId,hidden:input.hidden};
+}
+
 export function publicShop(shop,config){
   const {settings}=shop;
   return {
     clientId:settings.enabled?config?.clientId??null:null,
     shipping:settings.shipping,
+    supporters:supporterNames(shop),
     products:products.map(product=>({...product,price:settings.prices[product.id],
       variants:product.variants.map(([id,label])=>({id,label,available:settings.stock[id]>0,soldOut:settings.stock[id]===0}))
     }))
@@ -93,6 +140,29 @@ export function lineItem(shop,sku,quantity){
   const unit=shop.settings.prices[product.id];
   check(unit&&shop.settings.stock[sku]>=quantity,'This quantity is no longer available.',409);
   return {sku,name:product.name,variant:product.variants.find(([id])=>id===sku)[1],quantity,unit};
+}
+
+export function checkoutCart(shop,input){
+  check(input&&typeof input==='object'&&!Array.isArray(input),'Choose your merchandise.');
+  const donation=input.donation??0;
+  check(Number.isInteger(donation)&&(donation===0||donation>=100&&donation<=1000000),'Contributions must be between $1 and $10,000.');
+  // Monetary contributions use the campaign checkout. Never disguise a donation
+  // as goods or mix PayPal's restricted DONATION category with merchandise.
+  check(donation===0,'Please use the separate campaign checkout for a contribution.');
+  const requested=input.items===undefined?[{sku:input.sku,quantity:input.quantity}]:input.items;
+  check(Array.isArray(requested)&&requested.length>0&&requested.length<=120,'Choose at least one merchandise item.');
+  const quantities=new Map();
+  for(const item of requested){
+    check(item&&typeof item.sku==='string'&&Number.isInteger(item.quantity)&&item.quantity>=1&&item.quantity<=20,
+      'Choose an item and a quantity from 1 to 20.');
+    quantities.set(item.sku,(quantities.get(item.sku)||0)+item.quantity);
+  }
+  const items=[...quantities].map(([sku,quantity])=>lineItem(shop,sku,quantity));
+  const shipping=shop.settings.shipping;
+  check(Number.isInteger(shipping)&&shipping>=0,'U.S. shipping is not configured.',503);
+  const subtotal=items.reduce((sum,item)=>sum+item.unit*item.quantity,0);
+  const summary=items.length===1?items[0]:{name:'Merch order',variant:'Multiple items',quantity:items.reduce((sum,item)=>sum+item.quantity,0)};
+  return {...summary,items,donation:0,recognition:recognitionSettings(input.recognition),shipping,subtotal,total:subtotal+shipping};
 }
 
 export function manualSale(shop,input){

@@ -2,7 +2,18 @@ const items=[['blu-ray','Written in the Light Blu-ray'],...['S','M','L','XL','XX
 const currency=new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'});
 const money=cents=>currency.format(cents/100);
 const cents=value=>value===''?null:Math.round(Number(value)*100);
-const csv=value=>'"'+String(value??'').replaceAll('"','""')+'"';
+const csv=value=>{
+  const text=String(value??'');
+  const safe=/^[\s\u0000-\u001f\u007f]*[=+\-@]/u.test(text)||/^[\t\r\n]/u.test(text)?"'"+text:text;
+  return '"'+safe.replaceAll('"','""')+'"';
+};
+const saleItems=sale=>Array.isArray(sale.items)?sale.items:[{
+  name:sale.product,variant:sale.variant,quantity:sale.quantity,unit:null
+}];
+const quantity=sale=>saleItems(sale).reduce((sum,item)=>sum+item.quantity,0);
+const lineSummary=item=>item.quantity+' × '+[item.name,item.variant].filter(Boolean).join(' · ')
+  +(Number.isFinite(item.unit)?' · '+money(item.unit)+' each':'');
+const hasPublicPermission=sale=>sale.recognition?.public===true&&typeof sale.recognition.name==='string'&&!!sale.recognition.name.trim();
 
 export async function mountMerch(panel,request){
   if(panel.dataset.mounted)return;
@@ -41,8 +52,9 @@ export async function mountMerch(panel,request){
       </div>
       <button type="button" data-refresh>Refresh sales</button> <button type="button" data-export>Export CSV</button>
       <p data-report-status role="status"></p><p data-total></p>
+      <p>Item filters include the full order and its total. Public names require the buyer's recorded permission and a paid order.</p>
       <div class="merch-admin-scroll" tabindex="0" aria-label="Sales report table">
-        <table><thead><tr><th>Date</th><th>Item</th><th>Qty</th><th>Payment</th><th>Status</th><th>Total</th><th>Reference</th></tr></thead><tbody></tbody></table>
+        <table><thead><tr><th>Date</th><th>Items</th><th>Qty</th><th>Payment</th><th>Status</th><th>Order total</th><th>Reference</th><th>Supporter name</th></tr></thead><tbody></tbody></table>
       </div>`;
     const find=selector=>template.querySelector(selector);
     const inventory=find('[data-inventory]'), fields=inventory.elements;
@@ -62,15 +74,24 @@ export async function mountMerch(panel,request){
       const from=find('[data-from]').value, through=find('[data-through]').value, product=find('[data-product]').value;
       const start=from?new Date(from+'T00:00:00').valueOf():0;
       const end=through?new Date(through+'T23:59:59.999').valueOf():Infinity;
-      filtered=all.filter(sale=>sale.date>=start&&sale.date<=end&&(!product||product===sale.product));
+      filtered=all.filter(sale=>sale.date>=start&&sale.date<=end&&(!product||saleItems(sale).some(item=>item.name===product)));
       const paid=filtered.filter(sale=>['paid','refunded','partially refunded'].includes(sale.status));
-      find('[data-total]').textContent=paid.length+' captured orders · '+paid.reduce((n,sale)=>n+sale.quantity,0)+' units · '+money(paid.reduce((n,sale)=>n+sale.total,0))+' gross collected';
+      find('[data-total]').textContent=paid.length+' captured orders · '+paid.reduce((n,sale)=>n+quantity(sale),0)+' units · '+money(paid.reduce((n,sale)=>n+sale.total,0))+' gross collected';
       rows.replaceChildren();
       for(const sale of filtered){
         const row=rows.insertRow();
-        for(const value of [new Date(sale.date).toLocaleString(),sale.product+' · '+sale.variant,sale.quantity,sale.channel,sale.status,money(sale.total),sale.captureId||sale.id]){
+        row.insertCell().textContent=new Date(sale.date).toLocaleString();
+        const lines=row.insertCell(),orderItems=saleItems(sale);
+        for(const item of orderItems){
+          const line=document.createElement('div');
+          line.textContent=lineSummary(item);
+          lines.append(line);
+        }
+        if(!orderItems.length)lines.textContent=sale.product||'No merchandise';
+        for(const value of [quantity(sale),sale.channel,sale.status,money(sale.total),sale.captureId||sale.id]){
           row.insertCell().textContent=value;
         }
+        const reference=row.lastElementChild;
         if(sale.channel==='PayPal checkout'){
           const button=document.createElement('button');
           button.type='button';
@@ -80,10 +101,27 @@ export async function mountMerch(panel,request){
             await reload();
             reportStatus.textContent='PayPal status checked.';
           });
-          row.lastElementChild.append(' ',button);
+          reference.append(' ',button);
+        }
+        const recognition=row.insertCell();
+        if(hasPublicPermission(sale)){
+          const name=document.createElement('div'),visibility=document.createElement('div'),button=document.createElement('button');
+          name.textContent=sale.recognition.name;
+          visibility.textContent=sale.supporterHidden?'Hidden':sale.status==='paid'?'Public display allowed':'Not shown — order is not paid';
+          button.type='button';
+          button.textContent=sale.supporterHidden?'Show public name':'Hide public name';
+          button.onclick=()=>busy(button,reportStatus,async ()=>{
+            const result=await request('merchSupporterVisibility',{orderId:sale.id,hidden:!sale.supporterHidden});
+            sale.supporterHidden=result.hidden;
+            render();
+            reportStatus.textContent=result.hidden?'Public supporter name hidden.':'Public display allowed for this opted-in name when the order is paid.';
+          });
+          recognition.append(name,visibility,button);
+        }else{
+          recognition.textContent='No public-name permission';
         }
       }
-      if(!filtered.length){const empty=rows.insertRow().insertCell();empty.colSpan=7;empty.textContent='No sales in this range.';}
+      if(!filtered.length){const empty=rows.insertRow().insertCell();empty.colSpan=8;empty.textContent='No sales in this range.';}
     }
     async function reload(){
       all=(await request('merchSales')).sales;
@@ -124,9 +162,10 @@ export async function mountMerch(panel,request){
     template.onchange=event=>{if(event.target.matches('[data-from],[data-through],[data-product]'))render();};
     find('[data-refresh]').onclick=event=>busy(event.target,reportStatus,reload);
     find('[data-export]').onclick=()=>{
-      const data=[['Date','Product','Variant','Quantity','Payment','Status','Gross USD','Shipping USD','PayPal capture ID','Order ID'],
-        ...filtered.map(sale=>[new Date(sale.date).toISOString(),sale.product,sale.variant,sale.quantity,sale.channel,sale.status,
-          (sale.total/100).toFixed(2),sale.shipping===null?'':(sale.shipping/100).toFixed(2),sale.captureId,sale.id])];
+      const data=[['Date','Line items','Quantity','Payment','Status','Gross USD','Shipping USD','PayPal capture ID','Order ID','Public name opt-in','Display name','Public name hidden'],
+        ...filtered.map(sale=>[new Date(sale.date).toISOString(),saleItems(sale).map(lineSummary).join('; '),quantity(sale),sale.channel,sale.status,
+          (sale.total/100).toFixed(2),sale.shipping==null?'':(sale.shipping/100).toFixed(2),sale.captureId,sale.id,
+          hasPublicPermission(sale)?'Yes':'No',hasPublicPermission(sale)?sale.recognition.name:'',hasPublicPermission(sale)?(sale.supporterHidden?'Yes':'No'):''])];
       const url=URL.createObjectURL(new Blob([data.map(row=>row.map(csv).join(',')).join('\r\n')],{type:'text/csv;charset=utf-8'}));
       const link=document.createElement('a');
       link.href=url;link.download='heidi-mikac-films-merch-sales.csv';link.click();
