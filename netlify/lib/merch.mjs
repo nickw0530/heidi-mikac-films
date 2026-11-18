@@ -3,7 +3,7 @@ import {getStore} from '@netlify/blobs';
 const key='shop';
 export const products=[
   {id:'blu-ray',name:'Written in the Light',description:'Autographed Blu-ray · Signed by Heidi Mikac',image:'/assets/light-poster.webp',variants:[['blu-ray','Blu-ray']]},
-  {id:'peach-tea-lady',name:'Peach Tea Lady',description:'T-shirt',image:'',variants:['S','M','L','XL','XXL'].map(size=>['shirt-'+size.toLowerCase(),size])}
+  {id:'peach-tea-lady',name:'Peach Tea Lady',description:'T-shirt',image:'/assets/peach-tea-lady-shirt.webp',variants:['S','M','L','XL','XXL'].map(size=>['shirt-'+size.toLowerCase(),size])}
 ];
 const initial={
   settings:{enabled:false,shipping:500,prices:{'blu-ray':4000,'peach-tea-lady':2500},
