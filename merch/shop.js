@@ -15,7 +15,7 @@ function paypalSdk(clientId){
   return new Promise((resolve,reject)=>{
     const script=document.createElement('script');
     script.src='https://www.paypal.com/sdk/js?'+new URLSearchParams({
-      'client-id':clientId,currency:'USD',intent:'capture',components:'buttons','enable-funding':'card'
+      'client-id':clientId,currency:'USD',intent:'capture',components:'buttons','enable-funding':'card,venmo'
     });
     script.onload=()=>resolve(window.paypal);
     script.onerror=()=>reject(Error('PayPal checkout could not load.'));
@@ -33,7 +33,6 @@ function mountProduct(product,shop,sdk){
   price.hidden=product.price===null;
   price.textContent=product.price===null?'':usd(product.price);
   card.classList.toggle('merch-unavailable',soldOut);
-  for(const link of card.querySelectorAll('[data-venmo]'))link.hidden=soldOut;
   const hostedPayPal=card.querySelector('[data-paypal-link]');
   if(hostedPayPal)hostedPayPal.hidden=Boolean(sdk)||!available||product.price!==4000||shop.shipping!==500;
   buy.replaceChildren();
@@ -63,7 +62,9 @@ function mountProduct(product,shop,sdk){
     buy.append(shipping);
   }
   if(!sdk||!available||!product.price){
-    if(product.id==='peach-tea-lady')status.textContent=available&&product.price?'Online ordering is currently unavailable.':'Coming soon';
+    if(!hostedPayPal||hostedPayPal.hidden){
+      status.textContent=available&&product.price?'Online ordering is currently unavailable.':'Coming soon';
+    }
     return;
   }
 
@@ -144,5 +145,7 @@ async function start(){
   for(const product of shop.products)mountProduct(product,shop,sdk);
 }
 start().catch(()=>{
-  document.querySelector('[data-product="peach-tea-lady"] [data-status]').textContent='Availability could not be loaded. Please refresh to try again.';
+  for(const status of document.querySelectorAll('[data-product] [data-status]')){
+    status.textContent='Availability could not be loaded. Please refresh to try again.';
+  }
 });
