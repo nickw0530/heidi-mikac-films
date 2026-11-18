@@ -91,8 +91,8 @@ button{font:inherit}
   text-align:center
 }
 .homepage-promo h1{
-  max-width:900px;margin:0 auto clamp(18px,3vw,32px);overflow-wrap:anywhere;
-  font:400 clamp(32px,5.5vw,66px)/1.02 var(--serif)
+  max-width:1240px;margin:0 auto clamp(18px,3vw,32px);overflow-wrap:anywhere;text-wrap:balance;
+  font:400 clamp(32px,4.6vw,66px)/1.02 var(--serif)
 }
 .promo-media{position:relative;max-width:1040px;margin:auto}
 .promo-player{

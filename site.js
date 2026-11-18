@@ -139,7 +139,8 @@ async function renderHomepagePromo() {
     const {enabled, videoId, videoPath, title, buttonLabel, buttonPath} = await response.json();
     if (!enabled || !title || !mountPromoVideo(promo, /^[\w-]{11}$/.test(videoId || "") ? videoId : "", videoPath)) return;
 
-    promo.querySelector("h1").textContent = title;
+    // Keep the product name together when the promo headline wraps.
+    promo.querySelector("h1").textContent = title.replace(/\b(blu)-(rays?)\b/gi, "$1\u2011$2");
     if (buttonLabel && buttonPath && new URL(buttonPath, location.origin).origin === location.origin) {
       const button = promo.querySelector("[data-promo-button]");
       button.textContent = buttonLabel;
