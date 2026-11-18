@@ -809,3 +809,107 @@ test('an admin can set aside a request SignWell reports as ended, and only then'
  assert.ok((await adminActions(context.store,dark)).some(item=>item.member===actor&&item.label.startsWith('Prepare a new agreement')));
  assert.equal((await setAside()).status,400,'There is nothing left to set aside.');
 });
+
+function onboardingBody(state){
+ return {memberRevision:state.memberRevision,profileRevision:state.profileRevision,productions:state.productions.map(({id,selected,character,crewTitle,visible})=>({id,selected,character,crewTitle,visible,approve:false}))};
+}
+
+test('onboarding returns every film and saves assignments, corrected credits and explicit approvals together',async()=>{
+ const context=await fixture(),{store}=context;
+ const member=await store.get('members/'+actor);
+ const imageVersion='a'.repeat(64);
+ await store.setJSON('members/'+actor,{...member,generalInvite:true,productions:{},draftProfile:{bio:'Saved member biography',imageVersion},productionRequests:{[dark]:'request-dark',[lies]:'request-lies'},proposedCredits:{[dark]:{character:'Audition role',crewTitle:'Producer'},[lies]:{character:'Another role',crewTitle:''}},publication:{[lies]:false}});
+ await store.set('profile-images/'+actor+'/'+imageVersion,Buffer.from('fixture-image'),{metadata:{mime:'image/jpeg'}});
+ await store.setJSON('website-placement/'+lies+'/member-'+actor,{castPlacement:'crew',billingOrder:null,revision:'saved-placement'});
+ await store.setJSON(trackingKey(lies,actor),{document:'agreement',reason:'not-required',agreementCycle:AGREEMENT_CYCLE});
+ await store.set('productions/'+lies+'/contract/master',Buffer.from('master'));
+ const state=(await call('onboarding',{production:dark})).data;
+ assert.deepEqual(state.productions.map(row=>row.id),[dark,lies]);
+ assert.ok(state.productions.every(row=>row.selected&&!row.assigned&&row.needsApproval&&row.canApprove));
+ assert.deepEqual(state.profile,{bio:'Saved member biography',photo:'uploaded'});
+ assert.equal(state.productions[1].visible,false);
+ assert.equal(state.productions[1].placement.revision,'saved-placement');
+ assert.equal(state.productions[1].paperwork.reason,'not-required');
+ assert.equal(state.productions[1].agreementReady,true);
+ const body=onboardingBody(state);
+ body.productions[0].character='Approved role';body.productions[0].approve=true;
+ body.productions[1].crewTitle='Executive Producer';body.productions[1].approve=true;
+ assert.equal((await call('onboarding',{who:'Heidi',body})).status,200);
+ const saved=await store.get('members/'+actor);
+ assert.equal(saved.productions[dark].role,'Approved role · Producer');
+ assert.equal(saved.productions[lies].role,'Another role · Executive Producer');
+ assert.equal(saved.productions[dark].filmProfile,'','A name match never becomes private paperwork ownership.');
+ assert.deepEqual(saved.productionRequests,{});assert.deepEqual(saved.proposedCredits,{});
+ assert.equal(saved.publication[lies],false,'Explicit hidden status is preserved.');
+ assert.equal(saved.approvedProfiles[dark].bio,'Saved member biography');
+ assert.ok(saved.approvedProfiles[lies].photo.includes('&v='+imageVersion));
+ assert.deepEqual(saved.draftProfile,{bio:'Saved member biography',imageVersion});
+ assert.deepEqual(context.calls,[]);assert.deepEqual(context.notifications,[]);
+ assert.equal((await store.get('website-placement/'+lies+'/member-'+actor)).revision,'saved-placement','Other stores are changed through their existing actions.');
+ assert.equal((await store.get(trackingKey(lies,actor))).reason,'not-required');
+ assert.equal((await call('onboarding',{body})).status,409,'A stale save cannot overwrite the saved member state.');
+});
+
+test('onboarding keeps pending drafts private and permits existing legacy credits with empty split fields',async()=>{
+ const context=await fixture(),{store}=context;
+ const member=await store.get('members/'+actor);
+ await store.setJSON('members/'+actor,{...member,generalInvite:true,draftProfile:{bio:'Unapproved edit'},approvedProfiles:{[dark]:{bio:'Approved biography',photo:profile.photo}},productionRequests:{[dark]:'pending'},proposedCredits:{[dark]:{character:'New role',crewTitle:''}}});
+ let state=(await call('onboarding')).data,body=onboardingBody(state);
+ body.productions[0].character='Corrected role';
+ body.productions[1].selected=false;
+ assert.equal((await call('onboarding',{body})).status,200);
+ const saved=await store.get('members/'+actor);
+ assert.equal(saved.approvedProfiles[dark].bio,'Approved biography');
+ assert.equal(saved.draftProfile.bio,'Unapproved edit');
+ assert.ok(saved.productionRequests[dark]);assert.equal(saved.proposedCredits[dark].character,'Corrected role');
+ assert.equal(saved.productions[lies],undefined);
+ assert.equal(saved.profileLinks[dark],profile.id,'An existing confirmed link survives.');
+ const live=(await call('published',{who:null})).data.find(row=>row.id===profile.id);
+ assert.equal(live.bio,'Approved biography');
+ assert.equal(live.role,'Corrected role','Admin production-credit corrections are reflected publicly.');
+ state=(await call('onboarding')).data;body=onboardingBody(state);
+ body.productions[0].approve=true;
+ await store.setJSON('profiles/'+actor,{bio:'A legacy store change'});
+ await store.setJSON('members/'+actor,{...saved,draftProfile:{bio:'Newer member edit'}});
+ const after=(await call('onboarding',{body}));assert.equal(after.status,409);
+ assert.equal((await store.get('members/'+actor)).approvedProfiles[dark].bio,'Approved biography');
+
+ const fresh=await fixture();
+ state=(await call('onboarding')).data;body=onboardingBody(state);
+ assert.equal((await call('onboarding',{body})).status,200);
+ assert.equal((await fresh.store.get('members/'+actor)).productions[dark].role,'Actor','Unchanged blank split fields preserve a legacy combined role.');
+});
+
+test('onboarding protects permissions, review versions and private or exempt profiles',async()=>{
+ const context=await fixture(),{store}=context;
+ const state=(await call('onboarding')).data,body=onboardingBody(state);
+ for(const who of [null,'member']){
+  assert.ok([401,403].includes((await call('onboarding',{who})).status));
+  assert.ok([401,403].includes((await call('onboarding',{who,body})).status));
+ }
+ assert.equal((await call('onboarding',{body,origin:'https://other.invalid'})).status,403);
+ assert.equal((await call('onboarding',{body:{...body,productions:body.productions.slice(0,1)}})).status,400);
+ assert.equal((await call('onboarding',{body:{...body,productions:[body.productions[0],body.productions[0]]}})).status,400);
+ body.productions[0].approve=true;
+ assert.equal((await call('onboarding',{body:{...body,profileRevision:'stale'}})).status,409);
+ await store.setJSON('profiles/'+actor,{bio:'Original stored biography'});
+ const reviewed=(await call('onboarding')).data,reviewBody=onboardingBody(reviewed);
+ reviewBody.productions[0].approve=true;
+ await store.setJSON('profiles/'+actor,{bio:'Newer stored biography'});
+ assert.equal((await call('onboarding',{body:reviewBody})).status,409,'A profile-only edit invalidates the reviewed approval even if membership did not change.');
+ const original=await store.get('members/'+actor);
+ await store.setJSON('members/'+actor,{...original,generalInvite:true,pendingContact:true,email:'',productions:{}});
+ let privateState=(await call('onboarding')).data;
+ assert.ok(privateState.pendingContact&&privateState.productions.every(row=>!row.canApprove));
+ let privateBody=onboardingBody(privateState);privateBody.productions[0].selected=true;
+ assert.equal((await call('onboarding',{body:privateBody})).status,200,'A private contact can be assigned before invitation.');
+ privateState=(await call('onboarding')).data;privateBody=onboardingBody(privateState);privateBody.productions[0].approve=true;
+ assert.equal((await call('onboarding',{body:privateBody})).status,409);
+ await store.setJSON('members/'+actor,{...original,practice:true,generalInvite:true});
+ privateState=(await call('onboarding')).data;privateBody=onboardingBody(privateState);privateBody.productions[0].approve=true;
+ assert.equal((await call('onboarding',{body:privateBody})).status,403);
+ const ownersContext=await ownerFixture();
+ const exempt=(await call('onboarding',{id:owners.Nick,who:'Heidi'})).data;
+ assert.equal(exempt.adminProfile,'Nick');assert.ok(exempt.productions.every(row=>row.paperwork.exempt));
+ assert.deepEqual(ownersContext.calls,[]);
+});

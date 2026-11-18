@@ -607,7 +607,7 @@ export default async function handle(req, context) {
     const record=withMetadata?await store.getWithMetadata(key,{type:'json'}):null;
     const member=withMetadata?record?.data:await get(key);
     requireThat(member,'Member unavailable.',404);
-    if(!['bio','photo','memberProfile','revoke','enrollments','resend','saveAdminProfileDetails'].includes(action))requireThat(assignments(member)[productionId],'Member is not assigned to this production.',403);
+    if(!['bio','photo','memberProfile','revoke','enrollments','resend','saveAdminProfileDetails','onboarding'].includes(action))requireThat(assignments(member)[productionId],'Member is not assigned to this production.',403);
     return withMetadata?record:member;
   };
   async function saveTarget(record,member){
@@ -1004,6 +1004,90 @@ export default async function handle(req, context) {
     const photo=imageVersion||image?'uploaded':fallback?.photo||'';
     const publicImage=photo==='uploaded'?memberPhotoUrl(m.id,imageVersion||image.metadata?.version||'original'):photo;
     return {bio,photo,imageVersion,publicImage,revision:hash(JSON.stringify([bio,imageVersion||image?.etag||photo]))};
+  }
+  if(action==='onboarding'){
+    onlyAdmin();
+    const record=await target({withMetadata:true}),member=record.data;
+    requireThat(active(member),'Member unavailable.',404);
+    const previous=assignments(member),profile=await reviewProfile(member);
+    const canApprove=!isPractice(member)&&!member.pendingContact;
+    if(!post){
+      const exempt=adminProfileOwner(await adminProfiles(),member);
+      const rows=await Promise.all(productions.map(async production=>{
+        const pid=production.id,assignment=previous[pid],base=findProfile(member,pid);
+        const requestId=member.productionRequests?.[pid]||'';
+        const fields=member.proposedCredits?.[pid]||assignment||{};
+        const key=websitePlacementPrefix(pid)+(base?.id||'member-'+member.id);
+        const scope=pid==='written-in-the-dark'?'':'productions/'+pid+'/';
+        const [placement,tracking,agreement,master]=await Promise.all([
+          rawStore.get(key,{type:'json'}),readAgreementTracking(rawStore,pid,member.id),
+          rawStore.get(currentAgreementKey(pid,member.id),{type:'json'}),rawStore.getMetadata(scope+'contract/master')
+        ]);
+        const approved=!!member.approvedProfiles?.[pid]||!member.generalInvite&&!!assignment;
+        const needsApproval=!!requestId||!!assignment&&member.generalInvite&&!approved;
+        const visible=member.publication?.[pid]!==false;
+        const publicationState=!assignment?'Not assigned':!canApprove?'Private profile':!visible?'Hidden from website':needsApproval?'Awaiting approval':approved?'Approved':'Needs approval';
+        return {...production,assigned:!!assignment,selected:!!assignment||!!requestId,character:fields.character||'',crewTitle:fields.crewTitle||'',role:assignment?.role||base?.role||'',requestId,needsApproval,approved,visible,canApprove,
+          ...(!canApprove?{approvalReason:isPractice(member)?'Practice accounts stay private.':'Add an email and invite this person before website approval.'}:{}),
+          publicationState,placement:placement||{castPlacement:'',billingOrder:null,revision:''},
+          paperwork:{reason:tracking?.reason||'',status:exempt?'Not required':manualPaperworkStatus(tracking)||(agreement&&!agreement.cleared?agreement.status:'No agreement on file'),exempt:!!exempt},
+          agreementReady:!!master,agreementStatus:agreement&&!agreement.cleared?agreement.status||'':''};
+      }));
+      return json({id:member.id,name:member.name,pendingContact:!!member.pendingContact,practice:isPractice(member),adminProfile:exempt||null,memberRevision:record.etag,profileRevision:profile.revision,profile:{bio:profile.bio,photo:profile.photo},productions:rows});
+    }
+    const conflict='This profile changed. Reload onboarding before saving.';
+    requireThat(body.memberRevision===record.etag,conflict,409);
+    requireThat(Array.isArray(body.productions)&&body.productions.length===productions.length&&new Set(body.productions.map(row=>row?.id)).size===productions.length&&body.productions.every(row=>row&&Object.hasOwn(catalogs,row.id)),
+      'Review every production before saving onboarding.');
+    const selectedRows=body.productions.map(row=>{
+      requireThat(typeof row.selected==='boolean'&&typeof row.visible==='boolean'&&typeof row.approve==='boolean','Choose valid production settings.');
+      requireThat(!row.approve||row.selected,'Select this production before approving its website profile.');
+      return {...row,...credits(row)};
+    });
+    const approvals=selectedRows.some(row=>row.approve);
+    if(approvals){
+      allowPublicProfile(member);
+      requireThat(!member.pendingContact,'Add an email and invite this person before website approval.',409);
+      requireThat(body.profileRevision===profile.revision,'The biography or headshot changed. Review the latest profile before approval.',409);
+    }
+    const next=Object.fromEntries(Object.entries(previous).filter(([pid])=>!Object.hasOwn(catalogs,pid)));
+    const requests={...member.productionRequests},proposed={...member.proposedCredits},approvedProfiles={...member.approvedProfiles},publication={...member.publication},profileLinks={...member.profileLinks};
+    const accounts=await list('members/');
+    for(const row of selectedRows){
+      const pid=row.id,oldAssignment=previous[pid];
+      const confirmed=oldAssignment?.filmProfile||member.profileLinks?.[pid]||(pid==='written-in-the-dark'?member.filmProfile:'')||'';
+      if(confirmed&&catalogs[pid].some(item=>item.id===confirmed))profileLinks[pid]=confirmed;
+      if(!row.selected){delete requests[pid];delete proposed[pid];continue;}
+      const base=findProfile(member,pid);
+      if(base)requireThat(!accounts.some(other=>active(other)&&other.id!==uid&&assignments(other)[pid]&&findProfile(other,pid)?.id===base.id),'This film profile is already assigned to another account.',409);
+      const assignment=editProductionCredits(oldAssignment,row);
+      next[pid]={...assignment,filmProfile:catalogs[pid].some(item=>item.id===confirmed)?confirmed:''};
+      publication[pid]=row.visible;
+      if(row.approve){
+        approvedProfiles[pid]={bio:profile.bio,photo:profile.publicImage,imageVersion:profile.imageVersion};
+        delete requests[pid];delete proposed[pid];
+      }else{
+        if(member.generalInvite&&!approvedProfiles[pid])requests[pid]??=randomUUID();
+        if(requests[pid]&&creditSnapshot(next[pid])!==creditSnapshot(oldAssignment)){
+          proposed[pid]={character:row.character,crewTitle:row.crewTitle};
+          requests[pid]=randomUUID();
+        }
+      }
+    }
+    const updated={...member,productions:next,productionRequests:requests,proposedCredits:proposed,approvedProfiles,publication,profileLinks};
+    requireThat((await store.setJSON('members/'+uid,updated,{onlyIfMatch:record.etag})).modified,conflict,409);
+    const activity=[];
+    for(const row of selectedRows){
+      const pid=row.id,oldAssignment=previous[pid],assignment=next[pid];
+      if(!oldAssignment&&assignment)activity.push(recordProfileActivity(pid,'production-added'));
+      else if(oldAssignment&&!assignment)activity.push(recordProfileActivity(pid,'production-removed'));
+      else if(assignment&&creditSnapshot(assignment)!==creditSnapshot(oldAssignment))activity.push(recordProfileActivity(pid,'credits-updated'));
+      if(row.approve)activity.push(recordProfileActivity(pid,'profile-approved'));
+      if(assignment&&(member.publication?.[pid]!==false)!==row.visible)activity.push(recordProfileActivity(pid,row.visible?'website-shown':'website-hidden'));
+    }
+    await Promise.all(activity);
+    await invalidate();
+    return json({ok:true});
   }
   if(action==='reuseWebsiteProfile'){
     onlyAdmin();

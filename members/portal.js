@@ -4,6 +4,7 @@ import {mountFilmingAvailability} from './filming-availability.js';
 import {mountMerch} from './merch.js';
 import {mountReports} from './reports.js';
 import {mountBulkActions} from './bulk-actions.js';
+import {mountOnboarding} from './onboarding.js';
 import {headshotAccept,selectHeadshot,prepareHeadshot,clearHeadshotPreview} from './headshot-editor.js';
 const officeTabs=[['overview','Overview'],['people','People'],['documents','Documents'],['messages','Messages & files'],['availability','Filming availability'],['calendar','Events'],['reports','Reports'],['website','Website'],['settings','Settings']];
 const castPlacements=[['','Website default'],['lead','Lead Cast'],['supporting','Supporting Cast'],['additional','Additional Cast'],['crew','Creative Team & Crew']];
@@ -32,7 +33,7 @@ const message=document.querySelector('#message');
 let combined=null;
 function listen(type,handler){
  app.addEventListener(type,event=>{
-  if(event.target.closest('[data-office-root]')===app&&!event.target.closest('[data-availability-root],[data-reports-root],[data-bulk-root],[data-merch-root]'))handler(event);
+  if(event.target.closest('[data-office-root]')===app&&!event.target.closest('[data-availability-root],[data-reports-root],[data-bulk-root],[data-merch-root],[data-onboarding-root]'))handler(event);
  });
 }
 app.dataset.officeRoot='';
@@ -382,7 +383,7 @@ function pendingPeoplePanel(state,selected){
   return '<details data-pending-person="'+escape(person.id)+'"><summary>'+escape(person.name)+' · '+escape(person.status)+'</summary><p>'+escape(films)+'</p><button type="button" data-open-setup-profile="'+escape(person.profileId||person.memberId||person.id)+'">Open profile</button>'+edit+invite+form('removePendingPerson','<input type="hidden" name="id" value="'+escape(person.id)+'">','Remove from this list',person.id)+'</details>';
  };
  const outstanding=records.filter(p=>p.status!=='Account created'),completed=records.filter(p=>p.status==='Account created');
- return '<section class="pending-people"><h2>Awaiting portal setup <span class="count">'+outstanding.length+'</span></h2><p>Save a name while you wait for their email address. These names stay private and are tracked separately from portal accounts.</p>'+panel('Add a name without an email',form('savePendingPerson',input('name','Name')+fields([]),'Add name'))+(outstanding.length?outstanding.map(row).join(''):'<p>No saved names are waiting for portal setup.</p>')+(completed.length?panel('Completed setup ('+completed.length+')',completed.map(row).join('')):'')+'</section>';
+ return '<section class="pending-people"><h2>Awaiting portal setup <span class="count">'+outstanding.length+'</span></h2><p>Save a name while you wait for their email address. These names stay private and are tracked separately from portal accounts.</p>'+panel('Add a person',form('savePendingPerson',input('name','Name')+fields([]),'Create profile & continue'))+(outstanding.length?outstanding.map(row).join(''):'<p>No saved names are waiting for portal setup.</p>')+(completed.length?panel('Completed setup ('+completed.length+')',completed.map(row).join('')):'')+'</section>';
 }
 function contactEmail(m){
  return !m.needsEmail?'':panel('Add email & invite',form('invite','<input type="hidden" name="pendingId" value="'+escape(m.pendingPersonId||m.id)+'">'+input('email','Email address','email'),'Add email & send invitation',m.id));
@@ -496,7 +497,7 @@ async function openHomepagePromoSettings(panel){
 function renderCombinedOffice(states,picker){
  const offices=new Map();
  const snapshots=new Map(states.map(state=>[state.productionId,state]));
- let pendingState=states[0],people=[],editor=null;
+ let pendingState=states[0],people=[],editor=null,onboarding=null,onboardingId='';
  let search=sessionStorage.getItem('hmf-directory-search')||'';
  let filter=directoryFilters.some(([value])=>value===routeParams.get('filter'))?routeParams.get('filter'):'all';
  const nav=officeTabs.map(([id,label])=>'<button type="button" data-main-tab="'+id+'">'+label+'</button>').join('');
@@ -508,7 +509,7 @@ function renderCombinedOffice(states,picker){
   '<section data-shared-settings hidden><h2>Account settings</h2>'+adminProfileLinking(pendingState)+
   panel('Invite cast or crew',pendingState.mailReady?form('invite',input('name','Name')+input('email','Email','email'),'Email invitation'):'<p>Email invitations are waiting for the production sender to be connected.</p>')+
   '<div data-shared-assignments></div></section>'+
-  '<div data-main-people><div data-directory><div class="directory-heading"><h2>People &amp; profiles</h2><div data-bulk-actions></div></div>'+
+  '<div data-main-people><div data-directory><div class="directory-heading"><h2>People &amp; profiles</h2><div class="directory-actions"><button type="button" data-add-person>Add person</button><div data-bulk-actions></div></div></div>'+
   '<div class="people-toolbar"><label>Search name, role or email<input type="search" data-roster-search></label><label>Show<select data-roster-filter>'+options+'</select></label></div>'+
   '<p class="directory-count" data-roster-count role="status"></p><ul class="people-directory" data-accounts></ul><div data-pending-people></div>'+
   '<details data-combined-directory><summary></summary><ul class="people-directory" data-catalog></ul></details></div><div data-person-editor></div></div>'+
@@ -525,7 +526,7 @@ function renderCombinedOffice(states,picker){
   if(filter==='all')params.delete('filter');else params.set('filter',filter);
   for(const key of ['person','profile','pending','editFilm'])params.delete(key);
   if(activeView==='people'&&editor){
-   const person=people.find(row=>row.key===editor.key);
+   const person=people.find(row=>row.key===editor.key)||editor.person;
    if(person?.memberId)params.set('person',person.memberId);
    else if(person){const film=person.films.find(item=>item.id===editor.filmId)||person.films[0];if(film)params.set('profile',film.profileId);}
    if(editor.filmId)params.set('editFilm',editor.filmId);
@@ -635,21 +636,22 @@ function renderCombinedOffice(states,picker){
    '<label>Profile contact email (optional)<input name="email" type="email" value="'+escape(m.email)+'"></label><p>The profile contact email is separate from the admin login.</p>','Save profile details',m.id)):contactName(m)+contactEmail(m);
   return '<section class="shared-person-profile" aria-label="Shared profile and access">'+
    '<div class="shared-profile-contact">'+accountEmail(m)+'<p>'+escape(m.adminProfile?'Admin-managed profile. Profile details are optional.':m.needsEmail?'Email needed':m.activated?'Account active':'Invitation pending')+'</p></div>'+
-   details+(photo?'<img data-headshot src="'+escape(photo)+'" alt="Saved headshot">':'')+
-   profile(m)+productionAssignments([m],pendingState.productions,'Manage production assignments')+
-   accessControls(m,pendingState)+'</section>';
+   details+(photo?'<img data-headshot src="'+escape(photo)+'" alt="Saved headshot">':'')+profile(m)+
+   '<div data-onboarding-slot></div>'+accessControls(m,pendingState)+'</section>';
  }
  function renderEditor(){
-  const person=editor&&people.find(row=>row.key===editor.key);
-  if(!person){editor=null;personEditor.replaceChildren();directory.hidden=false;return;}
+  const person=editor&&(people.find(row=>row.key===editor.key)||editor.person);
+  if(!person){editor=null;onboarding?.destroy();onboarding=null;onboardingId='';personEditor.replaceChildren();directory.hidden=false;return;}
   directory.hidden=true;
   if(editor.filmId&&!person.films.some(film=>film.id===editor.filmId))editor.filmId=person.hasMemberProfile?null:person.films[0]?.id;
   const expanded=[...personEditor.querySelectorAll('details[open]')].map(detailKey);
-  const drafts=[...personEditor.querySelectorAll('form[data-dirty],form:has(button:disabled)')];
+  const previousOnboarding=onboardingId===person.memberId&&!editor.filmId?personEditor.querySelector('[data-onboarding-root]'):null;
+  if(!previousOnboarding){onboarding?.destroy();onboarding=null;onboardingId='';}
+  const drafts=[...personEditor.querySelectorAll('form[data-dirty],form:has(button:disabled)')].filter(form=>!form.closest('[data-onboarding-root]'));
   const tab=(value,label,selected)=>'<button type="button" data-person-film="'+escape(value)+'"'+(selected?' aria-current="page"':'')+'>'+escape(label)+'</button>';
   personEditor.innerHTML='<section class="person-editor-heading"><button class="quiet-button" type="button" data-back-directory>← Back to people</button><h2 tabindex="-1">'+escape(person.name)+'</h2>'+
    '<nav class="person-editor-tabs" aria-label="Profile sections">'+
-   (person.hasMemberProfile?tab('',person.member?.adminProfile?'Profile':'Profile & access',!editor.filmId):'')+
+   (person.hasMemberProfile?tab('','Onboarding',!editor.filmId):'')+
    person.films.map(film=>tab(film.id,film.name,editor.filmId===film.id)).join('')+'</nav></section>'+
    (person.hasMemberProfile&&!editor.filmId?sharedEditor(person):'');
   for(const draft of drafts){
@@ -657,10 +659,30 @@ function renderCombinedOffice(states,picker){
    if(replacement)replacement.replaceWith(draft);
   }
   for(const details of personEditor.querySelectorAll('details'))if(expanded.includes(detailKey(details)))details.open=true;
+  const slot=personEditor.querySelector('[data-onboarding-slot]');
+  if(slot){
+   if(previousOnboarding)slot.replaceWith(previousOnboarding);
+   else{
+    onboardingId=person.memberId;
+    onboarding=mountOnboarding(slot,{id:person.memberId,request,
+     beforeSave:()=>personEditor.querySelector('form[data-dirty]:not(.onboarding-form)')?'Save the shared contact, biography or headshot changes above before saving onboarding.':null,
+     onSaved:()=>combined?.refresh(),
+     onOpenFilm:async productionId=>{
+      if(!canNavigate())return;
+      await combined.refresh();
+      const current=matchingMember(person.memberId);
+      if(current?.films.some(film=>film.id===productionId))openPerson(current,productionId,'paperwork');
+      else{
+       const params=new URLSearchParams({view:'people',person:person.memberId,production:productionId,editFilm:productionId});
+       location.assign(location.pathname+'?'+params);
+      }
+     }});
+   }
+  }
  }
  function show(view){
   activeView=view;
-  const person=editor&&people.find(row=>row.key===editor.key);
+  const person=editor&&(people.find(row=>row.key===editor.key)||editor.person);
   const film=person?.films.find(item=>item.id===editor.filmId);
   find('[data-main-people]').hidden=view!=='people';
   find('[data-main-inbox]').hidden=view!=='overview';
@@ -686,7 +708,7 @@ function renderCombinedOffice(states,picker){
  }
  function openPerson(person,filmId=null,section=''){
   if(!person)return;
-  editor={key:person.key,filmId:filmId||(!person.hasMemberProfile?person.films[0]?.id:null)};
+  editor={key:person.key,person,filmId:filmId||(!person.hasMemberProfile?person.films[0]?.id:null)};
   renderEditor();
   show('people');
   const child=editor.filmId&&offices.get(editor.filmId);
@@ -700,6 +722,7 @@ function renderCombinedOffice(states,picker){
  function refreshRows(next){
   if(next){snapshots.set(next.productionId,next);pendingState=next;}
   people=combinedPeople([...snapshots.values()].map(state=>({...state,unassignedProfiles:pendingState.unassignedProfiles})));
+  if(editor)editor.person=people.find(person=>person.key===editor.key)||editor.person;
   renderDirectory();
   renderInbox();
   if(editor){
@@ -708,6 +731,7 @@ function renderCombinedOffice(states,picker){
    if(activeView==='people'&&(!editor||editor.filmId!==previousFilm))show('people');
   }
   if(next)renderAssignments(next);
+  if(onboarding&&!onboarding.busy()&&!onboarding.dirty())onboarding.refresh?.();
  }
  const bulk=mountBulkActions(find('[data-bulk-actions]'),{
   getPeople:()=>people.filter(person=>!person.member?.adminProfile),
@@ -722,13 +746,15 @@ function renderCombinedOffice(states,picker){
  });
  combined={
   show,
+  openNewProfile(id){const person=matchingMember(id);if(person)openPerson(person);},
+  refreshSharedProfile(id){if(onboardingId===id)return onboarding?.refreshSharedProfile?.();},
   openOwnProfile(id){
    if(!canNavigate())return;
    const person=matchingMember(id);
    if(person)openPerson(person);
    else location.assign(adminProfileRoute(id));
   },
-  busy:()=>bulk.busy()||[...offices.values()].some(child=>child.busy()),
+  busy:()=>bulk.busy()||onboarding?.busy()||[...offices.values()].some(child=>child.busy()),
   async refresh(){await Promise.all([...offices.values()].map(child=>child.refresh()));}
  };
  for(const state of states){
@@ -747,15 +773,22 @@ function renderCombinedOffice(states,picker){
   offices.set(state.productionId,child);
  }
  function canNavigate(){
-  if(combined.busy()||availabilityBusy()){message.textContent='Finish the open signing or availability action before leaving.';return false;}
+  if(combined.busy()||availabilityBusy()){message.textContent='Wait for the current action to finish before leaving.';return false;}
   const changes=dirty();
   if(changes.length&&!confirm('Discard unsaved changes?'))return false;
+  if(onboarding?.dirty())onboarding.discard?.();
   for(const form of changes){form.reset();delete form.dataset.dirty;}
   return true;
  }
  listen('click',event=>{
-  const b=event.target.closest('[data-main-tab],[data-person-index],[data-open-setup-profile],[data-person-film],[data-back-directory],[data-inbox-person],[data-inbox-review],[data-inbox-view]');
+  const b=event.target.closest('[data-main-tab],[data-person-index],[data-open-setup-profile],[data-person-film],[data-back-directory],[data-inbox-person],[data-inbox-review],[data-inbox-view],[data-add-person]');
   if(!b||!canNavigate())return;
+  if(b.hasAttribute('data-add-person')){
+   const field=find('[data-pending-people] form[data-action="savePendingPerson"][data-id=""] input[name="name"]');
+   const details=field?.closest('details');
+   if(details){details.open=true;field.scrollIntoView({block:'center'});field.focus({preventScroll:true});}
+   return;
+  }
   if(b.dataset.mainTab){show(b.dataset.mainTab);return;}
   if(b.hasAttribute('data-back-directory')){
    const index=people.findIndex(person=>person.key===editor?.key);
@@ -765,11 +798,11 @@ function renderCombinedOffice(states,picker){
    return;
   }
   if(b.hasAttribute('data-person-film')){
-   openPerson(people.find(person=>person.key===editor?.key),b.dataset.personFilm);return;
+   openPerson(people.find(person=>person.key===editor?.key)||editor?.person,b.dataset.personFilm);return;
   }
   if(b.dataset.inboxReview){
    const id=b.dataset.inboxReview,film=b.dataset.inboxFilm,person=matchingMember(id);
-   if(person?.films.some(item=>item.id===film&&item.target==='person'))openPerson(person,film,'review');
+   if(person?.hasMemberProfile){openPerson(person);onboarding?.focusProduction?.(film);}
    else{show('settings');offices.get(film)?.review(id);}
    return;
   }
@@ -1288,6 +1321,8 @@ listen('submit',async e=>{
   if(office&&!data.preview)office.changed();
   if(a==='linkAdminProfiles'||combined&&a==='choosePassword'){location.reload();return;}
   if(combined&&['enrollments','saveAdminProfileDetails','savePendingPerson','removePendingPerson','invite','resend','revoke','adminTask','finishAdminTask'].includes(a))await combined.refresh();
+  if(combined&&['saveAdminProfileDetails','invite','resend'].includes(a))await combined.refreshSharedProfile(id);
+  if(combined&&a==='savePendingPerson'&&!id){combined.openNewProfile(result.id);message.textContent='Profile created. Complete their onboarding here.';return;}
   if(a==='requestReset'){message.textContent=result.message;return;}
   if(a==='resetPassword'){history.replaceState(null,'',location.pathname);login();message.textContent='Password updated. Sign in with your new password.';return;}
   if(a==='photo'||a==='bio'){
@@ -1303,6 +1338,7 @@ listen('submit',async e=>{
     const status=published.length?field+' published on '+new Intl.ListFormat('en',{type:'conjunction'}).format(published)+'.':field+' saved in your Film Portal.';
     profileStatus(f,newerBio?'Unsaved changes':status);
     await combined?.refresh();
+    await combined?.refreshSharedProfile(id);
     message.textContent=status;
     return;
    }
