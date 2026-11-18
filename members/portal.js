@@ -114,7 +114,7 @@ window.addEventListener('beforeunload',e=>{if(dirty().length||availabilityBusy()
 let selectedProduction=office?.id||new URLSearchParams(location.search).get('production')||'';
 const url=(action,id='',production=selectedProduction)=>endpoint+'?'+new URLSearchParams({action,id,...(production?{production}:{})});
 async function request(action,body,id='',suffix='',production=selectedProduction){
- const raw=body instanceof File||body instanceof FormData;
+ const raw=body instanceof Blob||body instanceof FormData;
  const documentId=action==='status'?lastState?.members.find(member=>member.id===id)?.agreement?.id:null;
  if(documentId)suffix+='&'+new URLSearchParams({document:documentId});
  const r=await fetch(url(action,id,production)+suffix,{method:body===undefined?'GET':'POST',headers:raw?{}:{'Content-Type':'application/json'},body:raw?body:JSON.stringify(body),cache:'no-store'});
@@ -425,13 +425,44 @@ const homepagePromoPanel='<section data-homepage-promo-settings hidden><h2>Homep
  '<div data-promo-fields></div><p><a href="/" target="_blank" rel="noopener">View homepage ↗</a></p></section>';
 
 function updatePromoForm(f, settings){
- const {enabled,videoUrl,title,buttonLabel,buttonPath,revision}=settings;
+ const {enabled,videoUrl,title,buttonLabel,buttonPath,revision,uploadedVideo,uploadMaxBytes,uploadPartBytes}=settings;
  const fields=f.elements;
  fields.enabled.defaultChecked=fields.enabled.checked=enabled;
  for(const [name,value] of Object.entries({videoUrl,title,buttonLabel,buttonPath,revision})){
   fields[name].value=fields[name].defaultValue=value;
  }
+ fields.promoFile.value='';
+ fields.removeVideo.checked=false;
+ f.dataset.uploadMaxBytes=uploadMaxBytes;
+ f.dataset.uploadPartBytes=uploadPartBytes;
+ f.querySelector('[data-promo-upload-limit]').textContent=(uploadMaxBytes/1_000_000)+' MB';
+ f.querySelector('[data-promo-upload-name]').textContent=uploadedVideo?.name||'';
+ f.querySelector('[data-promo-upload-current]').hidden=!uploadedVideo;
  f.querySelector('[data-promo-status]').textContent=enabled?'Promo is on.':'Promo is off.';
+}
+
+const promoUploads=new WeakMap();
+async function uploadHomepagePromo(f, file, revision){
+ const maxBytes=Number(f.dataset.uploadMaxBytes);
+ const partBytes=Number(f.dataset.uploadPartBytes);
+ if(!/\.mp4$/i.test(file.name)||!file.size||file.size>maxBytes||file.name.length>240)
+  throw new Error('Choose an MP4 video up to '+(maxBytes/1_000_000)+' MB.');
+ if(!promoUploads.has(file))promoUploads.set(file,crypto.randomUUID());
+ const id=promoUploads.get(file);
+ const status=f.querySelector('[data-promo-status]');
+ for(let offset=0;offset<file.size;offset+=partBytes){
+  const suffix='&'+new URLSearchParams({part:offset/partBytes,size:file.size,revision});
+  const chunk=file.slice(offset,offset+partBytes,'application/octet-stream');
+  status.textContent='Uploading video… '+Math.floor(100*offset/file.size)+'%';
+  try{
+   await request('homepagePromoUpload',chunk,id,suffix);
+  }catch(error){
+   if(error.status&&error.status<500)throw error;
+   await request('homepagePromoUpload',chunk,id,suffix);
+  }
+ }
+ status.textContent='Saving homepage promo…';
+ return {id,name:file.name,size:file.size};
 }
 
 async function openHomepagePromoSettings(panel){
@@ -445,7 +476,10 @@ async function openHomepagePromoSettings(panel){
    '<p role="status" data-promo-status></p><input type="hidden" name="revision">'+
    '<label><input type="checkbox" name="enabled"> Show promo on homepage</label>'+
    '<label>Video title<input name="title" maxlength="120"></label>'+
-   '<label>YouTube link<input name="videoUrl" type="url" maxlength="500" placeholder="https://youtu.be/…"></label>'+
+   '<label>Upload video <small>(MP4 up to <span data-promo-upload-limit></span>)</small><input name="promoFile" type="file" accept="video/mp4,.mp4"></label>'+
+   '<div data-promo-upload-current hidden><p>Current upload <strong data-promo-upload-name></strong></p><label><input type="checkbox" name="removeVideo"> Remove uploaded video</label></div>'+
+   '<label>YouTube link <small>(optional with an upload)</small><input name="videoUrl" type="url" maxlength="500" placeholder="https://youtu.be/…"></label>'+
+   '<p><small>The uploaded video plays a muted preview. Tapping the preview opens the YouTube link or plays the upload with sound.</small></p>'+
    '<label>Button label <small>(optional)</small><input name="buttonLabel" maxlength="40" placeholder="Shop Merch"></label>'+
    '<label>Button page <small>(optional)</small><input name="buttonPath" maxlength="240" placeholder="/merch/"></label>',
    'Save homepage promo');
@@ -1150,12 +1184,20 @@ listen('submit',async e=>{
  try{
   if(a==='homepagePromoSettings'){
    const fields=[...f.querySelectorAll('input')];
+   const file=f.elements.promoFile.files[0];
+   const {promoFile,removeVideo,...values}=data;
+   const status=f.querySelector('[data-promo-status]');
+   const previousStatus=status.textContent;
    for(const field of fields)field.disabled=true;
    try{
-    const settings=await request(a,{...data,enabled:f.elements.enabled.checked});
+    const upload=file?await uploadHomepagePromo(f,file,values.revision):null;
+    const settings=await request(a,{...values,enabled:f.elements.enabled.checked,removeVideo:!!removeVideo,upload});
     updatePromoForm(f,settings);
     delete f.dataset.dirty;
     message.textContent=settings.enabled?'Homepage promo saved and visible.':'Homepage promo turned off.';
+   }catch(error){
+    status.textContent=previousStatus;
+    throw error;
    }finally{
     for(const field of fields)field.disabled=false;
    }

@@ -19,7 +19,7 @@ import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 
 import {promisify} from 'node:util';
 import {enqueue, mailReady, portalUrl} from '../lib/mail.mjs';
-import {homepagePromoKey, initialHomepagePromo, promoSettings, validatePromo} from '../lib/homepage-promo.mjs';
+import {homepagePromoKey, initialHomepagePromo, promoSettings, validatePromo, savePromoVideoPart, verifyPromoVideo, removePromoVideo, promoVideoResponse} from '../lib/homepage-promo.mjs';
 const derive=promisify(scrypt);
 async function credential(password){
  requireThat(typeof password==='string'&&password.length>=12&&password.length<=128,'Choose a password between 12 and 128 characters.');
@@ -225,14 +225,21 @@ export default async function handle(req, context) {
     return items;
   }
   const post=req.method==='POST';
+  if((req.method==='GET'||req.method==='HEAD')&&action==='homepagePromoVideo'){
+    const promo=await get(homepagePromoKey);
+    const video=promo?.video;
+    requireThat(promo?.enabled&&video&&video.id===url.searchParams.get('id'),'Video unavailable.',404);
+    return promoVideoResponse(store,req,video,headers);
+  }
   requireThat(post||req.method==='GET','Unsupported method.',405);
   if(post) requireThat(req.headers.get('origin')===url.origin,'Origin rejected.',403);
   const entry=id=>catalog.find(item=>item.id===id);
   if(!post&&action==='homepagePromo'){
     const promo=await get(homepagePromoKey)??initialHomepagePromo;
     if(!promo.enabled)return json({enabled:false});
-    const {videoId,title,buttonLabel,buttonPath}=promo;
-    return json({enabled:true,videoId,title,buttonLabel,buttonPath});
+    const {videoId,title,buttonLabel,buttonPath,video}=promo;
+    const videoPath=video?'/.netlify/functions/portal?action=homepagePromoVideo&id='+video.id:'';
+    return json({enabled:true,videoId,title,buttonLabel,buttonPath,...(videoPath?{videoPath}:{})});
   }
   if(!post&&action==='published'){
     // Hidden entries exist only to suppress a card already printed on a film website.
@@ -486,15 +493,24 @@ export default async function handle(req, context) {
       total:sale.total,shipping:sale.shipping,date:sale.paidAt||sale.createdAt,captureId:sale.captureId
     })).sort((a,b)=>b.date-a.date)});
   }
+  if(action==='homepagePromoUpload'){
+    onlyAdmin();
+    requireThat(post,'Use POST to upload the promo video.',405);
+    await savePromoVideoPart(store,req,url.searchParams,self,requireThat);
+    return json({ok:true});
+  }
   if(action==='homepagePromoSettings'){
     onlyAdmin();
     const record=await store.getWithMetadata(homepagePromoKey,{type:'json'});
     if(!post)return json(promoSettings(record));
     const changed='The promo changed since you opened it. Reload this page before saving again.';
     requireThat(body?.revision===(record?.etag??''),changed,409);
-    const promo=validatePromo(body,requireThat);
+    const previousVideo=record?.data?.video;
+    const promo=validatePromo(body,requireThat,previousVideo);
+    if(body.upload)await verifyPromoVideo(store,promo.video,self,body.revision,requireThat);
     const saved=await store.setJSON(homepagePromoKey,promo,record?{onlyIfMatch:record.etag}:{onlyIfNew:true});
     requireThat(saved.modified,changed,409);
+    if(previousVideo&&previousVideo.id!==promo.video?.id)await removePromoVideo(store,previousVideo);
     return json(promoSettings({data:promo,etag:saved.etag}));
   }
   if(!admin)requireThat(!await isAdminProfile(account),'Sign in with your administrator account.',401);

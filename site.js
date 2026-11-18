@@ -35,6 +35,77 @@ function renderAnnouncement() {
     <a class="text-link" href="${safeHref(a.buttonUrl)}">${a.buttonText} <span aria-hidden="true">→</span></a>`;
 }
 
+function mountPromoVideo(promo, youtubeId, videoPath) {
+  const link = promo.querySelector(".promo-player");
+  const motion = promo.querySelector(".promo-motion");
+  const youtubeUrl = youtubeId ? "https://www.youtube.com/watch?v=" + youtubeId : "";
+  const uploadedVideo = videoPath && new URL(videoPath, location.origin).origin === location.origin ? videoPath : "";
+  if (!youtubeUrl && !uploadedVideo) return false;
+
+  const bluRayPreview = !uploadedVideo && youtubeId === "f8t4gAIy5t0";
+  const previewUrl = bluRayPreview ? "/assets/written-in-the-light-promo-preview.mp4" : uploadedVideo;
+  const poster = bluRayPreview ? "/assets/written-in-the-light-promo-poster.webp" :
+    youtubeId ? "https://i.ytimg.com/vi/" + youtubeId + "/mqdefault.jpg" : "";
+  link.href = youtubeUrl || uploadedVideo;
+  if (poster) {
+    const image = document.createElement("img");
+    image.alt = "";
+    image.src = poster;
+    image.addEventListener("error", () => image.remove(), {once: true});
+    link.prepend(image);
+  }
+
+  let preview;
+  const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (previewUrl && (!reducedMotion || !poster)) {
+    preview = document.createElement("video");
+    preview.muted = true;
+    preview.defaultMuted = true;
+    preview.playsInline = true;
+    preview.autoplay = !reducedMotion;
+    preview.loop = true;
+    preview.preload = "metadata";
+    preview.setAttribute("aria-hidden", "true");
+    preview.addEventListener("loadeddata", () => preview.classList.add("is-ready"));
+    preview.addEventListener("playing", () => {
+      motion.hidden = false;
+      motion.textContent = "Pause preview";
+    });
+    preview.addEventListener("pause", () => { motion.textContent = "Resume preview"; });
+    preview.addEventListener("error", () => { preview.remove(); motion.hidden = true; }, {once: true});
+    if (uploadedVideo) preview.addEventListener("timeupdate", () => {
+      if (preview.currentTime >= 12) preview.currentTime = 0;
+    });
+    motion.addEventListener("click", () => {
+      if (preview.paused) preview.play().catch(() => {});
+      else preview.pause();
+    });
+    preview.src = previewUrl;
+    link.prepend(preview);
+  }
+
+  const viewer = promo.querySelector(".promo-viewer");
+  if (!youtubeUrl && typeof viewer.showModal === "function") {
+    const fullVideo = viewer.querySelector("video");
+    let resumePreview = false;
+    link.addEventListener("click", event => {
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      resumePreview = preview && !preview.paused;
+      preview?.pause();
+      viewer.showModal();
+      fullVideo.src = uploadedVideo;
+      fullVideo.play().catch(() => {});
+    });
+    viewer.addEventListener("close", () => {
+      fullVideo.removeAttribute("src");
+      fullVideo.load();
+      if (resumePreview) preview.play().catch(() => {});
+    });
+  }
+  return true;
+}
+
 async function renderHomepagePromo() {
   const promo = document.querySelector("#homepage-promo");
   if (!promo) return;
@@ -46,17 +117,10 @@ async function renderHomepagePromo() {
       signal: AbortSignal.timeout(3500)
     });
     if (!response.ok) return;
-    const {enabled, videoId, title, buttonLabel, buttonPath} = await response.json();
-    if (!enabled || !/^[\w-]{11}$/.test(videoId || "") || !title) return;
+    const {enabled, videoId, videoPath, title, buttonLabel, buttonPath} = await response.json();
+    if (!enabled || !title || !mountPromoVideo(promo, /^[\w-]{11}$/.test(videoId || "") ? videoId : "", videoPath)) return;
 
     promo.querySelector("h1").textContent = title;
-    const player = document.createElement("iframe");
-    player.src = "https://www.youtube-nocookie.com/embed/" + videoId + "?playsinline=1";
-    player.title = title;
-    player.allow = "encrypted-media; picture-in-picture; fullscreen";
-    player.allowFullscreen = true;
-    promo.querySelector(".promo-player").append(player);
-    promo.querySelector("[data-promo-youtube]").href = "https://www.youtube.com/watch?v=" + videoId;
     if (buttonLabel && buttonPath && new URL(buttonPath, location.origin).origin === location.origin) {
       const button = promo.querySelector("[data-promo-button]");
       button.textContent = buttonLabel;

@@ -81,6 +81,62 @@ test('only admins can change the site-wide homepage promo',async()=>{
  assert.deepEqual((await call(feed,{who:null})).data,{enabled:true,videoId:'abcdefghijk',title:'Next promo',buttonLabel:'',buttonPath:''});
 });
 
+test('the homepage serves only a complete, published MP4 and honors video byte ranges',async()=>{
+ const store=await fixture();
+ const initial=(await call('homepagePromoSettings')).data;
+ const id='00000000-0000-4000-8000-0000000000c1',partBytes=initial.uploadPartBytes,size=partBytes+20;
+ const first=new Uint8Array(partBytes).fill(3),last=new Uint8Array(20).fill(5);
+ first.set([0,0,0,16,102,116,121,112]); // MP4 file type header.
+ const upload=(who,part,body,origin='https://heidimikacfilms.com')=>{
+  const url=new URL(origin+'/.netlify/functions/portal');
+  url.search=new URLSearchParams({action:'homepagePromoUpload',id,size,part,revision:initial.revision});
+  return handle(new Request(url,{method:'POST',body,headers:{origin:'https://heidimikacfilms.com',
+   'content-type':'application/octet-stream',...(who?{cookie:'__Host-hmf='+tokens[who]}:{})}}));
+ };
+ const videoUrl='https://heidimikacfilms.com/.netlify/functions/portal?action=homepagePromoVideo&id='+id;
+ const save={...initial,videoUrl:'',title:'Uploaded promo',upload:{id,size,name:'Promo.mp4'}};
+ assert.equal((await upload(null,0,first)).status,401);
+ assert.equal((await upload('member',0,first)).status,403);
+ assert.equal((await upload('Nick',0,first,'https://preview.example')).status,403);
+ assert.equal((await upload('Nick',0,new Uint8Array(partBytes))).status,400);
+ assert.equal((await upload('Nick',0,first)).status,200);
+ assert.equal((await upload('Nick',0,first)).status,200,'An upload retry reuses its stored part');
+ assert.equal((await call('homepagePromoSettings',{body:save})).status,400);
+ assert.equal((await handle(new Request(videoUrl))).status,404,'Unpublished upload stays private');
+ assert.equal((await upload('Nick',1,last)).status,200);
+ assert.equal((await call('homepagePromoSettings',{who:'Heidi',body:save})).status,400);
+ const saved=await call('homepagePromoSettings',{body:save});
+ assert.equal(saved.status,200);
+ assert.deepEqual(saved.data.uploadedVideo,{name:'Promo.mp4',size});
+ const feed=(await call('homepagePromo',{who:null})).data;
+ assert.equal(new URL(feed.videoPath,videoUrl).href,videoUrl);
+ assert.equal(feed.videoId,'');
+ assert.ok(!JSON.stringify(feed).includes('Promo.mp4'));
+ const head=await handle(new Request(videoUrl,{method:'HEAD'}));
+ assert.equal(head.headers.get('content-length'),String(size));
+ assert.equal(head.body,null);
+ const range=await handle(new Request(videoUrl,{headers:{Range:`bytes=${partBytes-2}-${partBytes+1}`}}));
+ assert.equal(range.status,206);
+ assert.equal(range.headers.get('content-type'),'video/mp4');
+ assert.equal(range.headers.get('accept-ranges'),'bytes');
+ assert.equal(range.headers.get('content-range'),`bytes ${partBytes-2}-${partBytes+1}/${size}`);
+ assert.deepEqual([...new Uint8Array(await range.arrayBuffer())],[3,3,5,5]);
+ const full=await handle(new Request(videoUrl));
+ assert.equal(full.status,200);
+ assert.equal((await full.arrayBuffer()).byteLength,size);
+ const invalid=await handle(new Request(videoUrl,{headers:{Range:`bytes=${size}-`}}));
+ assert.equal(invalid.status,416);
+ assert.equal(invalid.headers.get('content-range'),'bytes */'+size);
+ const disabled=await call('homepagePromoSettings',{body:{...saved.data,enabled:false}});
+ assert.equal(disabled.status,200);
+ assert.equal(disabled.data.uploadedVideo.name,'Promo.mp4');
+ assert.equal((await handle(new Request(videoUrl))).status,404);
+ const removed=await call('homepagePromoSettings',{body:{...disabled.data,removeVideo:true}});
+ assert.equal(removed.status,200);
+ assert.equal(removed.data.uploadedVideo,null);
+ assert.ok(![...store.data.keys()].some(key=>key.includes(id)),'Removing the video releases its stored parts');
+});
+
 test('any name that starts with the word Test is a practice account everywhere',async()=>{
  for(const name of ['Test','test','Test Testerson','Test Cast Member','TEST actor 2','  Test  '])assert.equal(practiceName(name),true,name);
  for(const name of ['Tess Day','Testa Rossi','Contest Winner','Robin Vale','',undefined])assert.equal(practiceName(name),false,String(name));
