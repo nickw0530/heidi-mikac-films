@@ -715,8 +715,9 @@ function renderCombinedOffice(states,picker){
   canSend:()=>pendingState.mailReady,
   canPrepare:pid=>!!snapshots.get(pid)?.agreementReady,
   resend:({id,email})=>request('resend',{expectedEmail:email},id),
+  trackPaperwork:({id,productionId},reason)=>request('trackPaperwork',{document:'agreement',reason,onlyOutstanding:true},id,'',productionId),
   openPreparation:({id,productionId})=>openPerson(matchingMember(id),productionId,'prepare'),
-  onQueued:()=>combined.refresh(),
+  onUpdated:()=>combined.refresh(),
   canOpen:canNavigate
  });
  combined={

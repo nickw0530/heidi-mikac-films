@@ -417,6 +417,44 @@ test('manual agreement completion and N/A are reversible, scoped, and never sign
  assert.ok((await adminActions(context.store,dark)).some(action=>action.member===actor),'Reopening an unsent requirement restores the preparation action.');
 });
 
+test('bulk agreement tracking refuses signed or already resolved requirements',async()=>{
+ const context=await fixture(),{store}=context;
+ const track=(body,options)=>call('trackPaperwork',{...options,body:{document:'agreement',reason:'not-required',onlyOutstanding:true,...body}});
+ const signed=await setAgreement(context,{status:'Complete',providerStatus:'completed'});
+ assert.equal((await track()).status,409);
+ assert.equal(await store.get(trackingKey(dark,actor)),null);
+ assert.deepEqual(await store.get(currentAgreementKey(dark,actor)),signed);
+ assert.equal((await track({reason:'reopen'})).status,400);
+ assert.equal((await track({document:pdfId})).status,400);
+ assert.equal((await track({}, {production:lies,who:'member'})).status,403);
+ await store.setJSON(trackingKey(lies,actor),{document:'agreement',agreementCycle:'previous-round',reason:'complete'});
+ assert.equal((await track({}, {production:lies,who:'Heidi'})).status,200,'An out-of-date override can be replaced conditionally.');
+ const decision=await store.get(trackingKey(lies,actor));
+ assert.equal(decision.reason,'not-required');assert.equal(decision.by,'Heidi');
+ assert.equal((await track({reason:'complete'}, {production:lies})).status,409);
+ assert.deepEqual(await store.get(trackingKey(lies,actor)),decision);
+ assert.equal((await call('trackPaperwork',{production:lies,body:{document:'agreement',reason:'complete'}})).status,200,'The individual action can still revise an existing decision.');
+ assert.equal((await store.get(trackingKey(lies,actor))).reason,'complete');
+ assert.equal(await store.get(trackingKey(lies,actor,pdfId)),null);
+ assert.deepEqual(context.calls,[]);assert.deepEqual(context.notifications,[]);
+});
+
+test('two concurrent bulk tracking requests preserve the first decision',async()=>{
+ const {store}=await fixture();
+ const key=trackingKey(dark,actor);
+ const getRecord=store.getWithMetadata.bind(store);
+ let reads=0,release;const bothRead=new Promise(resolve=>{release=resolve;});
+ store.getWithMetadata=async(path,options)=>{
+  const record=await getRecord(path,options);
+  if(path===key){if(++reads===2)release();await bothRead;}
+  return record;
+ };
+ const outcomes=await Promise.all([['Nick','complete'],['Heidi','not-required']].map(async([who,reason])=>({who,reason,status:(await call('trackPaperwork',{who,body:{document:'agreement',reason,onlyOutstanding:true}})).status})));
+ assert.deepEqual(outcomes.map(result=>result.status).sort(),[200,409]);
+ const saved=await store.get(key),winner=outcomes.find(result=>result.status===200);
+ assert.equal(saved.reason,winner.reason);assert.equal(saved.by,winner.who);
+});
+
 test('resource tracking separates Complete and Document N/A for each person and production',async()=>{
  const context=await fixture();
  assert.equal((await call('trackPaperwork',{body:{document:pdfId,reason:'complete'}})).status,200);

@@ -1242,6 +1242,9 @@ export default async function handle(req, context) {
   if(action==='trackPaperwork'&&post){
     onlyAdmin();const member=await target();requireThat(active(member),'Member unavailable.',404);
     const document=body.document||'agreement';
+    const reason=normalizePaperworkReason(body.reason);
+    const onlyOutstanding=body.onlyOutstanding===true;
+    requireThat(!onlyOutstanding||(document==='agreement'&&reason),'Bulk tracking applies only to outstanding agreement requirements.');
     let key=manualAgreementKey(productionId,uid);
     if(document!=='agreement'){
       requireThat(uuid.test(document),'Invalid document.');
@@ -1249,9 +1252,18 @@ export default async function handle(req, context) {
       requireThat(resource?.type==='PDF'&&(!resource.audience||resource.audience.includes(uid)),'Document unavailable for this member.',404);
       key=resourceTrackingKey(productionId,uid,document);
     }
-    const reason=normalizePaperworkReason(body.reason);
     requireThat(body.reason==='reopen'||reason,'Choose Complete, Document N/A, or Reopen.');
-    if(body.reason==='reopen')await rawStore.delete(key);else await rawStore.setJSON(key,{document,reason,by:self,at:Date.now(),...(document==='agreement'?{agreementCycle:AGREEMENT_CYCLE}:{})});
+    const tracking={document,reason,by:self,at:Date.now(),...(document==='agreement'?{agreementCycle:AGREEMENT_CYCLE}:{})};
+    if(onlyOutstanding){
+      const previous=await rawStore.getWithMetadata(key,{type:'json'});
+      const agreement=await get('agreements/'+uid);
+      const conflict='This agreement requirement is no longer outstanding. Review the member’s paperwork.';
+      const tracked=previous?.data?.document==='agreement'&&manualPaperworkStatus(previous.data);
+      requireThat(!tracked&&(agreement?.status!=='Complete'||agreement.cleared),conflict,409);
+      const saved=await rawStore.setJSON(key,tracking,previous?{onlyIfMatch:previous.etag}:{onlyIfNew:true});
+      requireThat(saved.modified,conflict,409);
+    }else if(body.reason==='reopen')await rawStore.delete(key);
+    else await rawStore.setJSON(key,tracking);
     await recordProfileActivity(productionId,(document==='agreement'?'agreement':'document')+'-'+(reason||'reopened'));
     if(document==='agreement'&&reason){
       // Suppress exact, already queued portal notices from the earlier build.

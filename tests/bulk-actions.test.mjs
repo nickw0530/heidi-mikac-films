@@ -11,14 +11,16 @@ function person(id,name,activated,films=['dark']){
 
 test('bulk choices include only pending accounts and individually eligible agreement preparations',()=>{
  const people=[person('d','Dawn',false,['dark','lies']),person('b','Bryce',false,[]),person('a','Alex',true),person('name-only','Chris',false),person('e','Ellie',true)];
- people[2].films[0].member.agreement={id:'already-created'};
+ people[2].films[0].member.agreement={id:'already-created',status:'Complete'};
  people[4].films[0].member.paperworkTracking={reason:'complete'};
  const options=bulkCandidates(people,productions,{mailReady:true,agreementReady:()=>true});
  assert.deepEqual(options.invitations.map(r=>r.id),['b','d']);
  assert.equal(options.invitations[0].context,'No production assigned');
  assert.match(options.invitations[1].context,/Written in the Dark/);
  assert.deepEqual(options.agreements.map(r=>r.key),['name-only/dark','d/lies','d/dark']);
- assert.deepEqual(bulkCandidates(people,productions,{mailReady:false,agreementReady:()=>false}),{invitations:[],agreements:[]});
+ assert.deepEqual(options.paperwork.map(r=>r.key),['name-only/dark','d/lies','d/dark']);
+ const withoutProviders=bulkCandidates(people,productions,{mailReady:false,agreementReady:()=>false});
+ assert.deepEqual(withoutProviders,{invitations:[],agreements:[],paperwork:options.paperwork});
 });
 
 // Keep mail and form navigation isolated while exercising the actual dialog listeners.
@@ -50,7 +52,7 @@ test('review gates the serial invitation requests and detects changed recipients
     sends.push(row.id);
     if(row.id==='d')throw Object.assign(Error('Already activated'),{status:409});
     return new Promise(resolve=>{release=()=>resolve({ok:true});});
-   },openPreparation:row=>preparations.push(row.key),onQueued:()=>refreshes++
+   },openPreparation:row=>preparations.push(row.key),onUpdated:()=>refreshes++
   });
   const find=(tag,content='')=>[...slot.walk()].find(node=>node.tag===tag&&node.textContent.startsWith(content));
   function selectAll(){for(const node of slot.walk())if(node.attributes.type==='checkbox'){node.checked=true;node.fire('change');}}
@@ -79,5 +81,50 @@ test('review gates the serial invitation requests and detects changed recipients
   find('button','Open preparation').fire('click');
   assert.deepEqual(preparations,['d/dark']);
   assert.deepEqual(sends,['b','d']);
+ }finally{globalThis.document=originalDocument;}
+});
+
+test('bulk paperwork reviews production-specific rows, applies each reason and reports partial failures',async()=>{
+ const originalDocument=globalThis.document;
+ globalThis.document={createElement:tag=>new FixtureElement(tag)};
+ try{
+  const dual=person('a','Alex',true,['dark','lies']);
+  const exempt=person('exempt','Exempt admin',true);
+  exempt.films[0].member.paperworkExempt=true;
+  dual.films[0].member.agreement={id:'pending',status:'Waiting on actor'};
+  const slot=new FixtureElement('div'),requests=[];
+  let refreshes=0;
+  mountBulkActions(slot,{getPeople:()=>[dual,exempt],getProductions:()=>productions,canSend:()=>false,canPrepare:()=>false,
+   trackPaperwork(row,reason){
+    requests.push([row.id,row.productionId,reason]);
+    if(row.productionId==='dark'&&reason==='complete')throw Object.assign(Error('Already signed'),{status:409});
+    const film=dual.films.find(item=>item.id===row.productionId);
+    film.member.paperworkTracking={reason};
+    return {ok:true};
+   },onUpdated:()=>refreshes++
+  });
+  const find=(tag,content='')=>[...slot.walk()].find(node=>node.tag===tag&&node.textContent.startsWith(content));
+  function review(mode){
+   find('button','Bulk actions').fire('click');
+   const action=find('select');action.value=mode;action.fire('change');
+   for(const node of slot.walk())if(node.attributes.type==='checkbox'){node.checked=true;node.fire('change');}
+   find('button','Review selected').fire('click');
+  }
+  review('complete');
+  assert.deepEqual(requests,[]);
+  assert.match(slot.textContent,/Alex Wherein Lies Continue Alex Written in the Dark/);
+  assert.doesNotMatch(slot.textContent,/Exempt admin|example.invalid/);
+  assert.match(slot.textContent,/Existing SignWell requests stay active/);
+  await find('button','Mark Complete (2)').fire('click');
+  assert.deepEqual(requests,[['a','lies','complete'],['a','dark','complete']]);
+  assert.match(slot.textContent,/1 of 2 agreement requirements updated/);
+  assert.match(slot.textContent,/Could not update · Already signed/);
+  find('button','Close').fire('click');
+  review('not-required');
+  await find('button','Mark N/A (1)').fire('click');
+  assert.deepEqual(requests.at(-1),['a','dark','not-required']);
+  assert.match(slot.textContent,/1 of 1 agreement requirements updated/);
+  find('button','Close').fire('click');
+  assert.equal(refreshes,2);
  }finally{globalThis.document=originalDocument;}
 });
