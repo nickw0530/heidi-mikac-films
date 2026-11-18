@@ -67,6 +67,16 @@ function mountPromoVideo(promo, youtubeId, videoPath) {
     preview.autoplay = !reducedMotion;
     preview.loop = true;
     preview.preload = reducedMotion && poster ? "none" : "metadata";
+    if (bluRayPreview) {
+      const captions = document.createElement("track");
+      captions.kind = "captions";
+      captions.label = "English";
+      captions.srclang = "en";
+      captions.src = "/assets/written-in-the-light-promo-preview.en.vtt";
+      captions.default = true;
+      preview.append(captions);
+      captions.track.mode = "showing";
+    }
     preview.setAttribute("aria-hidden", "true");
     motion.hidden = false;
     preview.addEventListener("playing", () => {
