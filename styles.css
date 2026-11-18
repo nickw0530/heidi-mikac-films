@@ -113,6 +113,15 @@ button{font:inherit}
 .promo-player:hover .promo-watch,.promo-player:focus-visible .promo-watch{text-decoration:underline}
 .promo-motion{right:clamp(6px,1.25vw,16px);border:1px solid #a29691;cursor:pointer;min-height:44px}
 .promo-motion[hidden]{display:none}
+@media(max-width:640px){
+  .promo-media:has(track){padding-bottom:52px}
+  .promo-media:has(track) .promo-player{overflow:visible}
+  .promo-media:has(track) .promo-watch{
+    left:0;top:calc(100% + 9px);bottom:auto;min-height:44px;
+    display:flex;align-items:center;gap:4px;padding-block:0
+  }
+  .promo-media:has(track) .promo-motion{right:0;bottom:0}
+}
 .promo-actions{display:flex;justify-content:center;flex-wrap:wrap;gap:12px;margin:24px auto 0}
 .promo-actions:has(a[hidden]){display:none}
 .promo-viewer{
