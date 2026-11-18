@@ -11,7 +11,7 @@ import sharp from 'sharp';
 import {signwell,documentStatus,refreshAgreement,completedAgreementPdf,ENDED_STATUSES} from '../lib/signing.mjs';
 import {offlineSigningKey,refreshOfflineCountersign} from '../lib/offline-signing.mjs';
 import darkCatalog, {whereinCatalog} from '../lib/film-profiles.mjs';
-import {manualSale,merchStore,paypalConfig,readShop,saveSettings,updateShop} from '../lib/merch.mjs';
+import {manualSale,merchStore,orderItems,paypalConfig,readShop,saveSettings,setSupporterVisibility,updateShop} from '../lib/merch.mjs';
 import {captureOrder} from './merch.mjs';
 import { getStore } from '@netlify/blobs';
 import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
@@ -452,7 +452,7 @@ export default async function handle(req, context) {
   requireThat((session.passwordVersion||0)===((await get('passwords/'+self))?.version||0),'Please sign in again.',401);
   if(action==='logout'&&post){await store.delete(sessionKey);return json({}, {'Set-Cookie':cookie('',0)});}
   const onlyAdmin=()=>requireThat(admin,'Administrator access required.',403);
-  if(['merchSettings','merchSales','merchManualSale','merchCheckPayment'].includes(action)){
+  if(['merchSettings','merchSales','merchManualSale','merchCheckPayment','merchSupporterVisibility'].includes(action)){
     onlyAdmin();
     const shopStore=merchStore(production),config=paypalConfig(production);
     if(action==='merchSettings'){
@@ -468,6 +468,10 @@ export default async function handle(req, context) {
       await updateShop(shopStore,shop=>manualSale(shop,body));
       return json({saved:true});
     }
+    if(action==='merchSupporterVisibility'){
+      requireThat(post,'Use the supporter visibility button.',405);
+      return json(await updateShop(shopStore,shop=>setSupporterVisibility(shop,body)));
+    }
     if(action==='merchCheckPayment'){
       requireThat(post,'Use the check payment button.',405);
       const {shop}=await readShop(shopStore);
@@ -477,7 +481,8 @@ export default async function handle(req, context) {
     requireThat(!post,'Use the report filters.',405);
     const {shop}=await readShop(shopStore);
     return json({sales:Object.entries(shop.sales).map(([id,sale])=>({
-      id,product:sale.name,variant:sale.variant,quantity:sale.quantity,channel:sale.channel,status:sale.status,
+      id,product:sale.name,variant:sale.variant,quantity:orderItems(sale).reduce((sum,item)=>sum+item.quantity,0),items:orderItems(sale),channel:sale.channel,status:sale.status,
+      donation:sale.donation??0,recognition:sale.recognition?.public===true?{public:true,name:sale.recognition.name}:{public:false,name:''},supporterHidden:sale.supporterHidden===true,
       total:sale.total,shipping:sale.shipping,date:sale.paidAt||sale.createdAt,captureId:sale.captureId
     })).sort((a,b)=>b.date-a.date)});
   }
