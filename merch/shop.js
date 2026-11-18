@@ -43,16 +43,32 @@ export function createMerchShop({doc=document,win=window,fetcher=fetch,sdkLoader
     const value=JSON.stringify(state.cart.map(({sku,quantity})=>({sku,quantity})));
     storageWrite('localStorage',cartKey,value);storageWrite('sessionStorage',cartKey,value);
   }
+  function savedPending(kind){
+    try{const value=JSON.parse(storageRead(kind,pendingKey));return validOrder(value?.orderId)?value:null;}catch{return null;}
+  }
   function persistPending(){
     if(!state.pending)return false;
     const value=JSON.stringify({orderId:state.pending.orderId,items:state.pending.items.map(({sku,quantity})=>({sku,quantity}))});
     const sessionSaved=storageWrite('sessionStorage',pendingKey,value);
-    const localSaved=storageWrite('localStorage',pendingKey,value);
+    const shared=savedPending('localStorage');
+    const localSaved=(!shared||shared.orderId===state.pending.orderId)&&storageWrite('localStorage',pendingKey,value);
     return sessionSaved||localSaved;
   }
   function clearPending(){
+    const orderId=state.pending?.orderId;
+    for(const kind of ['sessionStorage','localStorage'])if(savedPending(kind)?.orderId===orderId)storageRemove(kind,pendingKey);
     state.pending=null;state.recovered=false;
-    storageRemove('sessionStorage',pendingKey);storageRemove('localStorage',pendingKey);
+  }
+  function recoverPending(){
+    if(state.pending)return true;
+    const pending=savedPending('sessionStorage')||savedPending('localStorage');
+    if(!pending)return false;
+    cleanupPayment();
+    state.pending={orderId:pending.orderId,items:cleanItems(pending.items)};
+    if(!state.pending.items.length)state.pending.items=state.cart.map(item=>({...item}));
+    state.phase='pending';state.recovered=true;optIn.checked=false;nameInput.value='';
+    setStatus('An earlier payment needs confirmation. Your PayPal order keeps the total you approved. Use Check payment before placing another order.');
+    render();return true;
   }
   function recoveryAvailable(){
     const key=pendingKey+'-check';let available=false;
@@ -241,6 +257,7 @@ export function createMerchShop({doc=document,win=window,fetcher=fetch,sdkLoader
     state.shop=shop;updateSupporters();return shop;
   }
   async function beginCheckout(){
+    if(recoverPending()){openCart();return;}
     if(state.phase!=='editing'||state.pending||!state.cart.length)return;
     if(!state.shop?.clientId){setStatus('Online checkout is currently unavailable. Your cart is saved.');return;}
     let publicName='';
@@ -272,10 +289,12 @@ export function createMerchShop({doc=document,win=window,fetcher=fetch,sdkLoader
       const instance=paypal.Buttons({
         style:{layout:'vertical',label:'checkout'},
         onClick(_data,actions){
+          if(recoverPending()){openCart();return actions.reject();}
           if(generation!==state.generation||state.phase!=='payment'||state.pending||state.creating||state.authorizing)return actions.reject();
           state.authorizing=true;renderCart();return actions.resolve();
         },
         async createOrder(){
+          if(recoverPending()){openCart();throw Error('An earlier payment needs confirmation.');}
           if(generation!==state.generation||state.phase!=='payment'||state.pending)throw Error('This checkout is no longer active.');
           if(state.creating)return state.creating;
           state.authorizing=true;renderCart();
@@ -286,7 +305,7 @@ export function createMerchShop({doc=document,win=window,fetcher=fetch,sdkLoader
               if(generation!==state.generation)throw Error('This checkout is no longer active.');
               state.createdIds.add(result.id);return result.id;
             }catch(error){if(generation===state.generation&&!state.pending){state.authorizing=false;editCart(error.message);}throw error;}
-            finally{if(generation===state.generation)state.creating=null;}
+            finally{if(generation===state.generation){state.creating=null;renderCart();}}
           })();
           return state.creating;
         },
@@ -316,8 +335,8 @@ export function createMerchShop({doc=document,win=window,fetcher=fetch,sdkLoader
       if(result.code==='INSTRUMENT_DECLINED'){
         clearPending();state.confirming=false;state.authorizing=false;
         if(actions?.restart&&generation===state.generation&&state.snapshot){
-          state.phase='payment';state.createdIds=new Set();render();setStatus('That payment option was declined. Please choose another.');
-          try{return await actions.restart();}catch{editCart('That payment option was declined. Continue to checkout to try another.');}
+          state.phase='payment';state.authorizing=true;render();setStatus('That payment option was declined. Please choose another.');
+          try{return await actions.restart();}catch{state.authorizing=false;editCart('That payment option was declined. Continue to checkout to try another.');}
         }else editCart('That payment option was declined. Continue to checkout to try another.');
         return;
       }
@@ -345,12 +364,14 @@ export function createMerchShop({doc=document,win=window,fetcher=fetch,sdkLoader
 
   async function start(){
     state.cart=cleanItems(storedJson(cartKey));
-    const pending=storedJson(pendingKey);
+    const pending=savedPending('sessionStorage')||savedPending('localStorage');
     if(validOrder(pending?.orderId)){
       state.pending={orderId:pending.orderId,items:cleanItems(pending.items)};state.phase='pending';state.recovered=true;
       if(!state.pending.items.length)state.pending.items=state.cart.map(item=>({...item}));
     }
     optIn.checked=false;nameInput.value='';
+    win.addEventListener?.('focus',()=>{recoverPending();});
+    win.addEventListener?.('storage',event=>{if(event.key===pendingKey)recoverPending();});
     for(const button of doc.querySelectorAll('[data-open-cart]'))button.addEventListener('click',openCart);
     for(const button of doc.querySelectorAll('[data-close-cart]'))button.addEventListener('click',()=>dialog.close());
     find('[data-finish-order]').addEventListener('click',()=>{state.phase='editing';setStatus('');render();dialog.close();});
