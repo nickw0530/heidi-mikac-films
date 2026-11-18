@@ -47,7 +47,8 @@ function mountPromoVideo(promo, youtubeId, videoPath) {
   const poster = bluRayPreview ? "/assets/written-in-the-light-promo-poster.webp" :
     youtubeId ? "https://i.ytimg.com/vi/" + youtubeId + "/mqdefault.jpg" : "";
   link.href = youtubeUrl || uploadedVideo;
-  if (poster) {
+  function showPoster() {
+    if (!poster) return;
     const image = document.createElement("img");
     image.alt = "";
     image.src = poster;
@@ -57,22 +58,28 @@ function mountPromoVideo(promo, youtubeId, videoPath) {
 
   let preview;
   const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  if (previewUrl && (!reducedMotion || !poster)) {
+  if (previewUrl) {
     preview = document.createElement("video");
+    if (poster) preview.poster = poster;
     preview.muted = true;
     preview.defaultMuted = true;
     preview.playsInline = true;
     preview.autoplay = !reducedMotion;
     preview.loop = true;
-    preview.preload = "metadata";
+    preview.preload = reducedMotion && poster ? "none" : "metadata";
     preview.setAttribute("aria-hidden", "true");
-    preview.addEventListener("loadeddata", () => preview.classList.add("is-ready"));
+    motion.hidden = false;
     preview.addEventListener("playing", () => {
-      motion.hidden = false;
       motion.textContent = "Pause preview";
     });
-    preview.addEventListener("pause", () => { motion.textContent = "Resume preview"; });
-    preview.addEventListener("error", () => { preview.remove(); motion.hidden = true; }, {once: true});
+    preview.addEventListener("pause", () => {
+      motion.textContent = preview.played.length ? "Resume preview" : "Play preview";
+    });
+    preview.addEventListener("error", () => {
+      preview.remove();
+      motion.hidden = true;
+      showPoster();
+    }, {once: true});
     if (uploadedVideo) preview.addEventListener("timeupdate", () => {
       if (preview.currentTime >= 12) preview.currentTime = 0;
     });
@@ -82,6 +89,8 @@ function mountPromoVideo(promo, youtubeId, videoPath) {
     });
     preview.src = previewUrl;
     link.prepend(preview);
+  } else {
+    showPoster();
   }
 
   const viewer = promo.querySelector(".promo-viewer");
@@ -130,6 +139,10 @@ async function renderHomepagePromo() {
 
     document.querySelector("#top").hidden = true;
     promo.hidden = false;
+    const preview = promo.querySelector(".promo-player video");
+    if (preview?.autoplay) preview.play().catch(() => {
+      // When the browser blocks autoplay, the Play preview button is available.
+    });
   } catch {
     // The site's original banner is the fallback if promo settings are unavailable.
   }
