@@ -606,7 +606,7 @@ export default async function handle(req, context) {
     const key='members/'+uid;
     const record=withMetadata?await store.getWithMetadata(key,{type:'json'}):null;
     const member=withMetadata?record?.data:await get(key);
-    requireThat(member,'Member unavailable.',404);
+    requireThat(member&&!member.deleted,'Member unavailable.',404);
     if(!['bio','photo','memberProfile','revoke','enrollments','resend','saveAdminProfileDetails','onboarding'].includes(action))requireThat(assignments(member)[productionId],'Member is not assigned to this production.',403);
     return withMetadata?record:member;
   };
@@ -902,7 +902,7 @@ export default async function handle(req, context) {
       const member=allAccounts.find(m=>m.id===(p.memberId||p.id)),activated=!!member?.email&&!!await get('passwords/'+member.id);
       return {id:p.id,name:member?.name||p.name,profileId:member?.id||p.id,productions:member?Object.keys(assignments(member)):p.productions||[],created:p.created,updated:p.updated,...(member?.email?{memberId:member.id,archived:false}:{}),activated,status:member?.email?(member.revoked?'Access revoked':activated?'Account created':'Invitation pending'):'Email needed'};
     })):[];
-    return json({pendingPeople,adminProfileId,adminProfileCandidates:profileCandidates,unassignedProfiles:admin?rows.filter(row=>!Object.keys(assignments(row)).length).map(({ticket,...row})=>({...row,practice:isPractice(row)})):[],agreementCycle:AGREEMENT_CYCLE,unassigned:admin?await Promise.all(accounts.filter(m=>!Object.keys(assignments(m)).length).map(async m=>({id:m.id,name:m.name,needsEmail:!ownerOf(m)&&!m.email,adminProfile:ownerOf(m),pendingPersonId:m.pendingPersonId,activated:!!ownerOf(m)||!!m.email&&!!await get('passwords/'+m.id)}))):[],productionReviews,productionChoices:productions,waiting,productionId,productions:admin?productions:productions.filter(p=>memberProductions[p.id]),revokedAccounts:admin?allAccounts.filter(m=>m.revoked).map(m=>({id:m.id,name:m.name,keepPublic:m.keepPublic,productions:assignments(m),publication:m.publication||{}})):[],accounts:admin?accounts.map(m=>({id:m.id,name:m.name,needsEmail:!ownerOf(m)&&!m.email,adminProfile:ownerOf(m),pendingPersonId:m.pendingPersonId,productions:assignments(m)})):[],agreementReady:!!await store.getMetadata('contract/master'),agreementSupported:true,welcome:await get('settings/welcome'),welcomePlayed:!!await get('welcome-played/'+self),catalog:adminCatalog,admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),mailTracking,mailLog:admin?(await list('mail-log/')).filter(Boolean).sort((a,b)=>b.updated-a.updated).slice(0,30).map(row=>mailTracking&&/^Delivery status unavailable/.test(row.error||'')?{...row,error:null}:row):[],mailQueue:admin?(await list('outbox/')).filter(Boolean).map(({to,subject,attempts,nextAttempt,lastError})=>({to,subject,attempts,nextAttempt,lastError})):[],members:rows.filter(row=>!admin||assignments(row)[productionId]).map(({ticket,...row})=>({...row,practice:isPractice(row)})),resources:(await list('resources/')).filter(canReadResource).map(r=>admin?r:({...r,audience:undefined})).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
+    return json({pendingPeople,adminProfileId,adminProfileCandidates:profileCandidates,unassignedProfiles:admin?rows.filter(row=>!Object.keys(assignments(row)).length).map(({ticket,...row})=>({...row,practice:isPractice(row)})):[],agreementCycle:AGREEMENT_CYCLE,unassigned:admin?await Promise.all(accounts.filter(m=>!Object.keys(assignments(m)).length).map(async m=>({id:m.id,name:m.name,needsEmail:!ownerOf(m)&&!m.email,adminProfile:ownerOf(m),pendingPersonId:m.pendingPersonId,activated:!!ownerOf(m)||!!m.email&&!!await get('passwords/'+m.id)}))):[],productionReviews,productionChoices:productions,waiting,productionId,productions:admin?productions:productions.filter(p=>memberProductions[p.id]),revokedAccounts:admin?allAccounts.filter(m=>m.revoked&&!m.deleted).map(m=>({id:m.id,name:m.name,keepPublic:m.keepPublic,productions:assignments(m),publication:m.publication||{}})):[],accounts:admin?accounts.map(m=>({id:m.id,name:m.name,needsEmail:!ownerOf(m)&&!m.email,adminProfile:ownerOf(m),pendingPersonId:m.pendingPersonId,productions:assignments(m)})):[],agreementReady:!!await store.getMetadata('contract/master'),agreementSupported:true,welcome:await get('settings/welcome'),welcomePlayed:!!await get('welcome-played/'+self),catalog:adminCatalog,admin,self,film,passwordSet:!!await get('passwords/'+self),mailReady:production&&mailReady(),mailTracking,mailLog:admin?(await list('mail-log/')).filter(Boolean).sort((a,b)=>b.updated-a.updated).slice(0,30).map(row=>mailTracking&&/^Delivery status unavailable/.test(row.error||'')?{...row,error:null}:row):[],mailQueue:admin?(await list('outbox/')).filter(Boolean).map(({to,subject,attempts,nextAttempt,lastError})=>({to,subject,attempts,nextAttempt,lastError})):[],members:rows.filter(row=>!admin||assignments(row)[productionId]).map(({ticket,...row})=>({...row,practice:isPractice(row)})),resources:(await list('resources/')).filter(canReadResource).map(r=>admin?r:({...r,audience:undefined})).sort((a,b)=>b.created-a.created),test:!(production&&process.env.HMF_SIGNWELL_LIVE==='yes')});
   }
   if((action==='invite'||action==='resend')&&post){
     onlyAdmin();requireThat(production&&mailReady(),'Invitation email is awaiting sender setup. No invitation was sent.',503);
@@ -1368,6 +1368,40 @@ export default async function handle(req, context) {
     await target();requireThat(uuid.test(body.task),'Invalid task.');
     const key='tasks/'+uid+'/'+body.task,item=await get(key);requireThat(item,'Task unavailable.');
     await set(key,{...item,done:true});return json({ok:true});
+  }
+  if(action==='deletePerson'&&post){
+    onlyAdmin();requireThat(uuid.test(uid),'Invalid person.');
+    const record=await rawStore.getWithMetadata('members/'+uid,{type:'json'}),m=record?.data;
+    requireThat(m,'Member unavailable.',404);
+    requireThat(!await isAdminProfile(m),'Admin profiles cannot be deleted.');
+    requireThat(m.deleted||body.confirmName===m.name,'Type the person’s full name to confirm deletion.');
+    if(!m.deleted){
+      // A minimal suppression record prevents static website profiles from returning.
+      // Signed agreements remain in their existing archive and are never altered.
+      const hidden={};
+      for(const production of productions){
+        const base=findProfile(m,production.id),assignment=assignments(m)[production.id];
+        if(base||assignment)hidden[production.id]={filmProfile:base?.id||assignment?.filmProfile||''};
+      }
+      requireThat((await rawStore.setJSON('members/'+uid,{id:uid,name:'Deleted profile',deleted:true,revoked:true,keepPublic:false,productions:hidden,deletedAt:Date.now(),deletedBy:self},{onlyIfMatch:record.etag})).modified,'This person changed. Refresh before deleting.',409);
+      if(m.email){const key='active-email/'+hash(m.email);if((await get(key))?.id===uid)await rawStore.delete(key);}
+    }
+    await invalidate();
+    const direct=['profiles/'+uid,'photos/'+uid,'passwords/'+uid,'welcome-played/'+uid];
+    for(const key of direct)await rawStore.delete(key);
+    for(const prefix of ['profile-images/'+uid+'/',...productions.map(p=>'profile-activity/'+p.id+'/'+uid)]){
+      for await(const page of rawStore.list({prefix,paginate:true}))for(const {key} of page.blobs)await rawStore.delete(key);
+    }
+    for(const prefix of ['sessions/','tickets/','resets/','outbox/','portal-pending/','active-email/']){
+      for await(const page of rawStore.list({prefix,paginate:true}))for(const {key} of page.blobs){
+        const value=await rawStore.get(key,{type:'json'});
+        if(value&&(value.id===uid||value.memberId===uid||prefix==='outbox/'&&value.to===m.email)){
+          await rawStore.delete(key);
+          if(prefix==='portal-pending/')await releasePendingName(value.name,value.id);
+        }
+      }
+    }
+    return json({ok:true,deleted:true});
   }
   if(action==='revoke'&&post){
     onlyAdmin();const record=await target({withMetadata:true}),m=record.data;

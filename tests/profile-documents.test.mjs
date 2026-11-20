@@ -913,3 +913,30 @@ test('onboarding protects permissions, review versions and private or exempt pro
  assert.equal(exempt.adminProfile,'Nick');assert.ok(exempt.productions.every(row=>row.paperwork.exempt));
  assert.deepEqual(ownersContext.calls,[]);
 });
+
+test('delete person removes account, profile assets and setup links across productions while retaining signed archives',async()=>{
+ const context=await fixture(),{store}=context;
+ await store.setJSON('passwords/'+actor,{digest:'private'});
+ await store.setJSON('profiles/'+actor,{bio:'Remove this biography'});
+ await store.set('photos/'+actor,Buffer.from('photo'));
+ await store.set('profile-images/'+actor+'/version',Buffer.from('photo'));
+ await store.setJSON('tickets/old',{id:actor});
+ let result=await call('deletePerson',{body:{confirmName:'Wrong person'}});assert.equal(result.status,400);
+ assert.equal((await call('deletePerson',{who:'member',body:{confirmName:'Rachel DeMicco'}})).status,403);
+ result=await call('deletePerson',{who:'Heidi',body:{confirmName:'Rachel DeMicco'}});assert.equal(result.status,200);
+ const removed=await store.get('members/'+actor);
+ assert.equal(removed.deleted,true);assert.equal(removed.email,undefined);assert.equal(removed.approvedProfiles,undefined);
+ for(const key of ['passwords/','profiles/','photos/'])assert.equal(await store.get(key+actor),null);
+ assert.equal(await store.get('profile-images/'+actor+'/version'),null);assert.equal(await store.get('tickets/old'),null);
+ assert.ok(await store.get('offline/'+profile.id));assert.ok(await store.get('agreements/'+actor));
+ const home=(await call('home')).data;
+ assert.ok(!home.members.some(m=>m.id===actor));assert.ok(!home.revokedAccounts.some(m=>m.id===actor));
+ const published=(await call('published',{who:null})).data;
+ assert.ok(!published.some(m=>m.id===profile.id&&!m.hidden));
+ assert.equal((await call('photo',{id:actor})).status,404);
+ assert.deepEqual(context.calls,[]);assert.deepEqual(context.notifications,[]);
+ assert.equal((await call('deletePerson',{body:{confirmName:'Rachel DeMicco'}})).status,200,'Deletion cleanup can be retried.');
+ const ownersContext=await ownerFixture();
+ assert.equal((await call('deletePerson',{id:owners.Nick,body:{confirmName:'Nick Williams'}})).status,400);
+ assert.ok(await ownersContext.store.get('members/'+owners.Nick));
+});

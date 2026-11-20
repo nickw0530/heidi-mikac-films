@@ -403,6 +403,7 @@ function practiceControl(m){
   (m.practice?'This is marked as a practice account. '+practiceEffect:'Use this for an account made to rehearse the portal, whatever it is named. Once marked, '+practiceEffect.charAt(0).toLowerCase()+practiceEffect.slice(1))+'</p>',
   m.practice?'Make this a regular account':'Mark as a practice account',m.id));
 }
+function deletePersonControl(m){return panel('Delete person',form('deletePerson','<p>Permanently remove this person’s account, biography and uploaded headshots from every production. Signed agreements remain in the document archive. This cannot be undone.</p><label>Type '+escape(m.name)+' to confirm<input name="confirmName" required autocomplete="off"></label>','Delete person permanently',m.id));}
 function accessControls(m,state){
  if(m.adminProfile)return '';
  const invitation=!m.needsEmail&&!m.activated&&state.mailReady?form('resend',
@@ -410,7 +411,7 @@ function accessControls(m,state){
   '<p>Use the saved email or enter a corrected one. Each new invitation replaces all earlier links for this account.</p>',
   'Send new invitation',m.id):'';
  return practiceControl(m)+panel('Manage access',invitation+
-  form('revoke','<label><input type="checkbox" name="keepPublic" checked> Keep public film credits and profile visible</label><p>Uncheck to also remove this account’s public profiles. Access is revoked immediately.</p>','Revoke portal access',m.id));
+  form('revoke','<label><input type="checkbox" name="keepPublic" checked> Keep public film credits and profile visible</label><p>Uncheck to also remove this account’s public profiles. Access is revoked immediately.</p>','Revoke portal access',m.id))+deletePersonControl(m);
 }
 function renderPendingPeople(host,state,selected){
  const drafts=[...host.querySelectorAll('form')].filter(f=>f.hasAttribute('data-dirty')||f.querySelector('button:disabled'));
@@ -1102,7 +1103,7 @@ async function load(initial){
    '<div data-view="messages"><h3>Messages &amp; files</h3><div data-tool-zone="messages"></div>'+(office.first?mailPanel:'')+'<h3>Production board</h3>'+updates+'</div>'+
    '<div data-view="calendar"><p>Upcoming events from Outlook. Use the production categories in Outlook to share events with members.</p></div>'+
    '<div data-view="settings">'+(reviews?'<section data-review-list><h3>Review profiles for publication</h3>'+reviews+'</section>':'')+
-   panel('Revoked portal accounts',s.revokedAccounts?.length?s.revokedAccounts.filter(m=>m.productions[s.productionId]).map(m=>'<section><h3>'+escape(m.name)+'</h3><p>Portal access revoked. Public profile '+(m.keepPublic?'retained':'removed')+'.</p>'+form('publication','<label><input type="checkbox" name="visible" '+(m.keepPublic&&m.publication[s.productionId]!==false?'checked':'')+'> Show on this production website</label>','Save website visibility',m.id)+'</section>').join(''):'<p>No revoked accounts.</p>')+
+   panel('Revoked portal accounts',s.revokedAccounts?.length?s.revokedAccounts.filter(m=>m.productions[s.productionId]).map(m=>'<section><h3>'+escape(m.name)+'</h3><p>Portal access revoked. Public profile '+(m.keepPublic?'retained':'removed')+'.</p>'+form('publication','<label><input type="checkbox" name="visible" '+(m.keepPublic&&m.publication[s.productionId]!==false?'checked':'')+'> Show on this production website</label>','Save website visibility',m.id)+deletePersonControl(m)+'</section>').join(''):'<p>No revoked accounts.</p>')+
    '<div data-tool-zone="settings"></div></div></div>'+(office.first?'<div id="calendar-slot"></div>':'')+'</div>';
   const staging=document.createElement('div');
   staging.innerHTML=setup;
@@ -1209,6 +1210,7 @@ listen('submit',async e=>{
  if(a==='publishProfile'&&!confirm('Publish this member’s saved biography and headshot on the public Written in the Dark website?'))return;
  if(a==='recoverAgreement'&&f.elements.replaceEnded&&!confirm('Set this ended signing request aside? It stays in SignWell and in the agreement history, and you can then prepare a new agreement.'))return;
  if(a==='practice'&&!confirm(data.practice==='yes'?'Mark this as a practice account? Its public profile comes off the film websites right away.':'Make this a regular account again? It can then be reviewed and published like anyone else.'))return;
+ if(a==='deletePerson'&&!confirm('Permanently delete this person from every production? Their account, biography and uploaded headshots will be removed.'))return;
  if(a==='removeResource'&&!confirm('Remove this from the production board for everyone? Email already delivered about it cannot be recalled.'))return;
  if((a==='revoke'||a==='sendAgreement'||(a==='agreement'&&button.value==='send'))&&!confirm(a==='revoke'?'Revoke this member’s access immediately?':a==='sendAgreement'?'Send this pending contract to its recipients?':'Create a signing request for this person and Heidi?'))return;
  button.disabled=true;message.textContent='';
@@ -1317,6 +1319,7 @@ listen('submit',async e=>{
    inviteEmail.defaultValue=inviteEmail.value=data.email;
    f.elements.expectedEmail.value=data.email;
   }
+  if(a==='deletePerson'){location.assign(location.pathname+'?view=people');return;}
   if(a==='savePendingPerson'&&!id)f.reset();
   if(office&&!data.preview)office.changed();
   if(a==='linkAdminProfiles'||combined&&a==='choosePassword'){location.reload();return;}
