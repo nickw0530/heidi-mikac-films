@@ -227,3 +227,26 @@ test('scheduled function rejects local, preview, and unpublished deploys before 
   if(oldDev===undefined)delete process.env.NETLIFY_DEV;else process.env.NETLIFY_DEV=oldDev;
  }
 });
+
+test('published public-feed schedule reconciles each cron invocation without needing an API token',async()=>{
+ const {readFile}=await import('node:fs/promises');
+ let source=await readFile(new URL('../netlify/functions/crowdfundr-sync.mjs',import.meta.url),'utf8');
+ for(const [before,after] of [
+  ["import {getStore} from '@netlify/blobs';","const getStore=()=>({get:async()=>({publicFeedEnabled:true})});"],
+  ["import {merchStore} from '../lib/merch.mjs';","const merchStore=()=>({site:'production'});"],
+  ["import {syncCrowdfundr} from '../lib/crowdfundr-sync.mjs';","const syncCrowdfundr=()=>{throw Error('API credentials must not be needed');};"],
+  ["import {syncPublicCrowdfundr} from '../lib/crowdfundr-public.mjs';","const syncPublicCrowdfundr=async(store,shop,options)=>globalThis.__publicScheduleChecks.push({shop,options});"]
+ ]){assert.ok(source.includes(before));source=source.replace(before,after);}
+ globalThis.__publicScheduleChecks=[];
+ const previousContext=process.env.CONTEXT,previousDev=process.env.NETLIFY_DEV;
+ try{
+  process.env.CONTEXT='production';delete process.env.NETLIFY_DEV;
+  const {default:run}=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
+  await run(null,{deploy:{published:true}});await run(null,{deploy:{published:true}});
+  assert.deepEqual(globalThis.__publicScheduleChecks,[{shop:{site:'production'},options:{force:true}},{shop:{site:'production'},options:{force:true}}]);
+ }finally{
+  delete globalThis.__publicScheduleChecks;
+  if(previousContext===undefined)delete process.env.CONTEXT;else process.env.CONTEXT=previousContext;
+  if(previousDev===undefined)delete process.env.NETLIFY_DEV;else process.env.NETLIFY_DEV=previousDev;
+ }
+});
