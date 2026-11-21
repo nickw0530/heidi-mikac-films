@@ -45,6 +45,44 @@ export function supporterTransactions(shop){
   return {...row,hidden:row.hidden||override.hidden===true||row.apiUnavailable===true||row.publicStale===true,duplicateOf:override.duplicateOf||'',sameSupporterAs:row.sameSupporterAs||'',...(row.apiUnavailable||row.publicStale?{warning:'Current campaign privacy information is unavailable; credit is withheld until the next complete check.'}:{})};
  });
 }
+
+function creditIdentities(rows,identity){
+ const parents=new Map(),authorities=new Map(),names=new Map();
+ const root=key=>{
+  let current=key;
+  while(parents.has(current)&&parents.get(current)!==current)current=parents.get(current);
+  return current;
+ };
+ for(const row of rows){
+  if(!row.showName||row.hidden||row.duplicateOf||!money(row.gross)||!(balance(row)>0||row.source==='crowdfundr-public'&&row.status==='public'))continue;
+  let name;try{name=plain(row.name,120).toLocaleLowerCase('en-US');}catch{continue;}
+  if(!name||name==='anonymous')continue;
+  const key=identity(row),authority=/^(email|paypal|public-owner):/.exec(key)?.[1];
+  if(!parents.has(key)){
+   parents.set(key,key);
+   authorities.set(key,new Map(authority?[[authority,new Set([key])]]:[]));
+  }
+  if(!names.has(name))names.set(name,new Set());
+  names.get(name).add(key);
+ }
+ for(const [,keys] of [...names].sort(([a],[b])=>a.localeCompare(b))){
+  const roots=[...new Set([...keys].map(root))].sort();
+  if(roots.length<2)continue;
+  const combined=new Map();
+  for(const key of roots)for(const [authority,values] of authorities.get(key)||[]){
+   if(!combined.has(authority))combined.set(authority,new Set());
+   for(const value of values)combined.get(authority).add(value);
+  }
+  // Public names connect manual entries and different payment channels. Two
+  // different verified identities from the same provider remain distinct.
+  // Component checks also prevent an alias from bridging conflicting people.
+  if([...combined.values()].some(values=>values.size>1))continue;
+  for(const key of roots)parents.set(key,roots[0]);
+  authorities.set(roots[0],combined);
+ }
+ return row=>root(identity(row));
+}
+
 export function publicSupporters(shop){
  const all=supporterTransactions(shop),publicMode=shop.supporterLedger?.publicFeed?.enabled===true;
  // The native public feed replaces imported/API Crowdfundr recognition as a
@@ -60,6 +98,7 @@ export function publicSupporters(shop){
   }
   return current.identity||current.id;
  };
+ const credits=[];
  for(const original of rows){
   let row=original;const ref=referenceKey(row);
   if(row.duplicateOf||ref&&seen.has(ref))continue;
@@ -75,10 +114,14 @@ export function publicSupporters(shop){
   }
   const publicCredit=row.source==='crowdfundr-public'&&row.status==='public';
   if(row.hidden||!money(row.gross)||!publicCredit&&!balance(row))continue;
+  credits.push(row);
+ }
+ const creditIdentity=creditIdentities(credits,identity);
+ for(const row of credits){
   let name='Anonymous';
   if(row.showName){try{name=plain(row.name,120)||'Anonymous';}catch{}}
   // A private-name transaction cannot be tied to a named transaction publicly.
-  const groupKey=name==='Anonymous'?row.id:identity(row);
+  const groupKey=name==='Anonymous'?'anonymous:'+row.id:'named:'+creditIdentity(row);
   const group=groups.get(groupKey)||{name,amount:0,currency:'USD',date:0};
   if((row.date||0)>=group.date)group.name=name;
   group.amount=group.amount===null||!row.showAmount?null:group.amount+balance(row);

@@ -9,6 +9,11 @@ const shop=()=>({sales:{}});
 const imported=(state,text)=>{const preview=previewSupporterCsv(state,text);importSupporterCsv(state,{csv:text,digest:preview.digest});return preview;};
 const manual=(overrides={})=>({id:'manual:11111111-1111-4111-8111-111111111111',name:'Fictional Supporter',gross:2500,refunded:null,status:'paid',showName:true,showAmount:true,hidden:false,channel:'Cash',reference:'',processor:'',...overrides});
 const publicActivity=(overrides={})=>({id:'crowdfundr-public:example',source:'crowdfundr-public',reference:'public-activity',processor:'',channel:'Crowdfundr public activity',status:'public',gross:1000,refunded:null,name:'Public Supporter',showName:true,showAmount:true,identity:'public-owner:verified',hidden:false,date:1,...overrides});
+const withPublicActivities=(state,rows)=>{
+ state.supporterLedger??={transactions:{},moderation:{}};
+ state.supporterLedger.publicFeed={enabled:true,checkedAt:Date.now(),rows:Object.fromEntries(rows.map(row=>[row.id,row]))};
+ return state;
+};
 
 test('public campaign mode replaces CSV recognition while retaining the audit ledger and manual/website credits',()=>{
  const state=shop();imported(state,csv({}));saveManualSupporter(state,manual({gross:50000}));
@@ -19,7 +24,7 @@ test('public campaign mode replaces CSV recognition while retaining the audit le
  assert.equal(rows.length,3);assert.equal(rows.reduce((sum,row)=>sum+row.amount,0),55000);
  assert.deepEqual(state.supporterLedger.transactions,original);assert.equal(adminSupporters(state).length,4);
  state.supporterLedger.publicFeed.enabled=false;
- assert.ok(publicSupporters(state).some(row=>row.name==='Fictional Supporter'&&row.amount===1000));
+ assert.ok(publicSupporters(state).some(row=>row.name==='Fictional Supporter'&&row.amount===51000));
 });
 test('private public-feed amounts remain credits without exposing a zero or an imported private value',()=>{
  const state=shop();state.supporterLedger={transactions:{},moderation:{},publicFeed:{enabled:true,checkedAt:Date.now(),rows:{
@@ -29,7 +34,7 @@ test('private public-feed amounts remain credits without exposing a zero or an i
 });
 test('public profile identities aggregate repeats without merging unrelated equal display names',()=>{
  const state=shop();state.supporterLedger={transactions:{},moderation:{},publicFeed:{enabled:true,checkedAt:Date.now(),rows:{
-  first:publicActivity(),second:publicActivity({id:'crowdfundr-public:second',gross:2500}),third:publicActivity({id:'crowdfundr-public:third',identity:'other-owner',gross:500})
+  first:publicActivity(),second:publicActivity({id:'crowdfundr-public:second',gross:2500}),third:publicActivity({id:'crowdfundr-public:third',identity:'public-owner:other-verified',gross:500})
  }}};
  assert.deepEqual(publicSupporters(state).map(row=>row.amount).sort((a,b)=>a-b),[500,3500]);
 });
@@ -52,7 +57,7 @@ test('CSV uses contribution gross, stores separate transactions and imports idem
  const publicData=JSON.stringify(publicSupporters(state));
  for(const secret of ['TX001','TX002','identity','reference','email','source'])assert.ok(!publicData.includes(secret));
 });
-test('verified repeat identity aggregates across changed display names, names alone never merge',()=>{
+test('verified repeat identity aggregates across changed display names while different verified people stay separate',()=>{
  const state=shop();
  imported(state,csv({}, {'Transaction ID':'TX002',Name:'Updated Public Name'}, {'Transaction ID':'TX003','Contact email':'other@example.test'}));
  const rows=publicSupporters(state);
@@ -112,10 +117,125 @@ test('manual support supports verified cross-channel matches, edits, refund amou
 test('explicit duplicate review excludes one payment and can be reversed',()=>{
  const state=shop();saveManualSupporter(state,manual());
  const id='manual:22222222-2222-4222-8222-222222222222';saveManualSupporter(state,manual({id}));
- assert.equal(publicSupporters(state).length,2);
- moderateSupporter(state,{id,hidden:false,duplicateOf:manual().id});assert.equal(publicSupporters(state).length,1);
- moderateSupporter(state,{id,hidden:false,duplicateOf:''});assert.equal(publicSupporters(state).length,2);
+ assert.deepEqual(publicSupporters(state),[{name:'Fictional Supporter',amount:5000,currency:'USD'}]);
+ assert.equal(adminSupporters(state).length,2,'Both distinct payment records remain in the audit ledger.');
+ moderateSupporter(state,{id,hidden:false,duplicateOf:manual().id});assert.deepEqual(publicSupporters(state),[{name:'Fictional Supporter',amount:2500,currency:'USD'}]);
+ moderateSupporter(state,{id,hidden:false,duplicateOf:''});assert.deepEqual(publicSupporters(state),[{name:'Fictional Supporter',amount:5000,currency:'USD'}]);
+ assert.equal(adminSupporters(state).length,2);
  assert.throws(()=>moderateSupporter(state,{id,hidden:false,duplicateOf:id}));
+});
+
+test('same public name combines manual and native campaign support for every supporter without changing payments',()=>{
+ for(const name of ['Gary Howard','Another Film Supporter']){
+  const state=shop();saveManualSupporter(state,manual({name,gross:2000}));
+  withPublicActivities(state,[publicActivity({name,gross:800})]);
+  const before=structuredClone(state);
+  assert.deepEqual(publicSupporters(state),[{name,amount:2800,currency:'USD'}]);
+  assert.deepEqual(state,before,'Public name aggregation does not rewrite source transactions or introduce identity links.');
+  assert.equal(adminSupporters(state).length,2);
+  assert.deepEqual(adminSupporters(state).map(row=>row.gross).sort((a,b)=>a-b),[800,2000]);
+ }
+});
+
+test('an unambiguous public campaign owner and verified email combine across channels by public name',()=>{
+ const state=shop();saveManualSupporter(state,manual({name:'Gary Howard',gross:2000,identityEmail:'gary@example.test'}));
+ withPublicActivities(state,[publicActivity({name:'Gary Howard',gross:800,identity:'public-owner:gary'})]);
+ assert.deepEqual(publicSupporters(state),[{name:'Gary Howard',amount:2800,currency:'USD'}]);
+ assert.equal(adminSupporters(state).length,2);
+ const persisted=JSON.parse(JSON.stringify(state));
+ assert.deepEqual(publicSupporters(persisted),[{name:'Gary Howard',amount:2800,currency:'USD'}],'Aggregation survives a persisted ledger reload.');
+});
+
+test('public-name aggregation normalizes case, NFKC characters and repeated whitespace',()=>{
+ const state=shop();saveManualSupporter(state,manual({name:'  Gary   Howard  ',gross:2000}));
+ withPublicActivities(state,[publicActivity({name:'ｇＡＲＹ　 ｈＯＷＡＲＤ',gross:800})]);
+ const rows=publicSupporters(state);
+ assert.equal(rows.length,1);assert.equal(rows[0].amount,2800);
+ assert.equal(rows[0].name.normalize('NFKC').trim().replace(/\s+/gu,' ').toLowerCase(),'gary howard');
+});
+
+test('repeat native activities add to the same cumulative manual and campaign credit after snapshot replacement',()=>{
+ const state=shop();saveManualSupporter(state,manual({name:'Gary Howard',gross:2000}));
+ const first=publicActivity({name:'Gary Howard',gross:800,identity:'public-owner:gary'});
+ withPublicActivities(state,[first]);assert.equal(publicSupporters(state)[0].amount,2800);
+ const second=publicActivity({id:'crowdfundr-public:gary-repeat',reference:'gary-repeat',name:'Gary Howard',gross:500,identity:'public-owner:gary',date:2});
+ withPublicActivities(state,[first,second]);
+ assert.deepEqual(publicSupporters(state),[{name:'Gary Howard',amount:3300,currency:'USD'}]);
+ assert.equal(adminSupporters(state).length,3);
+ withPublicActivities(state,[structuredClone(first),structuredClone(second)]);
+ assert.equal(publicSupporters(JSON.parse(JSON.stringify(state)))[0].amount,3300,'Replacing or reloading the snapshot does not count an activity twice.');
+});
+
+test('different verified email identities with the same public name remain different people',()=>{
+ const state=shop();saveManualSupporter(state,manual({name:'Same Public Name',gross:2000,identityEmail:'one@example.test'}));
+ saveManualSupporter(state,manual({id:'manual:22222222-2222-4222-8222-222222222222',name:'Same Public Name',gross:800,identityEmail:'two@example.test'}));
+ assert.deepEqual(publicSupporters(state).map(row=>row.amount).sort((a,b)=>a-b),[800,2000]);
+ assert.equal(adminSupporters(state).length,2);
+});
+
+test('different public campaign owner identities with the same name remain different people',()=>{
+ const state=withPublicActivities(shop(),[
+  publicActivity({name:'Same Public Name',gross:2000,identity:'public-owner:first'}),
+  publicActivity({id:'crowdfundr-public:second-owner',reference:'second-owner',name:'Same Public Name',gross:800,identity:'public-owner:second'})
+ ]);
+ assert.deepEqual(publicSupporters(state).map(row=>row.amount).sort((a,b)=>a-b),[800,2000]);
+});
+
+test('name aggregation preserves independent private-name and private-amount choices',()=>{
+ const state=shop();saveManualSupporter(state,manual({name:'Gary Howard',gross:2000}));
+ const publicRow=publicActivity({name:'Gary Howard',gross:800});
+ withPublicActivities(state,[{...publicRow,showAmount:false,gross:0}]);
+ assert.deepEqual(publicSupporters(state),[{name:'Gary Howard',amount:null,currency:'USD'}]);
+ withPublicActivities(state,[{...publicRow,showName:false,name:'Private source name'}]);
+ assert.deepEqual(publicSupporters(state).map(row=>[row.name,row.amount]).sort(),[['Anonymous',800],['Gary Howard',2000]].sort());
+ saveManualSupporter(state,manual({name:'Gary Howard',gross:2000,showName:false}));
+ withPublicActivities(state,[{...publicRow,showName:false,name:'Another private source name'}]);
+ const anonymous=publicSupporters(state);
+ assert.equal(anonymous.length,2);assert.ok(anonymous.every(row=>row.name==='Anonymous'));
+ assert.deepEqual(anonymous.map(row=>row.amount).sort((a,b)=>a-b),[800,2000]);
+ assert.ok(!JSON.stringify(anonymous).includes('Private source name'));
+});
+
+test('an explicit supporter match cannot expose an anonymous contribution through a named group-key collision',()=>{
+ const anonymous=publicActivity({id:'crowdfundr-public:anonymous-match',reference:'anonymous-match',name:'Private source name',identity:'',showName:false,gross:100});
+ const state=withPublicActivities(shop(),[anonymous]);
+ saveManualSupporter(state,manual({name:'Named Supporter',gross:50,sameSupporterAs:anonymous.id}));
+ const before=structuredClone(state);
+ assert.deepEqual(publicSupporters(state).map(row=>[row.name,row.amount]).sort(),[['Anonymous',100],['Named Supporter',50]].sort());
+ assert.deepEqual(state,before,'The public projection preserves the explicit admin match without publishing the private contribution under its name.');
+ assert.equal(adminSupporters(state).length,2);
+});
+
+test('processor duplicate privacy and exclusions cannot create a hidden alias bridge between public credits',async t=>{
+ for(const [label,overrides] of [
+  ['private-name copy',{showName:false}],['hidden copy',{hidden:true}],['refunded copy',{status:'refunded'}]
+ ])await t.test(label,()=>{
+  const state=shop(),identity=supporterIdentity('alpha@example.test');
+  state.sales.ALPHA={status:'paid',channel:'PayPal checkout',captureId:'ALPHA-PAYMENT',subtotal:2000,supporterIdentity:identity,recognition:{public:true,name:'Alpha',showAmount:true},paidAt:10};
+  state.sales.ALIAS={status:'paid',channel:'PayPal checkout',captureId:'ALIAS-PAYMENT',subtotal:1000,supporterIdentity:identity,recognition:{public:true,name:'Beta',showAmount:true},paidAt:20};
+  saveManualSupporter(state,manual({name:'Beta',gross:1000,processor:'paypal',reference:'ALIAS-PAYMENT',identityEmail:'alpha@example.test',...overrides}));
+  withPublicActivities(state,[publicActivity({name:'Beta',gross:800,identity:'public-owner:unrelated-beta',date:30})]);
+  const before=structuredClone(state),rows=publicSupporters(state);
+  const expected=[['Alpha',2000],['Beta',800],...(label==='private-name copy'?[['Anonymous',1000]]:[])];
+  assert.deepEqual(rows.map(row=>[row.name,row.amount]).sort(),expected.sort(),'An alias removed by effective processor privacy/status cannot join otherwise different public names.');
+  assert.equal(adminSupporters(state).length,4,'Duplicate snapshots remain auditable even when their public credit is restricted.');
+  assert.deepEqual(state,before,'The public projection does not change payment records.');
+ });
+});
+
+test('a public alias cannot transitively join two different verified owners from the same provider',()=>{
+ const state=shop(),identity=supporterIdentity('alias-person@example.test');
+ state.sales.ALPHA={status:'paid',subtotal:2000,supporterIdentity:identity,recognition:{public:true,name:'Alpha',showAmount:true},paidAt:10};
+ state.sales.BETA={status:'paid',subtotal:1000,supporterIdentity:identity,recognition:{public:true,name:'Beta',showAmount:true},paidAt:20};
+ withPublicActivities(state,[
+  publicActivity({name:'Alpha',gross:800,identity:'public-owner:first-person',date:30}),
+  publicActivity({id:'crowdfundr-public:beta-person',reference:'beta-person',name:'Beta',gross:500,identity:'public-owner:second-person',date:40})
+ ]);
+ const rows=publicSupporters(state);
+ assert.equal(rows.length,2,'The shared email alias can connect one channel owner while a conflicting owner remains a separate person.');
+ assert.equal(rows.reduce((total,row)=>total+row.amount,0),4300);
+ assert.ok(rows.every(row=>row.amount<4300),'Transitive name matching cannot merge known different public owners.');
+ assert.equal(adminSupporters(state).length,4);
 });
 test('CSV parser supports BOM, escaped quotes and multiline quoted fields; rejects malformed/ambiguous uploads atomically',()=>{
  const text='\uFEFF'+csv({Name:'Fictional, "Friend"'});
