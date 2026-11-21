@@ -12,7 +12,25 @@ const tokenEndpoint='https://api.connectionpoint.com/v1/oauth2/token';
 const api='https://api.connectionpoint.com/v1';
 const nonce=()=>randomBytes(32).toString('base64url');
 const digest=value=>createHash('sha256').update(value).digest('base64url');
-const fail=(ok,message,status=400)=>{if(!ok)throw Object.assign(Error(message),{status});};
+const safeAuthError=Symbol('safeCrowdfundrAuthError');
+const fail=(ok,message,status=400)=>{
+ if(!ok){const error=Object.assign(Error(message),{status});Object.defineProperty(error,safeAuthError,{value:message});throw error;}
+};
+export function publicCrowdfundrAuthError(error){
+ // Never trust an upstream error's message, status, body or similarly named
+ // property. Only this module's fixed local errors carry the private symbol.
+ try{if(typeof error?.[safeAuthError]==='string')return error[safeAuthError];}catch{}
+ return 'Crowdfundr connection did not finish.';
+}
+const oauthCodes=new Set(['invalid_client','unauthorized_client','invalid_grant','invalid_request','access_denied','invalid_scope','unsupported_grant_type']);
+const httpStatus=response=>Number.isInteger(response.status)&&response.status>=100&&response.status<=599?String(response.status):'unknown';
+async function oauthErrorCode(response){
+ try{
+  const body=await response.text();if(body.length>8192)return '';
+  const data=JSON.parse(body);
+  return typeof data?.error==='string'&&oauthCodes.has(data.error)?data.error:'';
+ }catch{return '';}
+}
 export const crowdfundrHeaders={'Cache-Control':'private, no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff'};
 export const crowdfundrCookie=(value,seconds)=>'__Host-hmf-crowdfundr='+value+'; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age='+seconds;
 const clientId=value=>{
@@ -71,11 +89,20 @@ export async function beginCrowdfundr(store,sessionKey,origin=crowdfundrOrigin){
 
 export async function completeCrowdfundr(store,req,{fetcher=fetch}={}){
  const url=new URL(req.url),state=url.searchParams.get('state'),code=url.searchParams.get('code');
- fail(req.method==='GET'&&url.origin===crowdfundrOrigin&&/^[\w-]{43}$/.test(state||'')&&!url.searchParams.has('error'),'Crowdfundr authorization could not be verified.');
- fail(typeof code==='string'&&code.length>0&&code.length<=4096&&!/[\p{Cc}\p{Cf}\p{Cs}]/u.test(code),'Crowdfundr authorization could not be verified.');
+ fail(req.method==='GET'&&url.origin===crowdfundrOrigin,'The Crowdfundr callback address or method did not match the registered callback.');
+ fail(/^[\w-]{43}$/.test(state||''),'The Crowdfundr authorization did not return a valid state. Start the connection again.');
+ if(url.searchParams.has('error')){
+  const reported=url.searchParams.get('error'),safeCode=oauthCodes.has(reported)?' ('+reported+')':'';
+  fail(false,'Crowdfundr did not grant authorization'+safeCode+'. Start the connection again.');
+ }
+ fail(typeof code==='string'&&code.length>0&&code.length<=4096&&!/[\p{Cc}\p{Cf}\p{Cs}]/u.test(code),'Crowdfundr did not return a usable authorization code. Start the connection again.');
  const key='crowdfundr/state/'+state,record=await store.getWithMetadata(key,{type:'json'}),pending=record?.data;
  const browser=req.headers.get('cookie')?.match(/(?:^|; )__Host-hmf-crowdfundr=([\w-]{43})(?:;|$)/)?.[1];
- fail(browser&&pending&&pending.expires>Date.now()&&pending.browser===digest(browser)&&pending.campaignId===crowdfundrCampaign,'Crowdfundr authorization could not be verified.');
+ fail(browser,'The Crowdfundr browser verification cookie was missing. Start authorization from this browser’s administrator portal.');
+ fail(pending,'The Crowdfundr authorization state was not found. Start the connection again.');
+ fail(pending.expires>Date.now(),'The Crowdfundr authorization expired. Start the connection again.');
+ fail(pending.browser===digest(browser),'The Crowdfundr browser verification did not match. Start the connection again.');
+ fail(pending.campaignId===crowdfundrCampaign,'The Crowdfundr authorization did not match the configured retake campaign.');
  await activeAdmin(store,pending.sessionKey);
  const config=await store.getWithMetadata(crowdfundrConfigKey,{type:'json'});
  fail(config?.etag===pending.configRevision&&config.data.clientId===pending.clientId,'Crowdfundr settings changed. Start the connection again.',409);
@@ -83,9 +110,13 @@ export async function completeCrowdfundr(store,req,{fetcher=fetch}={}){
  const exchanged=await fetcher(tokenEndpoint,{method:'POST',redirect:'error',signal:AbortSignal.timeout(8000),
   headers:{Accept:'application/json','Content-Type':'application/x-www-form-urlencoded'},
   body:new URLSearchParams({grant_type:'authorization_code',client_id:pending.clientId,redirect_uri:crowdfundrCallback,code,code_verifier:pending.verifier})});
- fail(exchanged.ok,'Crowdfundr could not complete authorization. Start the connection again.',502);
- const token=await exchanged.json();
- fail(typeof token.access_token==='string'&&token.access_token.length>0&&token.access_token.length<=8192&&(!token.token_type||token.token_type.toLowerCase()==='bearer'),
+ if(!exchanged.ok){
+  const code=await oauthErrorCode(exchanged);
+  fail(false,'Crowdfundr token exchange failed (HTTP '+httpStatus(exchanged)+(code?'; '+code:'')+'). Start the connection again.',502);
+ }
+ let token;try{token=await exchanged.json();}catch{fail(false,'Crowdfundr token exchange returned an unreadable response.',502);}
+ fail(token&&typeof token.access_token==='string'&&token.access_token.length>0&&token.access_token.length<=8192&&
+  (token.token_type===undefined||typeof token.token_type==='string'&&token.token_type.toLowerCase()==='bearer'),
   'Crowdfundr returned an unsupported authorization response.',502);
  if(token.scope!==undefined){
   const scopes=typeof token.scope==='string'?token.scope.split(/[\s,]+/):[];
@@ -93,9 +124,9 @@ export async function completeCrowdfundr(store,req,{fetcher=fetch}={}){
  }
  const response=await fetcher(api+'/campaigns/'+crowdfundrCampaign,{headers:{Accept:'application/json',Authorization:'Bearer '+token.access_token},
   redirect:'error',signal:AbortSignal.timeout(8000)});
- fail(response.ok,'This Crowdfundr account could not access the configured campaign.',403);
- const campaign=await response.json();
- fail(campaign.id===crowdfundrCampaign&&String(campaign.currency).toUpperCase()==='USD','This Crowdfundr connection does not match the USD retake campaign.',403);
+ fail(response.ok,'Crowdfundr campaign verification failed (HTTP '+httpStatus(response)+'). Check that the authorized account can access the retake campaign.',403);
+ let campaign;try{campaign=await response.json();}catch{fail(false,'Crowdfundr campaign verification returned an unreadable response.',502);}
+ fail(campaign?.id===crowdfundrCampaign&&String(campaign.currency).toUpperCase()==='USD','This Crowdfundr connection does not match the USD retake campaign.',403);
  // Recheck after external calls so a disconnect, app change, password change,
  // or revoked admin session cannot complete an authorization already in flight.
  await activeAdmin(store,pending.sessionKey);

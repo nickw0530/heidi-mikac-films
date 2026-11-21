@@ -1,8 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
+import {readFile} from 'node:fs/promises';
 import {beginCrowdfundr,completeCrowdfundr,crowdfundrSettings,saveCrowdfundrSettings,disconnectCrowdfundr,
- crowdfundrCallback,crowdfundrConfigKey,crowdfundrConnectionKey,crowdfundrSyncKey,crowdfundrCampaign} from '../netlify/lib/crowdfundr-oauth.mjs';
+ crowdfundrCallback,crowdfundrConfigKey,crowdfundrConnectionKey,crowdfundrSyncKey,crowdfundrCampaign,publicCrowdfundrAuthError} from '../netlify/lib/crowdfundr-oauth.mjs';
+
+const callbackFile=new URL('../netlify/functions/crowdfundr-callback.mjs',import.meta.url);
+const callbackSource=(await readFile(callbackFile,'utf8'))
+ .replace("import {getStore} from '@netlify/blobs';",'const getStore=()=>globalThis.__crowdfundrCallbackStore;')
+ .replace(/from (['"])(\.\.?\/[^'"]+)\1/g,(_match,_quote,path)=>'from '+JSON.stringify(new URL(path,callbackFile).href));
+const {default:callback}=await import('data:text/javascript;base64,'+Buffer.from(callbackSource).toString('base64'));
 
 const sessionKey='sessions/'+'a'.repeat(64);
 const digest=value=>createHash('sha256').update(value).digest('base64url');
@@ -158,4 +165,60 @@ test('stored legacy or arbitrary provider error text cannot appear in connection
  assert.equal(data.lastError,'Crowdfundr is temporarily unavailable. The next scheduled check will retry.');
  for(const secret of ['server-only-secret','private-contact@example.test','secret-value@example.test'])assert.ok(!encoded.includes(secret));
  assert.deepEqual(data.fieldNames,['id','amount','payer_email']);
+});
+
+test('OAuth token failure diagnostics contain only safe HTTP status and allowlisted error codes',async t=>{
+ const store=await fixture(t);
+ for(const code of ['invalid_client','unauthorized_client','invalid_grant','invalid_request','access_denied','invalid_scope','unsupported_grant_type']){
+  const f=await flow(store);
+  try{
+   await completeCrowdfundr(store,f.request(),{fetcher:async()=>Response.json({error:code,error_description:'DO-NOT-SHOW private-token contact@example.test',access_token:'private-token'},{status:403})});
+   assert.fail('The token error must fail authorization.');
+  }catch(error){assert.equal(publicCrowdfundrAuthError(error),'Crowdfundr token exchange failed (HTTP 403; '+code+'). Start the connection again.');}
+ }
+ const f=await flow(store);
+ try{
+  await completeCrowdfundr(store,f.request(),{fetcher:async()=>({ok:false,status:'DO-NOT-SHOW-private-token',text:async()=>JSON.stringify({error:'DO-NOT-SHOW-private-token',error_description:'contact@example.test'})})});
+  assert.fail('The malformed token error must fail authorization.');
+ }catch(error){assert.equal(publicCrowdfundrAuthError(error),'Crowdfundr token exchange failed (HTTP unknown). Start the connection again.');}
+ assert.equal(await store.get(crowdfundrConnectionKey),null);
+});
+
+test('unbranded provider exceptions and mutable error messages cannot bypass the diagnostic boundary',async t=>{
+ const store=await fixture(t),f=await flow(store);
+ try{
+  await completeCrowdfundr(store,f.request(),{fetcher:async()=>{throw Object.assign(Error('DO-NOT-SHOW private-token contact@example.test'),{status:403,safeCrowdfundrAuthError:true});}});
+  assert.fail('The provider exception must fail authorization.');
+ }catch(error){assert.equal(publicCrowdfundrAuthError(error),'Crowdfundr connection did not finish.');}
+ try{
+  await completeCrowdfundr(store,new Request(crowdfundrCallback+'?state=invalid&code=private-code'));
+  assert.fail('The invalid state must fail authorization.');
+ }catch(error){
+  const safe=publicCrowdfundrAuthError(error);error.message='DO-NOT-SHOW private-token';
+  assert.equal(publicCrowdfundrAuthError(error),safe);assert.ok(!safe.includes('private-code'));
+ }
+});
+
+test('the callback shows fixed failure stages with privacy headers and never exposes provider payloads',async t=>{
+ const store=await fixture(t);globalThis.__crowdfundrCallbackStore=store;
+ const oldContext=process.env.CONTEXT,oldDev=process.env.NETLIFY_DEV;delete process.env.CONTEXT;delete process.env.NETLIFY_DEV;
+ t.after(()=>{if(oldContext===undefined)delete process.env.CONTEXT;else process.env.CONTEXT=oldContext;if(oldDev===undefined)delete process.env.NETLIFY_DEV;else process.env.NETLIFY_DEV=oldDev;});
+ const missing=await flow(store);
+ let response=await callback(new Request(missing.request().url));
+ assert.match(await response.text(),/browser verification cookie was missing/);assert.equal(response.status,400);
+ for(const [name,value] of [['cache-control','private, no-store'],['referrer-policy','no-referrer']])assert.equal(response.headers.get(name),value);
+ assert.ok(response.headers.get('set-cookie').includes('Max-Age=0'));
+ const tokenFailure=await flow(store);
+ t.mock.method(globalThis,'fetch',async()=>Response.json({error:'unauthorized_client',error_description:'DO-NOT-SHOW contact@example.test',access_token:'private-token'},{status:403}));
+ response=await callback(tokenFailure.request());const body=await response.text();
+ assert.match(body,/token exchange failed \(HTTP 403; unauthorized_client\)/);
+ for(const value of ['DO-NOT-SHOW','contact@example.test','private-token','provider-authorization-code'])assert.ok(!body.includes(value));
+ const campaignFailure=await flow(store);
+ t.mock.method(globalThis,'fetch',async url=>url.includes('/oauth2/token')?Response.json({access_token:'private-token',token_type:'Bearer'}):Response.json({error:'DO-NOT-SHOW contact@example.test'},{status:401}));
+ response=await callback(campaignFailure.request());const campaignBody=await response.text();
+ assert.match(campaignBody,/campaign verification failed \(HTTP 401\)/);assert.ok(!campaignBody.includes('DO-NOT-SHOW'));assert.ok(!campaignBody.includes('private-token'));
+ const exception=await flow(store);
+ t.mock.method(globalThis,'fetch',async()=>{throw Object.assign(Error('DO-NOT-SHOW private-token'),{status:403});});
+ response=await callback(exception.request());const fallback=await response.text();
+ assert.match(fallback,/Crowdfundr connection did not finish/);assert.ok(!fallback.includes('DO-NOT-SHOW'));assert.ok(!fallback.includes('private-token'));
 });
