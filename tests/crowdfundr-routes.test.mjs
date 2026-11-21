@@ -41,7 +41,7 @@ async function call(action,{who='admin',body,host='heidimikacfilms.com',origin,m
 
 test('Crowdfundr connection controls require production, a current admin session and same-origin POST',async t=>{
  const store=await fixture(t);
- for(const action of ['crowdfundrSettings','crowdfundrConnect','crowdfundrSync','crowdfundrDisconnect']){
+ for(const action of ['crowdfundrSettings','crowdfundrConnect','crowdfundrSync','crowdfundrDisconnect','crowdfundrPublicMode','crowdfundrPublicSync']){
   for(const [who,status] of [[null,401],['member',403]])assert.equal((await call(action,{who,body:action==='crowdfundrSettings'?undefined:{}})).status,status);
   assert.equal((await call(action,{host:'preview.netlify.app',body:action==='crowdfundrSettings'?undefined:{}})).status,403);
   assert.equal((await call(action,{body:{},origin:'https://elsewhere.example'})).status,403);

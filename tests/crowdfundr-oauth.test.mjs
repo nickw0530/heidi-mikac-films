@@ -76,6 +76,13 @@ test('Crowdfundr uses browser-bound read-only OAuth PKCE and keeps token materia
  assert.equal(remote.requests.length,2,'A replay never exchanges the authorization code again.');
 });
 
+test('OAuth access-token punctuation passes from JSON to the bearer header without encoding or escaping',async t=>{
+ const store=await fixture(t),f=await flow(store),token='synthetic+/._~-token==',remote=provider({token});
+ await completeCrowdfundr(store,f.request(),{fetcher:remote.fetcher});
+ assert.equal(remote.requests[1].options.headers.Authorization,'Bearer '+token);
+ assert.equal((await store.get(crowdfundrConnectionKey)).accessToken,token);
+});
+
 test('wrong browser, origin, expired state and non-admin sessions cannot authorize Crowdfundr',async t=>{
  const store=await fixture(t),f=await flow(store);let requests=0;
  const options={fetcher:async()=>{requests++;throw Error('Unexpected provider request');}};
@@ -165,6 +172,16 @@ test('stored legacy or arbitrary provider error text cannot appear in connection
  assert.equal(data.lastError,'Crowdfundr is temporarily unavailable. The next scheduled check will retry.');
  for(const secret of ['server-only-secret','private-contact@example.test','secret-value@example.test'])assert.ok(!encoded.includes(secret));
  assert.deepEqual(data.fieldNames,['id','amount','payer_email']);
+});
+
+test('OAuth app changes and local OAuth disconnect preserve an enabled public feed',async t=>{
+ const store=await fixture(t),config=await store.get(crowdfundrConfigKey);
+ await store.setJSON(crowdfundrConfigKey,{...config,publicFeedEnabled:true});
+ await saveCrowdfundrSettings(store,{clientId:'another-approved-app'});
+ assert.equal((await store.get(crowdfundrConfigKey)).publicFeedEnabled,true);
+ await disconnectCrowdfundr(store);
+ assert.equal((await store.get(crowdfundrConfigKey)).publicFeedEnabled,true);
+ assert.equal((await crowdfundrSettings(store)).publicFeedEnabled,true);
 });
 
 test('OAuth token failure diagnostics contain only safe HTTP status and allowlisted error codes',async t=>{

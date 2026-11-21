@@ -8,6 +8,38 @@ const csv=(...rows)=>[headers,...rows.map(row=>headers.map(key=>({Date:'Nov 21, 
 const shop=()=>({sales:{}});
 const imported=(state,text)=>{const preview=previewSupporterCsv(state,text);importSupporterCsv(state,{csv:text,digest:preview.digest});return preview;};
 const manual=(overrides={})=>({id:'manual:11111111-1111-4111-8111-111111111111',name:'Fictional Supporter',gross:2500,refunded:null,status:'paid',showName:true,showAmount:true,hidden:false,channel:'Cash',reference:'',processor:'',...overrides});
+const publicActivity=(overrides={})=>({id:'crowdfundr-public:example',source:'crowdfundr-public',reference:'public-activity',processor:'',channel:'Crowdfundr public activity',status:'public',gross:1000,refunded:null,name:'Public Supporter',showName:true,showAmount:true,identity:'public-owner:verified',hidden:false,date:1,...overrides});
+
+test('public campaign mode replaces CSV recognition while retaining the audit ledger and manual/website credits',()=>{
+ const state=shop();imported(state,csv({}));saveManualSupporter(state,manual({gross:50000}));
+ state.sales.ORDER={status:'paid',total:4500,shipping:500,recognition:{public:true,name:'Website Buyer',showAmount:true}};
+ const original=structuredClone(state.supporterLedger.transactions);
+ state.supporterLedger.publicFeed={enabled:true,checkedAt:Date.now(),rows:{example:publicActivity()}};
+ const rows=publicSupporters(state);
+ assert.equal(rows.length,3);assert.equal(rows.reduce((sum,row)=>sum+row.amount,0),55000);
+ assert.deepEqual(state.supporterLedger.transactions,original);assert.equal(adminSupporters(state).length,4);
+ state.supporterLedger.publicFeed.enabled=false;
+ assert.ok(publicSupporters(state).some(row=>row.name==='Fictional Supporter'&&row.amount===1000));
+});
+test('private public-feed amounts remain credits without exposing a zero or an imported private value',()=>{
+ const state=shop();state.supporterLedger={transactions:{},moderation:{},publicFeed:{enabled:true,checkedAt:Date.now(),rows:{
+  example:publicActivity({gross:0,showAmount:false}),anonymous:publicActivity({id:'crowdfundr-public:anon',showName:false,name:'Must never appear',gross:0,showAmount:false})
+ }}};
+ assert.deepEqual(publicSupporters(state),[{name:'Anonymous',amount:null,currency:'USD'},{name:'Public Supporter',amount:null,currency:'USD'}]);
+});
+test('public profile identities aggregate repeats without merging unrelated equal display names',()=>{
+ const state=shop();state.supporterLedger={transactions:{},moderation:{},publicFeed:{enabled:true,checkedAt:Date.now(),rows:{
+  first:publicActivity(),second:publicActivity({id:'crowdfundr-public:second',gross:2500}),third:publicActivity({id:'crowdfundr-public:third',identity:'other-owner',gross:500})
+ }}};
+ assert.deepEqual(publicSupporters(state).map(row=>row.amount).sort((a,b)=>a-b),[500,3500]);
+});
+test('admin hiding applies to public activity and stale privacy cannot fall back to CSV names',()=>{
+ const state=shop();imported(state,csv({}));state.supporterLedger.publicFeed={enabled:true,checkedAt:Date.now(),rows:{example:publicActivity()}};
+ moderateSupporter(state,{id:'crowdfundr-public:example',hidden:true});assert.deepEqual(publicSupporters(state),[]);
+ moderateSupporter(state,{id:'crowdfundr-public:example',hidden:false});assert.equal(publicSupporters(state).length,1);
+ state.supporterLedger.publicFeed.checkedAt=Date.now()-300001;
+ assert.deepEqual(publicSupporters(state),[]);assert.equal(adminSupporters(state).length,2);
+});
 
 test('CSV uses contribution gross, stores separate transactions and imports idempotently',()=>{
  const state=shop(),text=csv({}, {'Transaction ID':'TX002','Contribution amount':'25.00'});

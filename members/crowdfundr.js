@@ -7,6 +7,16 @@ const time=value=>{
 export async function mountCrowdfundr(host,request){
  host.innerHTML=`
    <h3>Crowdfundr automatic connection</h3>
+   <p data-crowdfundr-public-state role="status" aria-live="polite">Checking public campaign updates…</p>
+   <p data-crowdfundr-public-time></p>
+   <p>Automatic public credits follow the online contributions Crowdfundr makes public, including anonymous names and private amounts. The site checks the complete campaign feed about every two minutes. Imported transactions stay in your records and are not counted again on the wall.</p>
+   <p>This mirrors public campaign activity. It does not confirm bank settlement or refund accounting. Record offline payments here, and use Hide payment if a refunded contribution remains in Crowdfundr’s public activity.</p>
+   <button type="button" data-crowdfundr-public-enable>Enable automatic public credits</button>
+   <button type="button" data-crowdfundr-public-sync disabled>Check public credits now</button>
+   <button type="button" data-crowdfundr-public-disable disabled>Use CSV credits instead</button>
+   <p data-crowdfundr-public-error role="status" aria-live="polite"></p>
+   <details data-crowdfundr-api>
+   <summary>Advanced: transaction API connection</summary>
    <p data-crowdfundr-state role="status" aria-live="polite">Checking the connection…</p>
    <p data-crowdfundr-sync-time></p>
    <p data-crowdfundr-error role="status" aria-live="polite"></p>
@@ -25,13 +35,24 @@ export async function mountCrowdfundr(host,request){
    <button type="button" data-crowdfundr-sync disabled>Sync now</button>
    <button type="button" data-crowdfundr-disconnect disabled>Disconnect locally</button>
    <button type="button" data-crowdfundr-refresh>Refresh connection status</button>
+   </details>
    <p data-crowdfundr-action-status role="status" aria-live="polite"></p>`;
  const find=selector=>host.querySelector(selector),form=find('[data-crowdfundr-config]'),status=find('[data-crowdfundr-action-status]');
  const connect=find('[data-crowdfundr-connect]'),sync=find('[data-crowdfundr-sync]'),disconnect=find('[data-crowdfundr-disconnect]');
+ const publicEnable=find('[data-crowdfundr-public-enable]'),publicSync=find('[data-crowdfundr-public-sync]'),publicDisable=find('[data-crowdfundr-public-disable]');
  let settings=null;
  find('[data-crowdfundr-callback]').textContent=callback;
  function fill(data){
   settings=data;form.elements.clientId.value=data.clientId||'';
+  publicEnable.disabled=data.publicFeedEnabled===true&&data.publicActive===true;
+  publicSync.disabled=!data.publicFeedEnabled;publicDisable.disabled=!data.publicFeedEnabled;
+  publicEnable.textContent=data.publicFeedEnabled?data.publicActive?'Automatic public credits enabled':'Retry public connection':'Enable automatic public credits';
+  find('[data-crowdfundr-api]').open=!data.publicFeedEnabled;
+  find('[data-crowdfundr-public-state]').textContent=data.publicFeedEnabled?
+   data.publicActive?'Automatic public credits are connected. No new CSV is needed for public online Crowdfundr contributions.':'Automatic public credits need attention. Outdated privacy information is withheld after five minutes.':
+   'Automatic public credits are not enabled. The wall currently uses imported Crowdfundr records.';
+  find('[data-crowdfundr-public-time]').textContent='Last public campaign check: '+time(data.publicLastSync)+(Number.isInteger(data.publicCount)?' · '+data.publicCount+' public online credits':'');
+  find('[data-crowdfundr-public-error]').textContent=data.publicLastError||'';
   connect.disabled=!data.clientId;sync.disabled=!data.connected;disconnect.disabled=!data.connected;
   connect.textContent=data.connected?'Reauthorize read-only access':'Authorize read-only access';
   find('[data-crowdfundr-setup]').open=!data.clientId;
@@ -49,8 +70,9 @@ export async function mountCrowdfundr(host,request){
   try{await run();}
   catch(error){status.textContent=error.message||'The Crowdfundr connection could not be updated.';}
   finally{
-   if(settings){connect.disabled=!settings.clientId;sync.disabled=!settings.connected;disconnect.disabled=!settings.connected;}
-   if(![connect,sync,disconnect].includes(button))button.disabled=false;
+   if(settings){connect.disabled=!settings.clientId;sync.disabled=!settings.connected;disconnect.disabled=!settings.connected;
+    publicEnable.disabled=settings.publicFeedEnabled===true&&settings.publicActive===true;publicSync.disabled=!settings.publicFeedEnabled;publicDisable.disabled=!settings.publicFeedEnabled;}
+   if(![connect,sync,disconnect,publicEnable,publicSync,publicDisable].includes(button))button.disabled=false;
   }
  }
  form.onsubmit=event=>{
@@ -60,6 +82,19 @@ export async function mountCrowdfundr(host,request){
    status.textContent='Client ID saved. Continue with Authorize read-only access.';
   });
  };
+ publicEnable.onclick=()=>busy(publicEnable,async()=>{
+  await request('crowdfundrPublicMode',{enabled:true,revision:settings?.revision||''});await refresh();
+  status.textContent=settings.publicActive?'Automatic public credits are connected. Future public online contributions update without CSV imports.':
+   'The public campaign connection could not be activated. The previous credits were retained.';
+ });
+ publicSync.onclick=()=>busy(publicSync,async()=>{
+  await request('crowdfundrPublicSync',{});await refresh();
+  status.textContent=settings.publicActive?'Public campaign credits checked. The wall refreshes within a few seconds.':'The public check did not finish. Review the connection status above.';
+ });
+ publicDisable.onclick=()=>busy(publicDisable,async()=>{
+  await request('crowdfundrPublicMode',{enabled:false,revision:settings?.revision||''});await refresh();
+  status.textContent='Automatic public credits are off. Crowdfundr recognition uses the saved CSV records again.';
+ });
  connect.onclick=()=>busy(connect,async()=>{
   const result=await request('crowdfundrConnect',{}),url=new URL(result.url);
   if(url.origin!=='https://connectionpoint.com'||url.pathname!=='/oauth2/authorize')throw Error('Crowdfundr did not return the expected authorization page.');

@@ -1,5 +1,6 @@
 import {createHash,randomBytes} from 'node:crypto';
 import {safeSyncStatus} from './crowdfundr-sync.mjs';
+import {safePublicCrowdfundrStatus} from './crowdfundr-public.mjs';
 
 export const crowdfundrOrigin='https://heidimikacfilms.com';
 export const crowdfundrCallback=crowdfundrOrigin+'/.netlify/functions/crowdfundr-callback';
@@ -49,10 +50,10 @@ async function activeAdmin(store,sessionKey){
 }
 
 export async function crowdfundrSettings(store){
- const [config,connection,sync]=await Promise.all([
+ const [config,connection,sync,publicStatus]=await Promise.all([
   store.getWithMetadata(crowdfundrConfigKey,{type:'json'}),
   store.get(crowdfundrConnectionKey,{type:'json'}),
-  safeSyncStatus(store)
+  safeSyncStatus(store),safePublicCrowdfundrStatus(store)
  ]);
  const connected=!!(connection?.accessToken&&connection.clientId===config?.data?.clientId&&connection.campaignId===crowdfundrCampaign);
  const current=connected&&sync?.connectionAt===connection.connectedAt;
@@ -60,14 +61,16 @@ export async function crowdfundrSettings(store){
   connected,readOnly:true,connectedAt:connected?connection.connectedAt||null:null,lastSync:current?sync?.lastSync||null:null,
   lastError:current?sync?.lastError||'':'',privacyReady:current&&sync?.privacyReady===true,active:current&&sync?.active===true,
   lastAttempt:current?sync?.lastAttempt||null:null,paymentCount:current&&Number.isInteger(sync?.paymentCount)?sync.paymentCount:null,
-  fieldNames:current&&Array.isArray(sync?.fieldNames)?sync.fieldNames.filter(value=>typeof value==='string'&&/^[a-z_]{1,60}$/.test(value)):[]};
+  fieldNames:current&&Array.isArray(sync?.fieldNames)?sync.fieldNames.filter(value=>typeof value==='string'&&/^[a-z_]{1,60}$/.test(value)):[],
+  publicFeedEnabled:config?.data?.publicFeedEnabled===true,publicActive:config?.data?.publicFeedEnabled===true&&publicStatus.active,
+  publicLastSync:publicStatus.lastSync,publicLastError:publicStatus.lastError,publicCount:publicStatus.count};
 }
 
 export async function saveCrowdfundrSettings(store,input){
  const id=clientId(input.clientId),old=await store.getWithMetadata(crowdfundrConfigKey,{type:'json'});
  if(input.revision!==undefined)fail(input.revision===(old?.etag||''),'Crowdfundr settings changed. Refresh before saving again.',409);
  if(old?.data?.clientId===id)return crowdfundrSettings(store);
- const saved=await store.setJSON(crowdfundrConfigKey,{clientId:id,updatedAt:Date.now()},old?{onlyIfMatch:old.etag}:{onlyIfNew:true});
+ const saved=await store.setJSON(crowdfundrConfigKey,{...old?.data,clientId:id,updatedAt:Date.now()},old?{onlyIfMatch:old.etag}:{onlyIfNew:true});
  fail(saved.modified,'Crowdfundr settings changed. Refresh before saving again.',409);
  // A prior token remains private but cannot be used for a different app ID.
  // Avoid deleting a newer callback's token during simultaneous configuration.

@@ -73,7 +73,7 @@ export async function mountSupporters(host,request){
       <button type="button" data-supporter-moderation-cancel>Cancel</button>
       <p data-supporter-moderation-status role="status" aria-live="polite"></p>
     </form>
-    <h4>All support transactions</h4>
+    <h4>All support records</h4>
     <p data-supporter-count></p>
     <div class="merch-admin-scroll" tabindex="0" aria-label="Support transaction ledger">
       <table><thead><tr><th>Source / date</th><th>Supporter</th><th>Gross / refunded</th><th>Status / wall</th><th>Payment reference</th><th>Public preferences</th><th>Manage</th></tr></thead><tbody data-supporter-ledger-rows></tbody></table>
@@ -128,13 +128,13 @@ export async function mountSupporters(host,request){
   }
   function render(){
     const rows=find('[data-supporter-ledger-rows]');rows.replaceChildren();
-    find('[data-supporter-count]').textContent=transactions.length+' separate payment records. Public totals combine verified repeat supporters and honor each payment’s privacy preferences.';
+    find('[data-supporter-count]').textContent=transactions.length+' payment and public activity records. Public campaign activity replaces Crowdfundr imports on the wall when enabled; imported copies remain here for reference.';
     for(const record of transactions){
       const row=rows.insertRow();
       const date=new Date(record.date),dateText=Number.isFinite(date.valueOf())?date.toLocaleString():'';
-      row.insertCell().textContent=[record.source,dateText].filter(Boolean).join(' · ');
+      row.insertCell().textContent=[record.source==='crowdfundr-public'?'Crowdfundr public activity':record.source,dateText].filter(Boolean).join(' · ');
       row.insertCell().textContent=record.name||'Anonymous supporter';
-      row.insertCell().textContent=money(record.gross)+' / '+(record.refunded==null?'unknown':money(record.refunded));
+      row.insertCell().textContent=(record.source==='crowdfundr-public'&&!record.showAmount?'Private amount':money(record.gross))+' / '+(record.source==='crowdfundr-public'?'not reported':record.refunded==null?'unknown':money(record.refunded));
       row.insertCell().textContent=[record.status,record.hidden?'Hidden':'',record.duplicateOf?'Duplicate — excluded':'',record.warning||''].filter(Boolean).join(' · ');
       row.insertCell().textContent=[record.channel,record.processor,record.reference||record.id].filter(Boolean).join(' · ');
       row.insertCell().textContent='Name: '+(record.showName?'allowed':'private')+' · Amount: '+(record.showAmount?'allowed':'private');

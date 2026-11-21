@@ -23,7 +23,7 @@ export function paymentIdentity(payer){
  return typeof payer?.payer_id==='string'?'paypal:'+hash(payer.payer_id):'';
 }
 const referenceKey=row=>row.reference&&row.processor?row.processor+':'+row.reference.trim():'';
-const balance=row=>row.status==='paid'?row.gross:row.status==='partially refunded'&&money(row.refunded)&&row.refunded>0&&row.refunded<row.gross?row.gross-row.refunded:0;
+const balance=row=>row.status==='paid'||row.source==='crowdfundr-public'&&row.status==='public'?row.gross:row.status==='partially refunded'&&money(row.refunded)&&row.refunded>0&&row.refunded<row.gross?row.gross-row.refunded:0;
 
 // The payment ledger remains the source of truth for website orders. Imported
 // and manual support never mutate inventory or invent a merchandise sale.
@@ -38,16 +38,21 @@ export function supporterTransactions(shop){
  }));
  const external=new Map(Object.values(shop.supporterLedger?.transactions||{}).map(row=>[row.id,row]));
  for(const row of Object.values(shop.supporterLedger?.apiRecords||{}))external.set(row.id,{...external.get(row.id),...row});
+ const publicFeed=shop.supporterLedger?.publicFeed;
+ if(publicFeed?.enabled)for(const row of Object.values(publicFeed.rows||{}))external.set(row.id,{...row,publicStale:!Number.isFinite(publicFeed.checkedAt)||Date.now()-publicFeed.checkedAt>300000});
  return [...website,...external.values()].map(row=>{
   const override=own(shop.supporterLedger?.moderation,row.id)||{};
-  return {...row,hidden:row.hidden||override.hidden===true||row.apiUnavailable===true,duplicateOf:override.duplicateOf||'',sameSupporterAs:row.sameSupporterAs||'',...(row.apiUnavailable?{warning:'Current API privacy or payment information is unavailable; credit is withheld.'}:{})};
+  return {...row,hidden:row.hidden||override.hidden===true||row.apiUnavailable===true||row.publicStale===true,duplicateOf:override.duplicateOf||'',sameSupporterAs:row.sameSupporterAs||'',...(row.apiUnavailable||row.publicStale?{warning:'Current campaign privacy information is unavailable; credit is withheld until the next complete check.'}:{})};
  });
 }
 export function publicSupporters(shop){
- const rows=supporterTransactions(shop),byId=new Map(rows.map(row=>[row.id,row])),groups=new Map(),seen=new Set(),refs=new Map();
+ const all=supporterTransactions(shop),publicMode=shop.supporterLedger?.publicFeed?.enabled===true;
+ // The native public feed replaces imported/API Crowdfundr recognition as a
+ // whole. Private transaction records remain available for administration.
+ const rows=all.filter(row=>!publicMode||row.source!=='crowdfundr'),byId=new Map(all.map(row=>[row.id,row])),groups=new Map(),seen=new Set(),refs=new Map();
  for(const row of rows){const ref=referenceKey(row);if(ref&&!row.duplicateOf)refs.set(ref,[...(refs.get(ref)||[]),row]);}
  // Prefer verified website captures over imports, then imports over manual.
- rows.sort((a,b)=>({website:0,crowdfundr:1,manual:2}[a.source]-{website:0,crowdfundr:1,manual:2}[b.source])||a.id.localeCompare(b.id));
+ rows.sort((a,b)=>({website:0,'crowdfundr-public':1,crowdfundr:2,manual:3}[a.source]-{website:0,'crowdfundr-public':1,crowdfundr:2,manual:3}[b.source])||a.id.localeCompare(b.id));
  const identity=row=>{
   const visited=new Set();let current=row;
   while(current.sameSupporterAs&&byId.has(current.sameSupporterAs)&&!visited.has(current.id)){
@@ -68,7 +73,8 @@ export function publicSupporters(shop){
    if(copies.some(copy=>!balance(copy)))continue;
    row={...row,gross:Math.min(...copies.map(balance)),status:'paid',showName:copies.every(copy=>copy.showName),showAmount:copies.every(copy=>copy.showAmount),hidden:copies.some(copy=>copy.hidden)};
   }
-  if(row.hidden||!money(row.gross)||!balance(row))continue;
+  const publicCredit=row.source==='crowdfundr-public'&&row.status==='public';
+  if(row.hidden||!money(row.gross)||!publicCredit&&!balance(row))continue;
   let name='Anonymous';
   if(row.showName){try{name=plain(row.name,120)||'Anonymous';}catch{}}
   // A private-name transaction cannot be tied to a named transaction publicly.
