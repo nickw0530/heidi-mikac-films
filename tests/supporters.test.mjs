@@ -70,7 +70,7 @@ test('independent privacy flags fail closed and private contributions cannot ide
  const rows=publicSupporters(state);
  assert.equal(rows.length,3);
  assert.equal(rows.find(row=>row.name==='Fictional Supporter').amount,null);
- assert.deepEqual(rows.filter(row=>row.name==='Anonymous').map(row=>row.amount).sort(),[1000,null].sort());
+ assert.deepEqual(rows.filter(row=>row.name==='Anonymous').map(row=>row.amount).sort(),[1000,1000].sort());
 });
 test('refund/status reimports update instead of duplicating; unknown and partial refunds fail closed',()=>{
  const state=shop();imported(state,csv({}));
@@ -94,7 +94,7 @@ test('processor references dedupe website/import/manual and stale refunds never 
 test('a duplicate cannot bypass the original payment privacy or hidden setting',()=>{
  const state=shop();
  state.sales.ORDER={status:'paid',channel:'PayPal checkout',captureId:'TX001',subtotal:1000,recognition:{public:false}};
- imported(state,csv({}));assert.deepEqual(publicSupporters(state),[{name:'Anonymous',amount:null,currency:'USD'}]);
+ imported(state,csv({}));assert.deepEqual(publicSupporters(state),[{name:'Anonymous',amount:1000,currency:'USD'}]);
  moderateSupporter(state,{id:'website:ORDER',hidden:true});assert.deepEqual(publicSupporters(state),[]);
  moderateSupporter(state,{id:'website:ORDER',hidden:false});assert.equal(publicSupporters(state).length,1);
 });

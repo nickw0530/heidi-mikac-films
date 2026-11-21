@@ -3,6 +3,8 @@ const currency=new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'});
 const money=value=>Number.isInteger(value)?currency.format(value/100):'Not confirmed';
 const cents=value=>value===''?null:Math.round(Number(value)*100);
 const statuses=['paid','pending','failed','refunded','partially refunded'];
+const needsAnonymousAmount=row=>row.source==='crowdfundr-public'&&row.showName===false&&row.showAmount===false;
+const anonymousAmount=row=>Number.isSafeInteger(row.anonymousGross)&&row.anonymousGross>0?row.anonymousGross:null;
 
 export function importSummary(summary={}){
   return ['new','updated','unchanged','excluded','duplicates'].map(key=>(summary[key]||0)+' '+key).join(' · ');
@@ -19,12 +21,12 @@ export async function mountSupporters(host,request){
   host.innerHTML=`
     <h3>Supporter wall management</h3>
     <p>Paid website merchandise appears here automatically as support, not a charitable donation. Do not record the same purchase again. Crowdfundr imports and manual support are combined with those orders, with each payment kept separately for duplicate checks.</p>
-    <p>New website purchases offer a public-name choice and publish the merchandise support amount. Saved website preferences and Crowdfundr/manual name and amount permissions are preserved. Missing or private names appear as Anonymous. Pending, failed, refunded, hidden and duplicate payments do not count. A partial refund needs a confirmed refund amount before its remainder can count.</p>
+    <p>New website purchases offer a public-name choice and publish the merchandise support amount. Anonymous contributions show their verified amounts while keeping names private. Existing private amount choices for named supporters remain preserved. Pending, failed, refunded, hidden and duplicate payments do not count. A partial refund needs a confirmed refund amount before its remainder can count.</p>
     <button type="button" data-supporter-refresh>Refresh supporters</button>
     <p data-supporter-status role="status" aria-live="polite"></p>
     <details data-supporter-import>
       <summary>Import Crowdfundr transactions CSV</summary>
-      <p>Export an all-time transactions report from Crowdfundr. This is a manual import, not a live Crowdfundr connection. The original Show name and Show amount preferences are preserved; fees and contact details never appear on the public wall. Importing an existing transaction updates it instead of counting it again.</p>
+      <p>Export an all-time transactions report from Crowdfundr. This is a manual import, not a live Crowdfundr connection. Private names stay protected. Anonymous contribution amounts are public; named supporters retain their saved amount preferences. Fees and contact details never appear on the public wall. Importing an existing transaction updates it instead of counting it again.</p>
       <form data-supporter-preview-form>
         <label>Transactions CSV<input type="file" name="file" accept=".csv,text/csv" required></label>
         <button type="submit">Preview import</button>
@@ -57,7 +59,7 @@ export async function mountSupporters(host,request){
         </div>
         <p>Use the actual provider transaction reference to catch payments already recorded through another channel. Only enter a verified email or choose a matching supporter after confirming they are the same person. A name alone is not proof. Leaving identity fields blank when editing retains the existing identity.</p>
         <label><input name="showName" type="checkbox"> Supporter gave permission to show this name</label>
-        <label><input name="showAmount" type="checkbox"> Supporter gave permission to show the amount</label>
+        <label><input name="showAmount" type="checkbox"> Named supporter gave permission to show the amount</label>
         <label><input name="hidden" type="checkbox"> Hide this payment from the supporter wall</label>
         <button type="submit">Save manual support</button>
         <button type="button" data-supporter-new>Start new record</button>
@@ -71,6 +73,10 @@ export async function mountSupporters(host,request){
       <p>Choose only after confirming these names belong to the same person. Their eligible support totals combine; each payment keeps its own privacy and visibility settings.</p>
       <label>This is the same payment as<select name="duplicateOf"><option value="">Not a duplicate payment</option></select></label>
       <p>Choose only if these records describe the same payment. Repeat payments from one supporter are separate transactions and should both count.</p>
+      <div data-supporter-anonymous-amount hidden>
+        <label>Verified anonymous contribution amount ($)<input name="anonymousGross" type="number" min=".01" max="20000" step=".01" disabled></label>
+        <p>Enter the exact amount from the campaign owner’s transaction report. Leave blank when it is not verified. Do not enter an estimate or a placeholder zero. Clearing a saved amount removes this verification without changing the private name.</p>
+      </div>
       <button type="submit">Save supporter review</button>
       <button type="button" data-supporter-moderation-cancel>Cancel</button>
       <p data-supporter-moderation-status role="status" aria-live="polite"></p>
@@ -141,6 +147,10 @@ export async function mountSupporters(host,request){
     }
     moderation.elements.sameSupporterAs.value=row.sameSupporterAs||'';
     populate(moderation.elements.duplicateOf,row.id);moderation.elements.duplicateOf.value=row.duplicateOf||'';
+    const verifyAmount=needsAnonymousAmount(row),verified=anonymousAmount(row);
+    find('[data-supporter-anonymous-amount]').hidden=!verifyAmount;
+    moderation.elements.anonymousGross.disabled=!verifyAmount;
+    moderation.elements.anonymousGross.value=verifyAmount&&verified!==null?(verified/100).toFixed(2):'';
     find('[data-supporter-moderation-status]').textContent='';moderation.elements.duplicateOf.focus();
   }
   async function archiveManual(record,archived){
@@ -159,10 +169,12 @@ export async function mountSupporters(host,request){
       const date=new Date(record.date),dateText=Number.isFinite(date.valueOf())?date.toLocaleString():'';
       row.insertCell().textContent=[record.source==='crowdfundr-public'?'Crowdfundr public activity':record.source,record.campaignTitle,dateText].filter(Boolean).join(' · ');
       row.insertCell().textContent=record.name||'Anonymous supporter';
-      row.insertCell().textContent=(record.source==='crowdfundr-public'&&!record.showAmount?'Private amount':money(record.gross))+' / '+(record.source==='crowdfundr-public'?'not reported':record.refunded==null?'unknown':money(record.refunded));
+      const unknownPublicAmount=record.source==='crowdfundr-public'&&!record.showAmount&&!record.amountVerified;
+      row.insertCell().textContent=(unknownPublicAmount?needsAnonymousAmount(record)?'Amount not verified':'Private amount':money(record.gross))+' / '+(record.source==='crowdfundr-public'?'not reported':record.refunded==null?'unknown':money(record.refunded));
       row.insertCell().textContent=[record.status,record.hidden?'Hidden':'',record.duplicateOf?'Duplicate — excluded':'',record.sameSupporterAs?'Verified supporter match':'',record.warning||''].filter(Boolean).join(' · ');
       row.insertCell().textContent=[record.channel,record.processor,record.reference||record.id].filter(Boolean).join(' · ');
-      row.insertCell().textContent='Name: '+(record.showName?'allowed':'private')+' · Amount: '+(record.showAmount?'allowed':'private');
+      const anonymousPublic=!record.showName&&record.gross>0&&(record.source!=='crowdfundr-public'||record.showAmount||record.amountVerified);
+      row.insertCell().textContent='Name: '+(record.showName?'allowed':'private')+' · Amount: '+(record.amountVerified?'verified public':record.showAmount||anonymousPublic?'public':needsAnonymousAmount(record)?'verification needed':'private');
       const actions=row.insertCell();
       const visibilityStatus=element('p',rowNotices.get(record.id)||'');
       visibilityStatus.dataset.supporterRowStatus=record.id;
@@ -210,7 +222,7 @@ export async function mountSupporters(host,request){
       for(const record of data.rows||[]){
         const row=rows.insertRow();
         for(const value of [record.change,record.reference||record.id,record.name||'Anonymous supporter',money(record.gross),record.status,
-          'Name: '+(record.showName?'allowed':'private')+' · Amount: '+(record.showAmount?'allowed':'private'),record.warning||''])row.insertCell().textContent=value??'';
+          'Name: '+(record.showName?'allowed':'private')+' · Amount: '+(!record.showName?'public':record.showAmount?'allowed':'private'),record.warning||''])row.insertCell().textContent=value??'';
       }
       preview.hidden=false;confirm.disabled=false;
       find('[data-supporter-import-status]').textContent='Preview ready. No records have been imported yet.';
@@ -244,6 +256,11 @@ export async function mountSupporters(host,request){
       if(!moderating)throw Error('Choose a payment to review.');
       const input={id:moderating.id,revision,moderationRevision:moderating.moderationRevision,hidden:moderating.hidden===true,duplicateOf:moderation.elements.duplicateOf.value};
       if(moderation.elements.sameSupporterAs.value!==(moderating.sameSupporterAs||''))input.sameSupporterAs=moderation.elements.sameSupporterAs.value;
+      if(needsAnonymousAmount(moderating)){
+        const verified=cents(moderation.elements.anonymousGross.value);
+        if(verified!==null&&(!Number.isSafeInteger(verified)||verified<=0||verified>2000000))throw Error('Enter the exact verified amount between $0.01 and $20,000, or leave it blank.');
+        if(verified!==anonymousAmount(moderating))input.anonymousGross=verified;
+      }
       await request('supporterModerate',input);
       await reload();overall.textContent='Supporter review saved. The public wall refreshes within a few seconds.';
     });

@@ -49,7 +49,13 @@ const repo=require('node:path').resolve(__dirname,'..');
     const row=window.transactions.find(row=>row.id===input.id);
     if(window.failModeration==='conflict'||input.moderationRevision!==row.moderationRevision)throw Object.assign(Error('This supporter changed. Refresh supporters and review this record before saving again.'),{status:409});
     window.lastModerationBaseRevision=window.revision;
-    const token=row.moderationRevision+'-next';Object.assign(row,input,{moderationRevision:token});window.revision='r4';return {saved:true};
+    if(Object.hasOwn(input,'anonymousGross')){
+     if(row.source!=='crowdfundr-public'||row.showName!==false||row.showAmount!==false)throw Error('Only an anonymous public contribution can receive this verification.');
+     if(input.anonymousGross!==null&&(!Number.isSafeInteger(input.anonymousGross)||input.anonymousGross<=0))throw Error('Enter a positive verified amount.');
+    }
+    const token=row.moderationRevision+'-next';Object.assign(row,input,{moderationRevision:token});
+    if(Object.hasOwn(input,'anonymousGross')){row.amountVerified=input.anonymousGross!==null;row.gross=input.anonymousGross??0;}
+    window.revision='r4';return {saved:true};
    }
    throw Error('Unknown action');
   };
@@ -211,10 +217,56 @@ const repo=require('node:path').resolve(__dirname,'..');
  await page.getByText('Manual record restored with its previous visibility settings.',{exact:true}).waitFor();
  assert.equal(await page.locator('[data-supporter-ledger-rows] tr').count(),2);
  assert.equal(await page.evaluate(()=>window.transactions[1].hidden),true,'Restoration cannot silently show a previously hidden manual payment.');
+ await page.evaluate(async()=>{
+  window.transactions.push(
+   {id:'crowdfundr-public:anonymous-test',moderationRevision:'anonymous-state-1',source:'crowdfundr-public',reference:'ANON-REFERENCE',processor:'',status:'public',gross:0,refunded:null,name:'',showName:false,showAmount:false,amountVerified:false,anonymousGross:null,hidden:true,duplicateOf:'manual:11111111-1111-4111-8111-111111111111',sameSupporterAs:'manual:11111111-1111-4111-8111-111111111111',channel:'Crowdfundr public activity',date:Date.now()},
+   {id:'crowdfundr-public:named-private',moderationRevision:'named-state-1',source:'crowdfundr-public',reference:'NAMED-PRIVATE-REFERENCE',processor:'',status:'public',gross:0,refunded:null,name:'Named Private Supporter',showName:true,showAmount:false,hidden:false,duplicateOf:'',channel:'Crowdfundr public activity',date:Date.now()}
+  );
+  await window.management.reload();
+ });
+ const anonymousRow=()=>page.locator('[data-supporter-ledger-rows] tr').filter({hasText:'ANON-REFERENCE'});
+ const namedPrivateRow=()=>page.locator('[data-supporter-ledger-rows] tr').filter({hasText:'NAMED-PRIVATE-REFERENCE'});
+ await namedPrivateRow().getByRole('button',{name:'Review supporter / duplicate',exact:true}).click();
+ assert.equal(await moderation.locator('[data-supporter-anonymous-amount]').isVisible(),false);
+ assert.equal(await moderation.locator('[name=anonymousGross]').isDisabled(),true);
+ await moderation.getByRole('button',{name:'Cancel',exact:true}).click();
+ await anonymousRow().getByRole('button',{name:'Review supporter / duplicate',exact:true}).click();
+ const verifiedAmount=moderation.locator('[name=anonymousGross]');
+ assert.equal(await moderation.locator('[data-supporter-anonymous-amount]').isVisible(),true);
+ assert.equal(await verifiedAmount.inputValue(),'','Unknown anonymous amounts do not acquire a placeholder zero.');
+ await moderation.getByRole('button',{name:'Save supporter review',exact:true}).click();
+ await moderation.waitFor({state:'hidden'});
+ assert.equal(await page.evaluate(()=>Object.hasOwn(window.calls.filter(call=>call.action==='supporterModerate').at(-1).input,'anonymousGross')),false,'An unchanged blank does not erase verification.');
+ await anonymousRow().getByRole('button',{name:'Review supporter / duplicate',exact:true}).click();
+ await verifiedAmount.fill('123.45');
+ await moderation.getByRole('button',{name:'Save supporter review',exact:true}).click();
+ await moderation.waitFor({state:'hidden'});
+ const verified=await page.evaluate(()=>({input:window.calls.filter(call=>call.action==='supporterModerate').at(-1).input,row:window.transactions.find(row=>row.id==='crowdfundr-public:anonymous-test')}));
+ assert.equal(verified.input.anonymousGross,12345);assert.equal(verified.row.gross,12345);assert.equal(verified.row.amountVerified,true);
+ assert.equal(verified.row.showName,false);assert.equal(verified.row.showAmount,false,'The original public-feed flag is preserved.');
+ assert.equal(verified.row.hidden,true);assert.equal(verified.row.duplicateOf,'manual:11111111-1111-4111-8111-111111111111');assert.equal(verified.row.sameSupporterAs,'manual:11111111-1111-4111-8111-111111111111');
+ assert.match(await anonymousRow().locator('td').nth(2).innerText(),/\$123\.45/);
+ assert.match(await anonymousRow().locator('td').nth(5).innerText(),/Name: private.*Amount: verified public/);
+ await anonymousRow().getByRole('button',{name:'Review supporter / duplicate',exact:true}).click();
+ assert.equal(await verifiedAmount.inputValue(),'123.45');
+ await moderation.getByRole('button',{name:'Save supporter review',exact:true}).click();
+ await moderation.waitFor({state:'hidden'});
+ assert.equal(await page.evaluate(()=>Object.hasOwn(window.calls.filter(call=>call.action==='supporterModerate').at(-1).input,'anonymousGross')),false,'Unchanged verified amounts are omitted from the moderation payload.');
+ await anonymousRow().getByRole('button',{name:'Review supporter / duplicate',exact:true}).click();
+ await verifiedAmount.fill('0');
+ const countBeforeInvalid=await page.evaluate(()=>window.calls.filter(call=>call.action==='supporterModerate').length);
+ await moderation.getByRole('button',{name:'Save supporter review',exact:true}).click();
+ assert.equal(await verifiedAmount.evaluate(node=>node.validity.rangeUnderflow),true);
+ assert.equal(await page.evaluate(()=>window.calls.filter(call=>call.action==='supporterModerate').length),countBeforeInvalid);
+ await verifiedAmount.fill('');
+ await moderation.getByRole('button',{name:'Save supporter review',exact:true}).click();
+ await moderation.waitFor({state:'hidden'});
+ assert.equal(await page.evaluate(()=>window.calls.filter(call=>call.action==='supporterModerate').at(-1).input.anonymousGross),null,'Clearing a verified amount explicitly removes that override.');
+ assert.match(await anonymousRow().locator('td').nth(2).innerText(),/Amount not verified/);
  assert.equal(await page.evaluate(()=>window.PWNED),undefined);
  assert.deepEqual(errors,[]);
  const dimensions=await page.evaluate(()=>({width:innerWidth,body:document.documentElement.scrollWidth}));
  assert.equal(dimensions.body<=dimensions.width,true,JSON.stringify(dimensions));
- console.log(JSON.stringify({result:'passed',checks:['ledger loading','text-only hostile names','campaign registry multiple-current membership','dirty registry revision conflicts and adjacent validation errors','campaign add/remove/reload','all-time/current counts and per-campaign status','automatic public credits enable/check/disable','public mode revision and private ledger preservation','advanced API controls reachable during public mode','CSV preview before commit','digest/revision import confirmation','manual amount/privacy/verified identity payload','hide payment','duplicate review','target-specific moderation revisions','show succeeds after scheduled global revision drift','adjacent persistent conflict and network errors','Crowdfundr app configuration','disconnected vs privacy missing vs active vs paused state','no false synchronization completion','disconnect preserves supporters','390px no document overflow','no browser errors']}));
+ console.log(JSON.stringify({result:'passed',checks:['ledger loading','text-only hostile names','campaign registry multiple-current membership','dirty registry revision conflicts and adjacent validation errors','campaign add/remove/reload','all-time/current counts and per-campaign status','automatic public credits enable/check/disable','public mode revision and private ledger preservation','advanced API controls reachable during public mode','CSV preview before commit','digest/revision import confirmation','manual amount/privacy/verified identity payload','hide payment','duplicate review','target-specific moderation revisions','show succeeds after scheduled global revision drift','adjacent persistent conflict and network errors','verified anonymous report amount add/prefill/clear','only changed verification payloads','no zero placeholder or named-private override','verification preserves hidden/duplicate/identity settings','Crowdfundr app configuration','disconnected vs privacy missing vs active vs paused state','no false synchronization completion','disconnect preserves supporters','390px no document overflow','no browser errors']}));
  }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exit(1);});

@@ -9,7 +9,7 @@ export async function mountCrowdfundr(host,request){
    <h3>Crowdfundr automatic connection</h3>
    <p data-crowdfundr-public-state role="status" aria-live="polite">Checking public campaign updates…</p>
    <p data-crowdfundr-public-time></p>
-   <p>All-time credits combine the listed past and current Crowdfundr campaigns. Current credits use only campaigns marked Current below. Public names and amounts follow each contribution’s current privacy choices. Complete feeds are checked about every two minutes; imported copies stay in your records and are not counted again.</p>
+   <p>All-time credits combine the listed past and current Crowdfundr campaigns. Current credits use only campaigns marked Current below. Names follow each contribution’s current privacy choices. Anonymous amounts can be verified from the owner's transaction records when Crowdfundr withholds them from the public feed. Complete feeds are checked about every two minutes; imported copies stay in your records and are not counted again.</p>
    <p>This mirrors public campaign activity. It does not confirm bank settlement or refund accounting. Record offline payments here, and use Hide payment if a refunded contribution remains in Crowdfundr’s public activity.</p>
    <button type="button" data-crowdfundr-public-enable>Enable automatic public credits</button>
    <button type="button" data-crowdfundr-public-sync disabled>Check public credits now</button>

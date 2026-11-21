@@ -62,7 +62,7 @@ test('current API name and amount choices independently replace imported consent
  await syncCrowdfundr(f.raw,f.shop,{force:true,fetcher:onePage([payment({show_amount:false})])});
  assert.deepEqual(publicSupporters(await f.state()),[{name:'Fictional Supporter',amount:null,currency:'USD'}]);
  await syncCrowdfundr(f.raw,f.shop,{force:true,fetcher:onePage([payment({show_name:false,show_amount:false})])});
- assert.deepEqual(publicSupporters(await f.state()),[{name:'Anonymous',amount:null,currency:'USD'}]);
+ assert.deepEqual(publicSupporters(await f.state()),[{name:'Anonymous',amount:1000,currency:'USD'}]);
 });
 
 test('initial missing privacy fields preserve the CSV ledger exactly and do not activate public synchronization',async()=>{

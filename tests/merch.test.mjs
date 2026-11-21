@@ -204,7 +204,7 @@ test('an older client can still explicitly keep a new order amount private',asyn
   assert.deepEqual(publicSupporters((await readShop(store)).shop),[{name:'Legacy Client Supporter',amount:null,currency:'USD'}]);
 });
 
-test('capturing saved legacy pending orders never upgrades their saved amount privacy',async t=>{
+test('capturing saved legacy pending orders preserves stored choices and named amount privacy while anonymous known amounts are public',async t=>{
   const choices=[{public:true,name:'Legacy Pending Supporter',showAmount:false},{public:false,name:'',showAmount:false},{public:true,name:'Legacy Missing Amount Flag'}];
   for(let index=0;index<choices.length;index++)await t.test('saved preference '+index,async sub=>{
     const store=await fixture(),id='LEGACYORDER0000'+index,order=await seedCart(store,id,{sku:'blu-ray',quantity:1});
@@ -212,7 +212,7 @@ test('capturing saved legacy pending orders never upgrades their saved amount pr
     mockPayPal(sub,new Map([[id,order]]));
     assert.equal((await (await captureOrder(store,paypalConfig,id)).json()).status,'paid');
     const {shop}=await readShop(store);assert.deepEqual(shop.sales[id].recognition,choices[index]);
-    assert.deepEqual(publicSupporters(shop),[{name:choices[index].public?choices[index].name:'Anonymous',amount:null,currency:'USD'}]);
+    assert.deepEqual(publicSupporters(shop),[{name:choices[index].public?choices[index].name:'Anonymous',amount:choices[index].public?null:4000,currency:'USD'}]);
   });
 });
 
