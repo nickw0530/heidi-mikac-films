@@ -36,9 +36,11 @@ export function supporterTransactions(shop){
   showName:sale.recognition?.public===true,showAmount:sale.recognition?.showAmount===true,
   hidden:sale.supporterHidden===true,identity:sale.supporterIdentity||'',date:sale.paidAt||sale.createdAt||0
  }));
- return [...website,...Object.values(shop.supporterLedger?.transactions||{})].map(row=>{
+ const external=new Map(Object.values(shop.supporterLedger?.transactions||{}).map(row=>[row.id,row]));
+ for(const row of Object.values(shop.supporterLedger?.apiRecords||{}))external.set(row.id,{...external.get(row.id),...row});
+ return [...website,...external.values()].map(row=>{
   const override=own(shop.supporterLedger?.moderation,row.id)||{};
-  return {...row,hidden:row.hidden||override.hidden===true,duplicateOf:override.duplicateOf||'',sameSupporterAs:row.sameSupporterAs||''};
+  return {...row,hidden:row.hidden||override.hidden===true||row.apiUnavailable===true,duplicateOf:override.duplicateOf||'',sameSupporterAs:row.sameSupporterAs||'',...(row.apiUnavailable?{warning:'Current API privacy or payment information is unavailable; credit is withheld.'}:{})};
  });
 }
 export function publicSupporters(shop){

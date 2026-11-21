@@ -14,6 +14,8 @@ import darkCatalog, {whereinCatalog} from '../lib/film-profiles.mjs';
 import {manualSale,merchStore,orderItems,paypalConfig,readShop,saveSettings,setSupporterVisibility,updateShop} from '../lib/merch.mjs';
 import {captureOrder} from './merch.mjs';
 import {adminSupporters,previewSupporterCsv,importSupporterCsv,saveManualSupporter,moderateSupporter} from '../lib/supporters.mjs';
+import {crowdfundrSettings,saveCrowdfundrSettings,beginCrowdfundr,disconnectCrowdfundr} from '../lib/crowdfundr-oauth.mjs';
+import {syncCrowdfundr} from '../lib/crowdfundr-sync.mjs';
 import { getStore } from '@netlify/blobs';
 import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
@@ -460,6 +462,15 @@ export default async function handle(req, context) {
   requireThat((session.passwordVersion||0)===((await get('passwords/'+self))?.version||0),'Please sign in again.',401);
   if(action==='logout'&&post){await store.delete(sessionKey);return json({}, {'Set-Cookie':cookie('',0)});}
   const onlyAdmin=()=>requireThat(admin,'Administrator access required.',403);
+  if(['crowdfundrSettings','crowdfundrConnect','crowdfundrSync','crowdfundrDisconnect'].includes(action)){
+    onlyAdmin();
+    requireThat(production&&(!process.env.CONTEXT||process.env.CONTEXT==='production'),'Crowdfundr connection is available only on the published Heidi Mikac Films website.',403);
+    if(action==='crowdfundrSettings')return json(post?await saveCrowdfundrSettings(rawStore,body):await crowdfundrSettings(rawStore));
+    requireThat(post,'Use the Crowdfundr connection controls.',405);
+    if(action==='crowdfundrConnect')return await beginCrowdfundr(rawStore,sessionKey,url.origin);
+    if(action==='crowdfundrDisconnect')return json(await disconnectCrowdfundr(rawStore));
+    return json(await syncCrowdfundr(rawStore,merchStore(production),{force:true}));
+  }
   if(['supporterLedger','supporterPreview','supporterImport','supporterSave','supporterModerate'].includes(action)){
     onlyAdmin();
     const shopStore=merchStore(production);

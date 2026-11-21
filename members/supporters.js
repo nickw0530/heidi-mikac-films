@@ -1,3 +1,4 @@
+import {mountCrowdfundr} from './crowdfundr.js';
 const currency=new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'});
 const money=value=>Number.isInteger(value)?currency.format(value/100):'Not confirmed';
 const cents=value=>value===''?null:Math.round(Number(value)*100);
@@ -206,6 +207,10 @@ export async function mountSupporters(host,request){
   find('[data-supporter-moderation-cancel]').onclick=()=>{moderation.hidden=true;moderating=null;};
   find('[data-supporter-refresh]').onclick=event=>busy(event.currentTarget,overall,async()=>{await reload();overall.textContent='Support transactions refreshed.';});
   resetManual();
+  const connectionHost=doc.createElement('section');
+  connectionHost.dataset.crowdfundrAdmin='';
+  host.prepend(connectionHost);
+  await mountCrowdfundr(connectionHost,request);
   try{await reload();}
   catch(error){overall.textContent=error.message+' Use Refresh supporters to try again.';}
   return {reload,get pending(){return pending;}};
