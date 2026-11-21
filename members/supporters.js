@@ -84,13 +84,16 @@ export async function mountSupporters(host,request){
   const preview=find('[data-supporter-preview]'),confirm=find('[data-supporter-import-confirm]');
   let revision,transactions=[],manualId='manual:'+crypto.randomUUID(),moderating=null,importState=null,previewGeneration=0;
   let pending=0;
+  const rowNotices=new Map(),rowStatuses=new Map();
   function element(tag,text){const node=doc.createElement(tag);if(text!==undefined)node.textContent=String(text);return node;}
-  function button(label,run){const node=element('button',label);node.type='button';node.onclick=()=>busy(node,overall,run);return node;}
-  async function busy(trigger,status,run){
+  function rowNotice(id,message){rowNotices.set(id,message);const status=rowStatuses.get(id);if(status)status.textContent=message;}
+  function button(label,run,status=overall,rowId=''){const node=element('button',label);node.type='button';node.onclick=()=>busy(node,status,run,rowId);return node;}
+  async function busy(trigger,status,run,rowId=''){
     if(trigger.disabled)return;
-    trigger.disabled=true;pending++;status.textContent='';
+    const message=text=>rowId?rowNotice(rowId,text):status.textContent=text;
+    trigger.disabled=true;pending++;message('');
     try{await run();}
-    catch(error){status.textContent=error.message||'Supporter management is temporarily unavailable. Please try again.';}
+    catch(error){message(error.message||'Supporter management is temporarily unavailable. Please try again.');}
     finally{pending--;trigger.disabled=false;}
   }
   function cancelPreview(){previewGeneration++;importState=null;preview.hidden=true;confirm.disabled=true;find('[data-supporter-preview-rows]').replaceChildren();}
@@ -128,6 +131,7 @@ export async function mountSupporters(host,request){
   }
   function render(){
     const rows=find('[data-supporter-ledger-rows]');rows.replaceChildren();
+    rowStatuses.clear();
     find('[data-supporter-count]').textContent=transactions.length+' payment and public activity records. Public campaign activity replaces Crowdfundr imports on the wall when enabled; imported copies remain here for reference.';
     for(const record of transactions){
       const row=rows.insertRow();
@@ -139,12 +143,23 @@ export async function mountSupporters(host,request){
       row.insertCell().textContent=[record.channel,record.processor,record.reference||record.id].filter(Boolean).join(' · ');
       row.insertCell().textContent='Name: '+(record.showName?'allowed':'private')+' · Amount: '+(record.showAmount?'allowed':'private');
       const actions=row.insertCell();
+      const visibilityStatus=element('p',rowNotices.get(record.id)||'');
+      visibilityStatus.dataset.supporterRowStatus=record.id;
+      visibilityStatus.setAttribute('role','status');visibilityStatus.setAttribute('aria-live','polite');
+      rowStatuses.set(record.id,visibilityStatus);
       actions.append(button(record.hidden?'Show payment':'Hide payment',async()=>{
-        await request('supporterModerate',{id:record.id,revision,hidden:!record.hidden,duplicateOf:record.duplicateOf||''});
-        await reload();overall.textContent='Supporter visibility saved. The public wall refreshes within a few seconds.';
-      }));
+        overall.textContent='';
+        const hidden=!record.hidden;
+        await request('supporterModerate',{id:record.id,revision,moderationRevision:record.moderationRevision,hidden,duplicateOf:record.duplicateOf||''});
+        await reload();
+        const updated=transactions.find(transaction=>transaction.id===record.id);
+        if(!updated||updated.hidden!==hidden)throw Error('Visibility could not be confirmed. Refresh supporters to review this payment.');
+        rowNotice(record.id,hidden?'Payment hidden.':'Payment shown.');
+        overall.textContent='Supporter visibility saved. The public wall refreshes within a few seconds.';
+      },visibilityStatus,record.id));
       actions.append(' ',button('Review duplicate',async()=>review(record)));
       if(record.source==='manual')actions.append(' ',button('Edit',async()=>edit(record)));
+      actions.append(visibilityStatus);
     }
     if(!transactions.length){const cell=rows.insertRow().insertCell();cell.colSpan=7;cell.textContent='No support transactions yet.';}
     populate(fields.sameSupporterAs,manualId);
@@ -200,7 +215,7 @@ export async function mountSupporters(host,request){
     event.preventDefault();
     return busy(event.submitter,find('[data-supporter-moderation-status]'),async()=>{
       if(!moderating)throw Error('Choose a payment to review.');
-      await request('supporterModerate',{id:moderating.id,revision,hidden:moderating.hidden===true,duplicateOf:moderation.elements.duplicateOf.value});
+      await request('supporterModerate',{id:moderating.id,revision,moderationRevision:moderating.moderationRevision,hidden:moderating.hidden===true,duplicateOf:moderation.elements.duplicateOf.value});
       await reload();overall.textContent='Duplicate review saved.';
     });
   };

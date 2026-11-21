@@ -492,7 +492,8 @@ export default async function handle(req, context) {
     }
     const operation={supporterImport:importSupporterCsv,supporterSave:saveManualSupporter,supporterModerate:moderateSupporter}[action];
     return json(await updateShop(shopStore,(shop,revision)=>{
-      requireThat(body.revision===revision,'Support or sales changed. Refresh and review before saving again.',409);
+      if(action!=='supporterModerate'||typeof body.moderationRevision!=='string')
+        requireThat(body.revision===revision,'Support or sales changed. Refresh and review before saving again.',409);
       return operation(shop,body);
     }));
   }

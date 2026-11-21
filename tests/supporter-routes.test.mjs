@@ -88,3 +88,46 @@ test('support ledger, imports and moderation require an authenticated admin and 
  assert.equal((await call('supporterSave',{body:{...input,revision:after.revision,gross:3500}})).status,200);
  after=(await call('supporterLedger')).data;assert.equal(after.transactions.length,2);assert.equal(after.transactions.find(row=>row.source==='manual').gross,3500);
 });
+
+test('moderation accepts an unchanged target after background feed writes and rejects stale edits to that target',async()=>{
+ const store=await fixture(),id='manual:33333333-3333-4333-8333-333333333333';
+ let ledger=(await call('supporterLedger')).data;
+ const input={id,revision:ledger.revision,name:'Isolated Manual Supporter',gross:200000,refunded:null,status:'paid',channel:'Cash',reference:'fictional-offline',processor:'',showName:true,showAmount:true,hidden:true};
+ assert.equal((await call('supporterSave',{body:input})).status,200);
+ ledger=(await call('supporterLedger')).data;
+ const target=ledger.transactions.find(row=>row.id===id);assert.equal(target.hidden,true);assert.match(target.moderationRevision,/^[a-f0-9]{64}$/);
+ const snapshot=await store.get('shop');
+ snapshot.supporterLedger.publicFeed={enabled:true,checkedAt:Date.now(),lastSync:Date.now(),rows:{},totalResults:0};
+ await store.setJSON('shop',snapshot);
+ assert.equal((await call('supporterModerate',{body:{id,revision:ledger.revision,hidden:false}})).status,409,'Legacy clients retain the global-revision guard.');
+ assert.equal((await call('supporterModerate',{body:{id,revision:ledger.revision,moderationRevision:target.moderationRevision,hidden:false}})).status,200,'An unrelated scheduled snapshot cannot block a visibility update.');
+ let latest=(await call('supporterLedger')).data,current=latest.transactions.find(row=>row.id===id);
+ assert.equal(current.hidden,false);assert.notEqual(current.moderationRevision,target.moderationRevision);
+ const saved=await store.get('shop');assert.equal(saved.supporterLedger.transactions[id].hidden,false);assert.equal(saved.supporterLedger.moderation[id].hidden,false);
+ assert.equal(saved.supporterLedger.publicFeed.checkedAt,snapshot.supporterLedger.publicFeed.checkedAt,'Moderation retains the fresh public snapshot.');
+ assert.equal((await call('supporterModerate',{body:{id,revision:latest.revision,moderationRevision:target.moderationRevision,hidden:true}})).status,409,'The target-specific token still protects against concurrent moderation.');
+ assert.equal((await call('supporterSave',{body:{...input,revision:ledger.revision,moderationRevision:current.moderationRevision,gross:300000}})).status,409,'Record tokens cannot bypass manual financial edit checks.');
+ for(const [who,status] of [[null,401],['member',403]])assert.equal((await call('supporterModerate',{who,body:{id,moderationRevision:current.moderationRevision,hidden:true}})).status,status);
+ assert.equal((await call('supporterModerate',{body:{id,revision:latest.revision,moderationRevision:current.moderationRevision,hidden:true}})).status,200);
+ latest=(await call('supporterLedger')).data;current=latest.transactions.find(row=>row.id===id);assert.equal(current.hidden,true);
+});
+
+test('a CAS retry rechecks the target token and cannot overwrite a concurrent change to that supporter',async()=>{
+ const store=await fixture(),id='manual:44444444-4444-4444-8444-444444444444';
+ let ledger=(await call('supporterLedger')).data;
+ const input={id,revision:ledger.revision,name:'Another Isolated Supporter',gross:1000,refunded:null,status:'paid',channel:'Cash',reference:'',processor:'',showName:true,showAmount:true,hidden:true};
+ await call('supporterSave',{body:input});ledger=(await call('supporterLedger')).data;
+ const target=ledger.transactions.find(row=>row.id===id),write=store.setJSON.bind(store);let raced=false;
+ store.setJSON=async(key,value,options={})=>{
+  if(key==='shop'&&options.onlyIfMatch&&!raced){
+   raced=true;const current=await store.getWithMetadata('shop');
+   current.data.supporterLedger.transactions[id].showName=false;
+   await write('shop',current.data,{onlyIfMatch:current.etag});
+  }
+  return write(key,value,options);
+ };
+ const result=await call('supporterModerate',{body:{id,revision:ledger.revision,moderationRevision:target.moderationRevision,hidden:false}});
+ assert.equal(raced,true);assert.equal(result.status,409);assert.match(result.data.error,/This supporter changed/);
+ const current=(await call('supporterLedger')).data.transactions.find(row=>row.id===id);
+ assert.equal(current.hidden,true);assert.equal(current.showName,false,'The concurrent privacy change is retained.');
+});

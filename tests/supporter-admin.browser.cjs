@@ -17,7 +17,7 @@ const repo=require('node:path').resolve(__dirname,'..');
  await page.goto('http://localhost:43123/');
  await page.evaluate(async()=>{
   window.calls=[];window.revision='r1';window.crowdfundr={clientId:'',revision:'c1',connected:false,privacyReady:false,active:false,lastSync:null,lastError:'',publicFeedEnabled:false,publicActive:false,publicLastSync:null,publicCount:0,publicLastError:''};
-  window.transactions=[{id:'website:ORDER1',source:'website',reference:'PAYPAL1',processor:'paypal',status:'paid',gross:4000,refunded:0,name:'<img src=x onerror="window.PWNED=true">',showName:true,showAmount:false,hidden:false,duplicateOf:'',channel:'PayPal checkout',date:Date.now()},{id:'manual:11111111-1111-4111-8111-111111111111',source:'manual',reference:'OFFLINE1',status:'paid',gross:1000,refunded:0,name:'Ada Example',showName:true,showAmount:true,hidden:false,duplicateOf:'',channel:'Cash',date:Date.now()}];
+  window.transactions=[{id:'website:ORDER1',moderationRevision:'website-state-1',source:'website',reference:'PAYPAL1',processor:'paypal',status:'paid',gross:4000,refunded:0,name:'<img src=x onerror="window.PWNED=true">',showName:true,showAmount:false,hidden:false,duplicateOf:'',channel:'PayPal checkout',date:Date.now()},{id:'manual:11111111-1111-4111-8111-111111111111',moderationRevision:'manual-state-1',source:'manual',reference:'OFFLINE1',status:'paid',gross:1000,refunded:0,name:'Ada Example',showName:true,showAmount:true,hidden:false,duplicateOf:'',channel:'Cash',date:Date.now()}];
   const request=async(action,input)=>{
    window.calls.push({action,input});
    if(action==='crowdfundrSettings'){
@@ -36,7 +36,13 @@ const repo=require('node:path').resolve(__dirname,'..');
    if(action==='supporterPreview')return {revision:window.revision,digest:'digest',summary:{new:1,unchanged:0,updated:0,excluded:0,duplicates:0},rows:[{id:'crowdfundr:T1',reference:'T1',gross:1000,name:'<script>window.PWNED=true</script>',status:'paid',showName:false,showAmount:false,change:'new'}]};
    if(action==='supporterImport'){window.revision='r2';return {saved:true,summary:{new:1}};}
    if(action==='supporterSave'){window.savedManual=structuredClone(input);window.revision='r3';return {saved:true};}
-   if(action==='supporterModerate'){const row=window.transactions.find(row=>row.id===input.id);Object.assign(row,input);window.revision='r4';return {saved:true};}
+   if(action==='supporterModerate'){
+    if(window.failModeration==='network')throw Error('The network request failed. Try again.');
+    const row=window.transactions.find(row=>row.id===input.id);
+    if(window.failModeration==='conflict'||input.moderationRevision!==row.moderationRevision)throw Object.assign(Error('This supporter changed. Refresh supporters and review this record before saving again.'),{status:409});
+    window.lastModerationBaseRevision=window.revision;
+    const token=row.moderationRevision+'-next';Object.assign(row,input,{moderationRevision:token});window.revision='r4';return {saved:true};
+   }
    throw Error('Unknown action');
   };
   function assertPublicRevision(input){if(input.revision!==window.crowdfundr.revision)throw Error('Public mode revision mismatch');}
@@ -95,6 +101,30 @@ const repo=require('node:path').resolve(__dirname,'..');
  await moderation.getByRole('button',{name:'Save duplicate review',exact:true}).click();
  await page.getByText('Duplicate review saved.',{exact:true}).waitFor();
  assert.equal(await page.evaluate(()=>window.transactions[0].duplicateOf),'manual:11111111-1111-4111-8111-111111111111');
+ assert.ok(await page.evaluate(()=>window.calls.filter(call=>call.action==='supporterModerate').every(call=>typeof call.input.moderationRevision==='string')),'Visibility and duplicate review send target-specific revisions.');
+ const manualRow=()=>page.locator('[data-supporter-ledger-rows] tr').nth(1);
+ await manualRow().getByRole('button',{name:'Hide payment',exact:true}).click();
+ await manualRow().locator('[data-supporter-row-status]').filter({hasText:'Payment hidden.'}).waitFor();
+ await page.evaluate(()=>{window.revision='background-public-feed-refresh';});
+ await manualRow().getByRole('button',{name:'Show payment',exact:true}).click();
+ await manualRow().locator('[data-supporter-row-status]').filter({hasText:'Payment shown.'}).waitFor();
+ assert.equal(await manualRow().getByRole('button',{name:'Hide payment',exact:true}).isVisible(),true);
+ assert.equal(await page.evaluate(()=>window.transactions[1].hidden),false);
+ const visibility=await page.evaluate(()=>({input:window.calls.filter(call=>call.action==='supporterModerate').at(-1).input,base:window.lastModerationBaseRevision}));
+ assert.notEqual(visibility.input.revision,visibility.base,'The global revision is deliberately stale after a scheduled update.');
+ assert.equal(visibility.input.moderationRevision,'manual-state-1-next');
+ await page.evaluate(()=>{window.failModeration='conflict';});
+ await manualRow().getByRole('button',{name:'Hide payment',exact:true}).click();
+ await manualRow().locator('[data-supporter-row-status]').filter({hasText:'This supporter changed. Refresh supporters and review this record before saving again.'}).waitFor();
+ assert.equal(await page.evaluate(()=>window.transactions[1].hidden),false,'Conflicts do not change visibility.');
+ await page.getByRole('button',{name:'Refresh supporters',exact:true}).click();
+ await page.getByText('Support transactions refreshed.',{exact:true}).waitFor();
+ assert.match(await manualRow().locator('[data-supporter-row-status]').innerText(),/This supporter changed/,'A table reload does not silently erase the row error.');
+ await page.evaluate(()=>{window.failModeration='network';});
+ await manualRow().getByRole('button',{name:'Hide payment',exact:true}).click();
+ await manualRow().locator('[data-supporter-row-status]').filter({hasText:'The network request failed. Try again.'}).waitFor();
+ assert.equal(await page.evaluate(()=>window.transactions[1].hidden),false);
+ await page.evaluate(()=>{window.failModeration='';});
  await page.locator('[data-crowdfundr-config] [name=clientId]').fill('approved-client');
  await page.getByRole('button',{name:'Save Client ID',exact:true}).click();
  await page.getByText('Client ID saved. Continue with Authorize read-only access.',{exact:true}).waitFor();
@@ -122,6 +152,6 @@ const repo=require('node:path').resolve(__dirname,'..');
  assert.deepEqual(errors,[]);
  const dimensions=await page.evaluate(()=>({width:innerWidth,body:document.documentElement.scrollWidth}));
  assert.equal(dimensions.body<=dimensions.width,true,JSON.stringify(dimensions));
- console.log(JSON.stringify({result:'passed',checks:['ledger loading','text-only hostile names','automatic public credits enable/check/disable','public mode revision and private ledger preservation','advanced API controls reachable during public mode','CSV preview before commit','digest/revision import confirmation','manual amount/privacy/verified identity payload','hide payment','duplicate review','Crowdfundr app configuration','disconnected vs privacy missing vs active vs paused state','no false synchronization completion','disconnect preserves supporters','390px no document overflow','no browser errors']}));
+ console.log(JSON.stringify({result:'passed',checks:['ledger loading','text-only hostile names','automatic public credits enable/check/disable','public mode revision and private ledger preservation','advanced API controls reachable during public mode','CSV preview before commit','digest/revision import confirmation','manual amount/privacy/verified identity payload','hide payment','duplicate review','target-specific moderation revisions','show succeeds after scheduled global revision drift','adjacent persistent conflict and network errors','Crowdfundr app configuration','disconnected vs privacy missing vs active vs paused state','no false synchronization completion','disconnect preserves supporters','390px no document overflow','no browser errors']}));
  }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exit(1);});

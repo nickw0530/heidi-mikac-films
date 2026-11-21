@@ -114,6 +114,35 @@ test('manual support supports verified cross-channel matches, edits, refund amou
  assert.throws(()=>saveManualSupporter(state,manual({showName:true,name:''})),{status:400});
  assert.throws(()=>saveManualSupporter(state,manual({identityEmail:'invalid'})),{status:400});
 });
+test('moderation tokens survive unrelated feed refreshes and remain absent from the public wall',()=>{
+ const state=shop();saveManualSupporter(state,manual({hidden:true}));
+ withPublicActivities(state,[publicActivity()]);
+ const before=adminSupporters(state).find(row=>row.id===manual().id);
+ assert.match(before.moderationRevision,/^[a-f0-9]{64}$/);
+ state.supporterLedger.publicFeed={...state.supporterLedger.publicFeed,checkedAt:Date.now()+1000,rows:{
+  other:publicActivity({gross:5000,name:'A different supporter'})
+ }};
+ assert.equal(adminSupporters(state).find(row=>row.id===manual().id).moderationRevision,before.moderationRevision);
+ moderateSupporter(state,{id:manual().id,hidden:false,moderationRevision:before.moderationRevision});
+ assert.equal(state.supporterLedger.transactions[manual().id].hidden,false);
+ assert.equal(state.supporterLedger.moderation[manual().id].hidden,false);
+ const encoded=JSON.stringify(publicSupporters(state));
+ assert.ok(!encoded.includes('moderationRevision'));assert.ok(!encoded.includes(before.moderationRevision));
+});
+test('moderation tokens reject edits to the same record and never override its privacy or payment fields',()=>{
+ const original=shop();saveManualSupporter(original,manual({hidden:true}));
+ const before=adminSupporters(original).find(row=>row.id===manual().id);
+ for(const changed of [{name:'Changed public name'},{gross:3000},{showName:false},{showAmount:false},{status:'pending'},{hidden:false},{identity:'email:new-verified-contact'}]){
+  const state=structuredClone(original);Object.assign(state.supporterLedger.transactions[manual().id],changed);
+  assert.throws(()=>moderateSupporter(state,{id:manual().id,hidden:false,moderationRevision:before.moderationRevision}),{status:409});
+  for(const [key,value] of Object.entries(changed))assert.equal(state.supporterLedger.transactions[manual().id][key],value);
+ }
+ const state=structuredClone(original),other='manual:22222222-2222-4222-8222-222222222222';
+ saveManualSupporter(state,manual({id:other}));
+ moderateSupporter(state,{id:manual().id,hidden:true,duplicateOf:other,moderationRevision:before.moderationRevision});
+ assert.throws(()=>moderateSupporter(state,{id:manual().id,hidden:false,duplicateOf:'',moderationRevision:before.moderationRevision}),{status:409});
+ const hidden=adminSupporters(state).find(row=>row.id===manual().id);assert.equal(hidden.hidden,true);assert.equal(hidden.duplicateOf,other);
+});
 test('explicit duplicate review excludes one payment and can be reversed',()=>{
  const state=shop();saveManualSupporter(state,manual());
  const id='manual:22222222-2222-4222-8222-222222222222';saveManualSupporter(state,manual({id}));

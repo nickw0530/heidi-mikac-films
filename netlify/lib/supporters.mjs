@@ -129,8 +129,19 @@ export function publicSupporters(shop){
  }
  return [...groups.values()].sort((a,b)=>b.date-a.date||a.name.localeCompare(b.name)).map(({date,...publicRow})=>publicRow);
 }
+// Moderation depends on the selected record, not the shop-wide revision that
+// changes whenever a scheduled public-feed check refreshes its timestamp.
+// Explicit keys keep this stable across object serialization and feed refreshes.
+function moderationRevision(row){
+ const fields=['id','source','reference','processor','channel','status','gross','refunded','name','showName','showAmount','hidden',
+  'identity','date','duplicateOf','sameSupporterAs','apiUnavailable','publicStale'];
+ return hash(JSON.stringify(fields.map(key=>[key,row[key]??null])));
+}
 export function adminSupporters(shop){
- return supporterTransactions(shop).map(({identity,...row})=>({...row,amount:balance(row)})).sort((a,b)=>b.date-a.date||a.id.localeCompare(b.id));
+ return supporterTransactions(shop).map(row=>{
+  const {identity,...safe}=row;
+  return {...safe,amount:balance(row),moderationRevision:moderationRevision(row)};
+ }).sort((a,b)=>b.date-a.date||a.id.localeCompare(b.id));
 }
 
 // RFC 4180 quoting, BOM, CRLF, embedded commas and quoted newlines. Strict
@@ -229,6 +240,8 @@ export function saveManualSupporter(shop,input){
 export function moderateSupporter(shop,input){
  const rows=supporterTransactions(shop),row=rows.find(row=>row.id===input.id);
  fail(row,'Support transaction not found.',404);fail(typeof input.hidden==='boolean','Choose supporter visibility.');
+ if(input.moderationRevision!==undefined)fail(typeof input.moderationRevision==='string'&&input.moderationRevision===moderationRevision(row),
+  'This supporter changed. Refresh supporters and review this record before saving again.',409);
  const duplicateOf=input.duplicateOf||'';
  fail(!duplicateOf||duplicateOf!==input.id&&rows.some(row=>row.id===duplicateOf&&!row.duplicateOf),'Choose a different original transaction.');
  // Restore cannot grant missing name/amount permission. Manual visibility is

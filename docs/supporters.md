@@ -15,6 +15,8 @@ The wall checks for changes every five seconds while the page is visible and ref
 
 The CSV accepts up to 5,000 rows and 2 MB per import, requires USD and the exported privacy/status columns, and rejects ambiguous duplicate IDs or malformed input before saving. Gross contribution uses `Contribution amount`, not total charged, recovered fees or net proceeds. Moderation survives subsequent CSV imports.
 
+Show/Hide and duplicate review check the selected payment's revision, so automatic campaign checks do not invalidate an open control. A concurrent change to that payment still requires refreshing and reviewing it. Visibility success or failure appears beside the row button; showing a payment does not override its privacy, status or duplicate exclusions.
+
 ## Automatic public credits
 
 In the administrator portal, open **Website → Supporter wall → Crowdfundr automatic connection** and select **Enable automatic public credits**. Activation fetches and verifies a complete snapshot of the configured campaign's public contribution feed. Confirm that the status says connected and shows a recent successful check. **Check public credits now** performs an immediate refresh; **Use CSV credits instead** turns public mode off and restores recognition from the saved CSV records.
