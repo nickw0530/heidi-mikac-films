@@ -65,11 +65,13 @@ export async function mountSupporters(host,request){
       </form>
     </details>
     <form data-supporter-moderation hidden>
-      <h4>Payment duplicate review</h4>
+      <h4>Supporter and payment review</h4>
       <p data-supporter-moderation-label></p>
+      <label>Verified same supporter as<select name="sameSupporterAs"><option value="">Separate supporter / no verified match</option></select></label>
+      <p>Choose only after confirming these names belong to the same person. Their eligible support totals combine; each payment keeps its own privacy and visibility settings.</p>
       <label>This is the same payment as<select name="duplicateOf"><option value="">Not a duplicate payment</option></select></label>
       <p>Choose only if these records describe the same payment. Repeat payments from one supporter are separate transactions and should both count.</p>
-      <button type="submit">Save duplicate review</button>
+      <button type="submit">Save supporter review</button>
       <button type="button" data-supporter-moderation-cancel>Cancel</button>
       <p data-supporter-moderation-status role="status" aria-live="polite"></p>
     </form>
@@ -77,7 +79,14 @@ export async function mountSupporters(host,request){
     <p data-supporter-count></p>
     <div class="merch-admin-scroll" tabindex="0" aria-label="Support transaction ledger">
       <table><thead><tr><th>Source / date</th><th>Supporter</th><th>Gross / refunded</th><th>Status / wall</th><th>Payment reference</th><th>Public preferences</th><th>Manage</th></tr></thead><tbody data-supporter-ledger-rows></tbody></table>
-    </div>`;
+    </div>
+    <details data-supporter-deleted hidden>
+      <summary>Deleted manual records</summary>
+      <p>Deleted manual records do not count toward supporter totals. Restoring a record keeps its previous privacy and visibility settings.</p>
+      <div class="merch-admin-scroll" tabindex="0" aria-label="Deleted manual support records">
+        <table><thead><tr><th>Supporter</th><th>Gross support</th><th>Reference</th><th>Manage</th></tr></thead><tbody data-supporter-deleted-rows></tbody></table>
+      </div>
+    </details>`;
   const find=selector=>host.querySelector(selector);
   const overall=find('[data-supporter-status]'),manual=find('[data-supporter-manual-form]'),fields=manual.elements;
   const moderation=find('[data-supporter-moderation]'),importForm=find('[data-supporter-preview-form]');
@@ -99,10 +108,10 @@ export async function mountSupporters(host,request){
   function cancelPreview(){previewGeneration++;importState=null;preview.hidden=true;confirm.disabled=true;find('[data-supporter-preview-rows]').replaceChildren();}
   function populate(select,exclude=''){
     const previous=select.value;
-    select.replaceChildren(element('option',select===fields.sameSupporterAs?'Keep current identity / separate supporter':'Not a duplicate payment'));
+    select.replaceChildren(element('option',select.name==='sameSupporterAs'?(select===fields.sameSupporterAs?'Keep current identity / separate supporter':'Separate supporter / no verified match'):'Not a duplicate payment'));
     select.firstElementChild.value='';
     for(const row of transactions){
-      if(row.id===exclude)continue;
+      if(row.id===exclude||row.archived)continue;
       const option=element('option',transactionLabel(row));option.value=row.id;select.append(option);
     }
     select.value=previous;
@@ -126,20 +135,32 @@ export async function mountSupporters(host,request){
   function review(row){
     moderating=row;moderation.hidden=false;
     find('[data-supporter-moderation-label]').textContent=transactionLabel(row);
+    populate(moderation.elements.sameSupporterAs,row.id);
+    if(row.sameSupporterAs&&!transactions.some(record=>record.id===row.sameSupporterAs&&!record.archived)){
+      const option=element('option','Existing verified match — record currently unavailable');option.value=row.sameSupporterAs;moderation.elements.sameSupporterAs.append(option);
+    }
+    moderation.elements.sameSupporterAs.value=row.sameSupporterAs||'';
     populate(moderation.elements.duplicateOf,row.id);moderation.elements.duplicateOf.value=row.duplicateOf||'';
     find('[data-supporter-moderation-status]').textContent='';moderation.elements.duplicateOf.focus();
+  }
+  async function archiveManual(record,archived){
+    await request('supporterModerate',{id:record.id,revision,moderationRevision:record.moderationRevision,hidden:record.hidden===true,archived});
+    await reload();
+    if(transactions.find(row=>row.id===record.id)?.archived!==archived)throw Error('The manual record change could not be confirmed. Refresh supporters to review it.');
+    overall.textContent=archived?'Manual record deleted. It can be restored under Deleted manual records.':'Manual record restored with its previous visibility settings.';
   }
   function render(){
     const rows=find('[data-supporter-ledger-rows]');rows.replaceChildren();
     rowStatuses.clear();
-    find('[data-supporter-count]').textContent=transactions.length+' payment and public activity records. Public campaign activity replaces Crowdfundr imports on the wall when enabled; imported copies remain here for reference.';
-    for(const record of transactions){
+    const active=transactions.filter(record=>!record.archived),deleted=transactions.filter(record=>record.source==='manual'&&record.archived);
+    find('[data-supporter-count]').textContent=active.length+' payment and public activity records. Public campaign activity replaces Crowdfundr imports on the wall when enabled; imported copies remain here for reference.';
+    for(const record of active){
       const row=rows.insertRow();
       const date=new Date(record.date),dateText=Number.isFinite(date.valueOf())?date.toLocaleString():'';
       row.insertCell().textContent=[record.source==='crowdfundr-public'?'Crowdfundr public activity':record.source,record.campaignTitle,dateText].filter(Boolean).join(' · ');
       row.insertCell().textContent=record.name||'Anonymous supporter';
       row.insertCell().textContent=(record.source==='crowdfundr-public'&&!record.showAmount?'Private amount':money(record.gross))+' / '+(record.source==='crowdfundr-public'?'not reported':record.refunded==null?'unknown':money(record.refunded));
-      row.insertCell().textContent=[record.status,record.hidden?'Hidden':'',record.duplicateOf?'Duplicate — excluded':'',record.warning||''].filter(Boolean).join(' · ');
+      row.insertCell().textContent=[record.status,record.hidden?'Hidden':'',record.duplicateOf?'Duplicate — excluded':'',record.sameSupporterAs?'Verified supporter match':'',record.warning||''].filter(Boolean).join(' · ');
       row.insertCell().textContent=[record.channel,record.processor,record.reference||record.id].filter(Boolean).join(' · ');
       row.insertCell().textContent='Name: '+(record.showName?'allowed':'private')+' · Amount: '+(record.showAmount?'allowed':'private');
       const actions=row.insertCell();
@@ -157,11 +178,17 @@ export async function mountSupporters(host,request){
         rowNotice(record.id,hidden?'Payment hidden.':'Payment shown.');
         overall.textContent='Supporter visibility saved. The public wall refreshes within a few seconds.';
       },visibilityStatus,record.id));
-      actions.append(' ',button('Review duplicate',async()=>review(record)));
-      if(record.source==='manual')actions.append(' ',button('Edit',async()=>edit(record)));
+      actions.append(' ',button('Review supporter / duplicate',async()=>review(record)));
+      if(record.source==='manual')actions.append(' ',button('Edit',async()=>edit(record)),' ',button('Delete manual record',async()=>archiveManual(record,true)));
       actions.append(visibilityStatus);
     }
-    if(!transactions.length){const cell=rows.insertRow().insertCell();cell.colSpan=7;cell.textContent='No support transactions yet.';}
+    if(!active.length){const cell=rows.insertRow().insertCell();cell.colSpan=7;cell.textContent='No support transactions yet.';}
+    const deletedRows=find('[data-supporter-deleted-rows]');deletedRows.replaceChildren();find('[data-supporter-deleted]').hidden=!deleted.length;
+    for(const record of deleted){
+      const row=deletedRows.insertRow();
+      for(const value of [record.name||'Anonymous supporter',money(record.gross),record.reference||record.id])row.insertCell().textContent=value;
+      row.insertCell().append(button('Restore manual record',async()=>archiveManual(record,false)));
+    }
     populate(fields.sameSupporterAs,manualId);
   }
   async function reload(){
@@ -215,8 +242,10 @@ export async function mountSupporters(host,request){
     event.preventDefault();
     return busy(event.submitter,find('[data-supporter-moderation-status]'),async()=>{
       if(!moderating)throw Error('Choose a payment to review.');
-      await request('supporterModerate',{id:moderating.id,revision,moderationRevision:moderating.moderationRevision,hidden:moderating.hidden===true,duplicateOf:moderation.elements.duplicateOf.value});
-      await reload();overall.textContent='Duplicate review saved.';
+      const input={id:moderating.id,revision,moderationRevision:moderating.moderationRevision,hidden:moderating.hidden===true,duplicateOf:moderation.elements.duplicateOf.value};
+      if(moderation.elements.sameSupporterAs.value!==(moderating.sameSupporterAs||''))input.sameSupporterAs=moderation.elements.sameSupporterAs.value;
+      await request('supporterModerate',input);
+      await reload();overall.textContent='Supporter review saved. The public wall refreshes within a few seconds.';
     });
   };
   find('[data-supporter-moderation-cancel]').onclick=()=>{moderation.hidden=true;moderating=null;};

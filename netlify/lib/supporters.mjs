@@ -40,7 +40,7 @@ export function supporterCampaigns(shop){
 
 // The payment ledger remains the source of truth for website orders. Imported
 // and manual support never mutate inventory or invent a merchandise sale.
-export function supporterTransactions(shop){
+export function supporterTransactions(shop,{includeArchived=false}={}){
  const website=Object.entries(shop.sales||{}).map(([id,sale])=>({
   id:'website:'+id,source:'website',reference:sale.captureId||'',processor:sale.channel==='PayPal checkout'?'paypal':'',
   channel:sale.channel||'Website merchandise',status:sale.status,
@@ -57,13 +57,46 @@ export function supporterTransactions(shop){
   const checkedAt=Array.isArray(publicFeed.campaigns)?publicFeed.campaigns.find(campaign=>campaign.id===campaignId)?.checkedAt:publicFeed.checkedAt;
   external.set(row.id,{...row,campaignId,publicStale:!Number.isFinite(checkedAt)||checkedAt>Date.now()+1000||Date.now()-checkedAt>300000});
  }
- return [...website,...external.values()].map(row=>{
+ return [...website,...external.values()].filter(row=>includeArchived||row.source!=='manual'||row.archived!==true).map(row=>{
   const override=own(shop.supporterLedger?.moderation,row.id)||{};
-  return {...row,hidden:row.hidden||override.hidden===true||row.apiUnavailable===true||row.publicStale===true,duplicateOf:override.duplicateOf||'',sameSupporterAs:row.sameSupporterAs||'',...(row.apiUnavailable||row.publicStale?{warning:'Current campaign privacy information is unavailable; credit is withheld until the next complete check.'}:{})};
+  return {...row,hidden:row.hidden||override.hidden===true||row.apiUnavailable===true||row.publicStale===true,duplicateOf:override.duplicateOf||'',sameSupporterAs:own(override,'sameSupporterAs')??row.sameSupporterAs??'',...(row.apiUnavailable||row.publicStale?{warning:'Current campaign privacy information is unavailable; credit is withheld until the next complete check.'}:{})};
  });
 }
 
-function creditIdentities(rows,identity){
+// Administrator-reviewed matches connect identities, not just the selected
+// transaction. Other and future payments carrying that same verified identity
+// remain together. Public privacy and eligibility are still applied per row.
+function matchedIdentities(rows,moderation){
+ const byId=new Map(rows.map(row=>[row.id,row])),parents=new Map(),authorities=new Map();
+ const raw=row=>row.identity||row.id;
+ const root=key=>{let current=key;while(parents.has(current)&&parents.get(current)!==current)current=parents.get(current);return current;};
+ const pair=entry=>entry?.sameSupporterAs&&Array.isArray(entry.supporterIdentityPair)&&entry.supporterIdentityPair.length===2&&
+  entry.supporterIdentityPair.every(key=>typeof key==='string'&&key&&key.length<=400)?entry.supporterIdentityPair:null;
+ const join=(a,b)=>{
+  if(!parents.has(a))parents.set(a,a);if(!parents.has(b))parents.set(b,b);
+  const keys=[root(a),root(b)].sort();parents.set(keys[1],keys[0]);
+ };
+ for(const row of rows)parents.set(raw(row),raw(row));
+ // Saved, server-derived proof remains valid when either reviewed payment is
+ // later absent from a complete feed. It never keeps that payment credited.
+ for(const entry of Object.values(moderation||{})){const saved=pair(entry);if(saved)join(...saved);}
+ for(const row of rows){
+  if(pair(own(moderation,row.id)))continue;
+  const target=byId.get(row.sameSupporterAs);if(!target)continue;
+  join(raw(row),raw(target));
+ }
+ for(const key of parents.keys()){
+  const authority=/^(email|paypal|public-owner):/.exec(key)?.[1];if(!authority)continue;
+  const canonical=root(key);if(!authorities.has(canonical))authorities.set(canonical,new Map());
+  // Approved aliases are one person within every identity authority they carry.
+  // Retaining all authorities prevents an unrelated matching display name from
+  // bridging another verified owner after a cross-channel explicit match.
+  authorities.get(canonical).set(authority,new Set([canonical]));
+ }
+ return {identity:row=>root(raw(row)),authorities:key=>authorities.get(root(key))||new Map()};
+}
+
+function creditIdentities(rows,identity,verifiedAuthorities){
  const parents=new Map(),authorities=new Map(),names=new Map();
  const root=key=>{
   let current=key;
@@ -74,10 +107,10 @@ function creditIdentities(rows,identity){
   if(!row.showName||row.hidden||row.duplicateOf||!money(row.gross)||!(balance(row)>0||row.source==='crowdfundr-public'&&row.status==='public'))continue;
   let name;try{name=plain(row.name,120).toLocaleLowerCase('en-US');}catch{continue;}
   if(!name||name==='anonymous')continue;
-  const key=identity(row),authority=/^(email|paypal|public-owner):/.exec(key)?.[1];
+  const key=identity(row);
   if(!parents.has(key)){
    parents.set(key,key);
-   authorities.set(key,new Map(authority?[[authority,new Set([key])]]:[]));
+   authorities.set(key,new Map(verifiedAuthorities(key)));
   }
   if(!names.has(name))names.set(name,new Set());
   names.get(name).add(key);
@@ -107,17 +140,11 @@ export function publicSupporters(shop,{scope='lifetime'}={}){
  const inCurrentCampaign=row=>['crowdfundr','crowdfundr-public'].includes(row.source)&&activeCampaigns.has(row.campaignId||legacyCampaign.id);
  // The native public feed replaces imported/API Crowdfundr recognition as a
  // whole. Private transaction records remain available for administration.
- const rows=all.filter(row=>!publicMode||row.source!=='crowdfundr'),byId=new Map(all.map(row=>[row.id,row])),groups=new Map(),seen=new Set(),refs=new Map();
+ const rows=all.filter(row=>!publicMode||row.source!=='crowdfundr'),groups=new Map(),seen=new Set(),refs=new Map();
  for(const row of rows){const ref=referenceKey(row);if(ref&&!row.duplicateOf)refs.set(ref,[...(refs.get(ref)||[]),row]);}
  // Prefer verified website captures over imports, then imports over manual.
  rows.sort((a,b)=>({website:0,'crowdfundr-public':1,crowdfundr:2,manual:3}[a.source]-{website:0,'crowdfundr-public':1,crowdfundr:2,manual:3}[b.source])||a.id.localeCompare(b.id));
- const identity=row=>{
-  const visited=new Set();let current=row;
-  while(current.sameSupporterAs&&byId.has(current.sameSupporterAs)&&!visited.has(current.id)){
-   visited.add(current.id);current=byId.get(current.sameSupporterAs);
-  }
-  return current.identity||current.id;
- };
+ const matched=matchedIdentities(all,shop.supporterLedger?.moderation);
  const credits=[];
  for(const original of rows){
   let row=original;const ref=referenceKey(row);
@@ -139,7 +166,7 @@ export function publicSupporters(shop,{scope='lifetime'}={}){
   if(scope==='current'&&!inCurrentCampaign(row)&&!copies?.some(inCurrentCampaign))continue;
   credits.push(row);
  }
- const creditIdentity=creditIdentities(credits,identity);
+ const creditIdentity=creditIdentities(credits,matched.identity,matched.authorities);
  for(const row of credits){
   let name='Anonymous';
   if(row.showName){try{name=plain(row.name,120)||'Anonymous';}catch{}}
@@ -157,12 +184,12 @@ export function publicSupporters(shop,{scope='lifetime'}={}){
 // Explicit keys keep this stable across object serialization and feed refreshes.
 function moderationRevision(row){
  const fields=['id','source','reference','processor','channel','status','gross','refunded','name','showName','showAmount','hidden',
-  'identity','date','duplicateOf','sameSupporterAs','apiUnavailable','publicStale','campaignId'];
+  'identity','date','duplicateOf','sameSupporterAs','apiUnavailable','publicStale','campaignId','archived'];
  return hash(JSON.stringify(fields.map(key=>[key,row[key]??null])));
 }
 export function adminSupporters(shop){
  const campaigns=new Map(supporterCampaigns(shop).map(campaign=>[campaign.id,campaign]));
- return supporterTransactions(shop).map(row=>{
+ return supporterTransactions(shop,{includeArchived:true}).map(row=>{
   const {identity,...safe}=row;
   const campaign=['crowdfundr','crowdfundr-public'].includes(row.source)?campaigns.get(row.campaignId||legacyCampaign.id):null;
   return {...safe,...(campaign?{campaignTitle:campaign.title}:{}),amount:balance(row),moderationRevision:moderationRevision(row)};
@@ -200,6 +227,26 @@ const csvMoney=value=>{
 };
 const csvStatus=value=>({paid:'paid',completed:'paid',pending:'pending',preapproved:'pending',failed:'failed',declined:'failed',cancelled:'failed',canceled:'failed',refunded:'refunded',reversed:'refunded','partially refunded':'partially refunded','partially_refunded':'partially refunded'}[value.trim().toLowerCase()]||'pending');
 const ledger=shop=>shop.supporterLedger??={transactions:{},moderation:{}};
+function validateSupporterMatch(rows,id,sameSupporterAs){
+ fail(typeof sameSupporterAs==='string'&&sameSupporterAs.length<=240,'Choose an existing verified supporter.');
+ if(!sameSupporterAs)return '';
+ const byId=new Map(rows.map(row=>[row.id,row]));
+ fail(byId.has(sameSupporterAs)&&sameSupporterAs!==id,'Choose an existing verified supporter.');
+ let target=sameSupporterAs;const seen=new Set([id]);
+ while(target){
+  fail(!seen.has(target),'Supporter matches cannot form a cycle.');seen.add(target);
+  target=byId.get(target)?.sameSupporterAs||'';
+ }
+ return sameSupporterAs;
+}
+function saveSupporterMatchProof(state,rows,id,sameSupporterAs){
+ const override=state.moderation[id];
+ if(!sameSupporterAs){delete override.supporterIdentityPair;return;}
+ const source=rows.find(row=>row.id===id),target=rows.find(row=>row.id===sameSupporterAs);
+ // The request chooses existing records; their private identity keys are always
+ // derived here. No identity pair or identity value is accepted from the client.
+ override.supporterIdentityPair=[source.identity||source.id,target.identity||target.id];
+}
 export function previewSupporterCsv(shop,csv){
  const parsed=parseSupporterCsv(csv),seen=new Map(),rows=[],summary={new:0,updated:0,unchanged:0,excluded:0,duplicates:0};
  const existingRefs=new Map(supporterTransactions(shop).map(row=>[referenceKey(row),row.id]).filter(([ref])=>ref));
@@ -241,6 +288,7 @@ export function saveManualSupporter(shop,input){
  fail(typeof input.id==='string'&&/^manual:[a-f0-9-]{36}$/.test(input.id),'Reload the manual support form.');
  const state=ledger(shop),old=own(state.transactions,input.id);
  fail(!old||old.source==='manual','Only manual support can be edited here.');
+ fail(old?.archived!==true,'Restore this deleted manual record before editing it.',409);
  fail(states.has(input.status)&&money(input.gross)&&input.gross>0,'Enter a valid status and gross USD amount.');
  fail(input.refunded==null||money(input.refunded)&&input.refunded<=input.gross,'Enter a refund within the original gross amount.');
  fail(input.status!=='partially refunded'||money(input.refunded)&&input.refunded>0&&input.refunded<input.gross,'Enter the confirmed partial refund amount.');
@@ -251,28 +299,33 @@ export function saveManualSupporter(shop,input){
  const processor=input.processor||'';fail(['','paypal','stripe'].includes(processor),'Choose a supported payment processor.');
  const reference=plain(input.reference||'',100),channel=plain(input.channel||'Offline / other',80);
  const sameSupporterAs=input.sameSupporterAs===undefined?old?.sameSupporterAs||'':input.sameSupporterAs||'';
- if(sameSupporterAs){
-  const rows=new Map(supporterTransactions(shop).map(row=>[row.id,row]));
-  fail(rows.has(sameSupporterAs)&&sameSupporterAs!==input.id,'Choose an existing verified supporter.');
-  let target=rows.get(sameSupporterAs),seen=new Set([input.id]);
-  while(target){fail(!seen.has(target.id),'Supporter matches cannot form a cycle.');seen.add(target.id);target=rows.get(target.sameSupporterAs);}
- }
+ validateSupporterMatch(supporterTransactions(shop),input.id,sameSupporterAs);
  state.transactions[input.id]={id:input.id,source:'manual',reference,processor,channel,status:input.status,gross:input.gross,refunded:input.refunded??null,
   name,showName:input.showName,showAmount:input.showAmount,hidden:input.hidden,identity:input.identityEmail?supporterIdentity(input.identityEmail):old?.identity||'',sameSupporterAs,date:old?.date||Date.now()};
  if(own(state.moderation,input.id))state.moderation[input.id].hidden=input.hidden;
+ if(input.sameSupporterAs!==undefined&&(sameSupporterAs||own(state.moderation,input.id))){
+  state.moderation[input.id]??={hidden:input.hidden,duplicateOf:''};
+  state.moderation[input.id].sameSupporterAs=sameSupporterAs;
+  saveSupporterMatchProof(state,supporterTransactions(shop),input.id,sameSupporterAs);
+ }
  return {saved:true};
 }
 export function moderateSupporter(shop,input){
- const rows=supporterTransactions(shop),row=rows.find(row=>row.id===input.id);
+ const rows=supporterTransactions(shop,{includeArchived:true}),row=rows.find(row=>row.id===input.id);
  fail(row,'Support transaction not found.',404);fail(typeof input.hidden==='boolean','Choose supporter visibility.');
  if(input.moderationRevision!==undefined)fail(typeof input.moderationRevision==='string'&&input.moderationRevision===moderationRevision(row),
   'This supporter changed. Refresh supporters and review this record before saving again.',409);
- const duplicateOf=input.duplicateOf||'';
+ if(input.archived!==undefined)fail(row.source==='manual'&&typeof input.archived==='boolean','Only manual records can be deleted or restored.');
+ const duplicateOf=input.duplicateOf===undefined?row.duplicateOf||'':input.duplicateOf||'';
  fail(!duplicateOf||duplicateOf!==input.id&&rows.some(row=>row.id===duplicateOf&&!row.duplicateOf),'Choose a different original transaction.');
+ const sameSupporterAs=input.sameSupporterAs===undefined?row.sameSupporterAs||'':validateSupporterMatch(rows.filter(record=>!record.archived),input.id,input.sameSupporterAs);
  // Restore cannot grant missing name/amount permission. Manual visibility is
  // edited on its form; moderation also applies to anonymous website orders.
- ledger(shop).moderation[input.id]={hidden:input.hidden,duplicateOf};
+ const state=ledger(shop);
+ state.moderation[input.id]={...own(state.moderation,input.id),hidden:input.hidden,duplicateOf,sameSupporterAs};
+ if(input.sameSupporterAs!==undefined)saveSupporterMatchProof(state,rows,input.id,sameSupporterAs);
  if(row.source==='manual')shop.supporterLedger.transactions[input.id].hidden=input.hidden;
+ if(input.archived!==undefined)shop.supporterLedger.transactions[input.id].archived=input.archived;
  if(row.source==='website')shop.sales[input.id.slice(8)].supporterHidden=input.hidden;
  return {saved:true};
 }
