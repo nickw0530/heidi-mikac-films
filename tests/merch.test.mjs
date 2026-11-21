@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readShop,updateShop,publicShop,saveSettings,manualSale,check,checkoutCart,orderItems,recognitionSettings,setSupporterVisibility} from '../netlify/lib/merch.mjs';
 import {captureOrder,createOrder} from '../netlify/functions/merch.mjs';
+import {publicSupporters} from '../netlify/lib/supporters.mjs';
 
 const paypalConfig={base:'https://test.invalid',clientId:'test',secret:'test'};
 
@@ -131,7 +132,7 @@ test('a mixed merchandise cart uses server prices, keeps sizes, and charges ship
     ['blu-ray','Written in the Light · Blu-ray','40.00'],['shirt-m','Peach Tea Lady · M','25.00'],['shirt-xl','Peach Tea Lady · XL','25.00']
   ]);
   const saved=await store.get('checkout/'+id);
-  assert.deepEqual(saved.recognition,{public:true,name:'Ada Example'});
+  assert.deepEqual(saved.recognition,{public:true,name:'Ada Example',showAmount:true});
   assert.equal(saved.donation,0);
   assert.equal(saved.items.length,3);
   assert.deepEqual((await readShop(store)).shop.settings.stock,before.settings.stock);
@@ -156,7 +157,7 @@ test('the previous single-item create payload still starts the original $45 Blu-
   const order=await store.get('checkout/'+id),unit=mock.created[0].body.purchase_units[0];
   assert.equal(order.sku,'blu-ray');assert.equal(order.quantity,1);assert.equal(order.total,4500);
   assert.equal(unit.amount.value,'45.00');assert.equal(unit.amount.breakdown.shipping.value,'5.00');
-  assert.deepEqual(order.recognition,{public:false,name:''});
+  assert.deepEqual(order.recognition,{public:false,name:'',showAmount:true});
 });
 
 test('monetary contributions stay outside merchandise PayPal checkout',async t=>{
@@ -169,12 +170,61 @@ test('monetary contributions stay outside merchandise PayPal checkout',async t=>
   assert.deepEqual((await readShop(store)).shop.sales,{});
 });
 
-test('recognition is private by default and accepts only an explicit bounded plain-text opt-in',()=>{
-  assert.deepEqual(recognitionSettings(),{public:false,name:''});
-  assert.deepEqual(recognitionSettings({public:false,name:'Private payer'}),{public:false,name:''});
-  assert.deepEqual(recognitionSettings({public:true,name:'  Ａda  Example  '}),{public:true,name:'Ada Example'});
-  for(const value of [{public:'true',name:'Ada'},{public:true,name:''},{public:true,name:'x'.repeat(61)},{public:true,name:'<b>Ada</b>'},{public:true,name:'Ada\u202eExample'},{public:true,name:'Ada\u200bExample'},{public:true,name:'Ada\nExample'}])
+test('new recognition asks only about the name, defaults support amounts public, and honors explicit legacy privacy',()=>{
+  assert.deepEqual(recognitionSettings(),{public:false,name:'',showAmount:true});
+  assert.deepEqual(recognitionSettings({public:false,name:'Private payer'}),{public:false,name:'',showAmount:true});
+  assert.deepEqual(recognitionSettings({public:true,name:'  Ａda  Example  '}),{public:true,name:'Ada Example',showAmount:true});
+  assert.deepEqual(recognitionSettings({public:false,showAmount:false}),{public:false,name:'',showAmount:false});
+  assert.deepEqual(recognitionSettings({public:true,name:'Legacy private amount',showAmount:false}),{public:true,name:'Legacy private amount',showAmount:false});
+  for(const value of [{public:'true',name:'Ada'},{public:true,name:''},{public:true,name:'x'.repeat(61)},{public:true,name:'<b>Ada</b>'},{public:true,name:'Ada\u202eExample'},{public:true,name:'Ada\u200bExample'},{public:true,name:'Ada\nExample'},
+    {public:false,showAmount:'true'},{public:false,showAmount:0},{public:false,showAmount:null}])
     assert.throws(()=>recognitionSettings(value),{status:400});
+});
+
+test('a new anonymous merchandise payment publishes the paid subtotal while keeping the buyer name private',async t=>{
+  const store=await fixture(),mock=mockPayPal(t);
+  const {id}=await (await createOrder(store,paypalConfig,{sku:'blu-ray',quantity:1,recognition:{public:false}})).json();
+  const order=await store.get('checkout/'+id);mock.orders.set(id,order);
+  assert.deepEqual(order.recognition,{public:false,name:'',showAmount:true});
+  assert.deepEqual(publicSupporters((await readShop(store)).shop),[],'An unapproved order is never credited.');
+  assert.equal((await (await captureOrder(store,paypalConfig,id)).json()).status,'paid');
+  const {shop}=await readShop(store);
+  assert.deepEqual(publicSupporters(shop),[{name:'Anonymous',amount:4000,currency:'USD'}]);
+  assert.equal(shop.sales[id].total,4500);assert.equal(shop.sales[id].subtotal,4000);assert.equal(shop.sales[id].shipping,500);
+  assert.equal(shop.sales[id].donation,0);assert.equal(shop.settings.stock['blu-ray'],29);
+});
+
+test('an older client can still explicitly keep a new order amount private',async t=>{
+  const store=await fixture(),mock=mockPayPal(t);
+  const recognition={public:true,name:'Legacy Client Supporter',showAmount:false};
+  const {id}=await (await createOrder(store,paypalConfig,{sku:'blu-ray',quantity:1,recognition})).json();
+  const order=await store.get('checkout/'+id);mock.orders.set(id,order);
+  assert.deepEqual(order.recognition,recognition);
+  await captureOrder(store,paypalConfig,id);
+  assert.deepEqual(publicSupporters((await readShop(store)).shop),[{name:'Legacy Client Supporter',amount:null,currency:'USD'}]);
+});
+
+test('capturing saved legacy pending orders never upgrades their saved amount privacy',async t=>{
+  const choices=[{public:true,name:'Legacy Pending Supporter',showAmount:false},{public:false,name:'',showAmount:false},{public:true,name:'Legacy Missing Amount Flag'}];
+  for(let index=0;index<choices.length;index++)await t.test('saved preference '+index,async sub=>{
+    const store=await fixture(),id='LEGACYORDER0000'+index,order=await seedCart(store,id,{sku:'blu-ray',quantity:1});
+    order.recognition=structuredClone(choices[index]);await store.setJSON('checkout/'+id,order);
+    mockPayPal(sub,new Map([[id,order]]));
+    assert.equal((await (await captureOrder(store,paypalConfig,id)).json()).status,'paid');
+    const {shop}=await readShop(store);assert.deepEqual(shop.sales[id].recognition,choices[index]);
+    assert.deepEqual(publicSupporters(shop),[{name:choices[index].public?choices[index].name:'Anonymous',amount:null,currency:'USD'}]);
+  });
+});
+
+test('new name-only checkout does not migrate a previously paid private-amount record',async t=>{
+  const store=await fixture(),old={status:'paid',subtotal:2300,total:2300,shipping:0,paidAt:1,recognition:{public:true,name:'Existing Paid Supporter',showAmount:false}};
+  await updateShop(store,shop=>{shop.sales.LEGACYPAID=structuredClone(old);});
+  const mock=mockPayPal(t),{id}=await (await createOrder(store,paypalConfig,{sku:'blu-ray',quantity:1,recognition:{public:true,name:'New Named Supporter'}})).json();
+  const order=await store.get('checkout/'+id);mock.orders.set(id,order);await captureOrder(store,paypalConfig,id);
+  const {shop}=await readShop(store),rows=publicSupporters(shop);
+  assert.deepEqual(shop.sales.LEGACYPAID,old);
+  assert.equal(rows.find(row=>row.name==='Existing Paid Supporter').amount,null);
+  assert.equal(rows.find(row=>row.name==='New Named Supporter').amount,4000);
 });
 
 test('PayPal create representations with altered identifiers, totals, currency, or items are rejected',async t=>{

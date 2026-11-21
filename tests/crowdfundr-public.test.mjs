@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {readShop,updateShop} from '../netlify/lib/merch.mjs';
-import {configurePublicCrowdfundr,syncPublicCrowdfundr,safePublicCrowdfundrStatus,PUBLIC_CROWDFUNDR_TTL} from '../netlify/lib/crowdfundr-public.mjs';
+import {configurePublicCrowdfundr,syncPublicCrowdfundr,safePublicCrowdfundrStatus,PUBLIC_CROWDFUNDR_TTL,DEFAULT_PUBLIC_CROWDFUNDR_CAMPAIGNS,normalizePublicCampaigns,publicCampaignsFromConfig,savePublicCampaigns} from '../netlify/lib/crowdfundr-public.mjs';
 
 function memoryStore(){
  const records=new Map();let revision=0,writes=0;
@@ -22,9 +22,9 @@ const hash=value=>createHash('sha256').update(value).digest('hex');
 const donation=(overrides={})=>({activityId:'ACTIVITY1',campaign:{campaignId:'e2ozh2',currency:'USD'},activityPageUrl:'https://crowdfundr.com/contributions/ACTIVITY1',currency:'USD',amount:10,isAnonymous:false,showAmount:true,owner:{name:'Fictional Supporter',isUser:true,userId:'PUBLIC-USER-1'},deleted:false,isPreapproval:false,offline:false,paymentType:'DONATION',created:'2026-11-21T02:30:44+00:00',paymentCreated:'2026-11-21T02:30:24Z',...overrides});
 const page=(entries,totalResults,extra={})=>({activities:{campaignId:'e2ozh2',maxResults:25,totalResults, ...(entries===undefined?{}:{entries}),...extra}});
 const response=entries=>async()=>Response.json(page(entries,Array.isArray(entries)?entries.length:entries?1:0));
-async function fixture({enabled=true,snapshot=true}={}){
+async function fixture({enabled=true,snapshot=true,campaigns=[DEFAULT_PUBLIC_CROWDFUNDR_CAMPAIGNS[0]]}={}){
  const raw=memoryStore(),shop=memoryStore();
- await raw.setJSON('crowdfundr/config',{clientId:'123',publicFeedEnabled:enabled});
+ await raw.setJSON('crowdfundr/config',{clientId:'123',publicFeedEnabled:enabled,...(campaigns===null?{}:{publicCampaigns:campaigns})});
  // Deliberately no connection/access token: public mode must not need one.
  await updateShop(shop,state=>{
   state.supporterLedger={transactions:{audit:{id:'audit',source:'crowdfundr',reference:'PRIVATE-PROCESSOR-REFERENCE',identity:'PRIVATE-AUDIT-IDENTITY',gross:1000,showName:true,showAmount:true,name:'Old CSV Name'}},moderation:{}};
@@ -34,6 +34,8 @@ async function fixture({enabled=true,snapshot=true}={}){
 }
 const synchronize=(f,fetcher)=>syncPublicCrowdfundr(f.raw,f.shop,{force:true,fetcher});
 const snapshot=async f=>(await f.state()).supporterLedger.publicFeed;
+const retainedSnapshot=feed=>({enabled:feed.enabled,checkedAt:feed.checkedAt,lastSync:feed.lastSync,
+ rows:Object.fromEntries(Object.entries(feed.rows).map(([id,{campaignId,...row}])=>[id,row]))});
 
 test('public feed fetches every page, handles singleton rows, preserves native IDs and requires no credentials',async()=>{
  const f=await fixture(),requests=[];
@@ -109,7 +111,7 @@ test('malformed native contracts fail closed without changing the last complete 
  ];
  for(const [label,body] of cases)await t.test(label,async()=>{
   const f=await fixture(),before=await snapshot(f);const result=await synchronize(f,async()=>Response.json(body));
-  assert.equal(result.active,false);assert.ok(result.lastError);assert.deepEqual(await snapshot(f),before);
+  assert.equal(result.active,false);assert.ok(result.lastError);assert.deepEqual(retainedSnapshot(await snapshot(f)),retainedSnapshot(before));
  });
 });
 
@@ -122,7 +124,7 @@ test('pagination loops, incomplete pages and partial HTTP failure never replace 
    if(calls===2&&mode==='partial-403')return new Response('PRIVATE PROVIDER ERROR BODY',{status:403});
    return Response.json(page([{donation:donation({activityId:'PAGE'+calls})}],30,{lastEntryId:123}));
   });
-  assert.equal(result.active,false);assert.ok(result.lastError);assert.deepEqual(await snapshot(f),before);
+  assert.equal(result.active,false);assert.ok(result.lastError);assert.deepEqual(retainedSnapshot(await snapshot(f)),retainedSnapshot(before));
   assert.ok(calls<=3,'A repeated cursor stops promptly.');assert.ok(!JSON.stringify(result).includes('PRIVATE PROVIDER ERROR BODY'));
  });
 });
@@ -189,4 +191,150 @@ test('safe public status expires stale activity and never echoes arbitrary saved
  await f.raw.setJSON('crowdfundr/public-sync',{active:true,lastSync:Date.now()-PUBLIC_CROWDFUNDR_TTL-1000,lastError:'PRIVATE PROVIDER BODY',raw:{secret:'PRIVATE SECRET'},activityId:'PRIVATE ACTIVITY ID',count:2});
  const safe=await safePublicCrowdfundrStatus(f.raw);assert.equal(safe.active,false);
  for(const secret of ['PRIVATE PROVIDER BODY','PRIVATE SECRET','PRIVATE ACTIVITY ID'])assert.ok(!JSON.stringify(safe).includes(secret));
+});
+
+const campaignResponse=(id,entries)=>Response.json(page(entries,Array.isArray(entries)?entries.length:entries?1:0,{campaignId:id}));
+const campaignDonation=(id,overrides={})=>({donation:donation({campaign:{campaignId:id,currency:'USD'},...overrides})});
+const requestedCampaign=url=>new URL(url).pathname.split('/')[3];
+
+test('default registry covers the four verified campaigns and supports multiple current campaigns safely',()=>{
+ const defaults=publicCampaignsFromConfig({});
+ assert.deepEqual(defaults.map(row=>[row.id,row.active]),[['e2ozh2',true],['b2mXyf',false],['62gpI9',false],['f2jVO7',false]]);
+ const multiple=normalizePublicCampaigns(defaults.map(row=>({...row,active:['e2ozh2','b2mXyf'].includes(row.id)})));
+ assert.equal(multiple.filter(row=>row.active).length,2);
+ defaults[0].title='Local copy';assert.notEqual(publicCampaignsFromConfig({})[0].title,'Local copy');
+ for(const rows of [[],Array.from({length:13},(_,i)=>({id:'ID00'+i,title:'Title',active:false})),
+  [{id:'https://outside.invalid/',title:'Title',active:true}],
+  [{id:'goodID',title:'<script>',active:true}],[{id:'goodID',title:'\uFF1Cscript\uFF1E',active:true}],
+  [{id:'goodID',title:'Title',active:'true'}],[{id:'goodID',title:'Title',active:true},{id:'goodID',title:'Duplicate',active:false}]])
+  assert.throws(()=>normalizePublicCampaigns(rows),{status:400});
+});
+
+test('all-time snapshots retain current moderation IDs and isolate identical activity IDs across campaigns',async()=>{
+ const f=await fixture({campaigns:null}),legacyId='crowdfundr-public:'+hash('ACTIVITY1');
+ await updateShop(f.shop,state=>{state.supporterLedger.moderation[legacyId]={hidden:true,duplicateOf:''};});
+ const requested=[];
+ const result=await synchronize(f,async url=>{
+  const id=requestedCampaign(url);requested.push(id);
+  // This historical all-or-nothing campaign contains only uncharged pledges.
+  const entries=id==='f2jVO7'?Array.from({length:10},(_,i)=>campaignDonation(id,{activityId:'PLEDGE'+i,isPreapproval:true})):campaignDonation(id);
+  return campaignResponse(id,entries);
+ });
+ assert.equal(result.active,true);assert.equal(result.partial,false);assert.equal(result.count,3);assert.equal(result.currentCount,1);
+ assert.deepEqual(requested.sort(),DEFAULT_PUBLIC_CROWDFUNDR_CAMPAIGNS.map(row=>row.id).sort());
+ const feed=await snapshot(f);assert.equal(feed.campaigns.length,4);assert.equal(Object.keys(feed.rows).length,3);
+ assert.equal(feed.rows[legacyId].campaignId,'e2ozh2');
+ assert.ok(feed.rows['crowdfundr-public:'+hash('b2mXyf:ACTIVITY1')]);
+ assert.ok(feed.rows['crowdfundr-public:'+hash('62gpI9:ACTIVITY1')]);
+ assert.equal(feed.campaigns.find(row=>row.id==='f2jVO7').count,0);
+ assert.equal(feed.campaigns.find(row=>row.id==='f2jVO7').totalResults,10);
+ assert.equal((await f.state()).supporterLedger.moderation[legacyId].hidden,true);
+ assert.equal((await f.state()).supporterLedger.transactions.audit.reference,'PRIVATE-PROCESSOR-REFERENCE');
+});
+
+test('one failing campaign cannot refresh its old privacy timestamp or block another successful campaign',async()=>{
+ const registry=DEFAULT_PUBLIC_CROWDFUNDR_CAMPAIGNS.slice(0,2),f=await fixture({campaigns:registry});
+ await synchronize(f,async url=>campaignResponse(requestedCampaign(url),campaignDonation(requestedCampaign(url))));
+ await updateShop(f.shop,state=>{
+  const current=state.supporterLedger.publicFeed.campaigns.find(row=>row.id==='e2ozh2');
+  current.checkedAt=Date.now()-PUBLIC_CROWDFUNDR_TTL-1000;current.lastSync=current.checkedAt;
+ });
+ const expiredAt=(await snapshot(f)).campaigns.find(row=>row.id==='e2ozh2').checkedAt;
+ const result=await synchronize(f,async url=>{
+  const id=requestedCampaign(url);
+  if(id==='e2ozh2')throw Error('PRIVATE PROVIDER DETAIL');
+  return campaignResponse(id,campaignDonation(id,{amount:25}));
+ });
+ assert.equal(result.active,true);assert.equal(result.partial,true);assert.equal(result.count,1);assert.equal(result.currentCount,0);
+ const feed=await snapshot(f),failed=feed.campaigns.find(row=>row.id==='e2ozh2'),updated=feed.campaigns.find(row=>row.id==='b2mXyf');
+ assert.equal(failed.checkedAt,expiredAt);assert.match(failed.lastError,/temporarily unavailable/);
+ assert.ok(updated.checkedAt>expiredAt);assert.equal(updated.lastError,'');
+ assert.equal(Object.values(feed.rows).find(row=>row.campaignId==='b2mXyf').gross,2500);
+ const safe=await safePublicCrowdfundrStatus(f.raw);
+ assert.equal(safe.campaigns.find(row=>row.id==='e2ozh2').fresh,false);assert.equal(safe.campaigns.find(row=>row.id==='b2mXyf').fresh,true);
+ assert.equal(safe.count,1);assert.ok(!JSON.stringify(safe).includes('PRIVATE PROVIDER DETAIL'));
+});
+
+test('a failed historical source retains its own fresh snapshot only until its independent TTL',async()=>{
+ const registry=DEFAULT_PUBLIC_CROWDFUNDR_CAMPAIGNS.slice(0,2),f=await fixture({campaigns:registry});
+ await synchronize(f,async url=>campaignResponse(requestedCampaign(url),campaignDonation(requestedCampaign(url))));
+ const prior=(await snapshot(f)).campaigns.find(row=>row.id==='b2mXyf').checkedAt;
+ await synchronize(f,async url=>{
+  const id=requestedCampaign(url);return id==='b2mXyf'?new Response('private',{status:503}):campaignResponse(id,campaignDonation(id));
+ });
+ assert.equal((await snapshot(f)).campaigns.find(row=>row.id==='b2mXyf').checkedAt,prior);
+ let safe=await safePublicCrowdfundrStatus(f.raw);assert.equal(safe.count,2);
+ const state=await f.raw.get('crowdfundr/public-sync');state.campaigns.find(row=>row.id==='b2mXyf').checkedAt=Date.now()-PUBLIC_CROWDFUNDR_TTL-1;
+ await f.raw.setJSON('crowdfundr/public-sync',state);safe=await safePublicCrowdfundrStatus(f.raw);
+ assert.equal(safe.count,1);assert.equal(safe.currentCount,1);
+});
+
+test('registry saves use config and shop CAS, remove omitted sources, keep private audit/moderation and invalidate old previews',async()=>{
+ const f=await fixture({campaigns:DEFAULT_PUBLIC_CROWDFUNDR_CAMPAIGNS.slice(0,2)});
+ await synchronize(f,async url=>campaignResponse(requestedCampaign(url),campaignDonation(requestedCampaign(url))));
+ const config=await f.raw.getWithMetadata('crowdfundr/config'),shopBefore=await readShop(f.shop),legacyId='crowdfundr-public:'+hash('ACTIVITY1');
+ await updateShop(f.shop,state=>{state.supporterLedger.moderation[legacyId]={hidden:true};});
+ const next=[{...DEFAULT_PUBLIC_CROWDFUNDR_CAMPAIGNS[0],active:false},{id:'futureCampaign',title:'Next film',active:true}];
+ const result=await savePublicCampaigns(f.raw,f.shop,{revision:config.etag,campaigns:next});assert.equal(result.saved,true);
+ const current=await readShop(f.shop);assert.notEqual(current.revision,shopBefore.revision);
+ const feed=current.shop.supporterLedger.publicFeed;
+ assert.deepEqual(feed.campaigns.map(row=>[row.id,row.active]),next.map(row=>[row.id,row.active]));
+ assert.equal(feed.campaigns.find(row=>row.id==='futureCampaign').checkedAt,null);
+ assert.ok(Object.values(feed.rows).every(row=>row.campaignId==='e2ozh2'));
+ assert.equal(current.shop.supporterLedger.moderation[legacyId].hidden,true);assert.ok(current.shop.supporterLedger.transactions.audit);
+ assert.equal((await f.raw.get('crowdfundr/config')).clientId,'123');
+ assert.equal((await f.raw.get('crowdfundr/public-sync')).nextSync,0);
+ await assert.rejects(()=>savePublicCampaigns(f.raw,f.shop,{revision:config.etag,campaigns:next}),{status:409});
+});
+
+test('registry changes cannot race an in-flight source fetch or leak persistence failure details',async()=>{
+ const f=await fixture(),config=await f.raw.getWithMetadata('crowdfundr/config');let begin,release;
+ const started=new Promise(resolve=>{begin=resolve;}),paused=new Promise(resolve=>{release=resolve;});
+ const run=synchronize(f,async()=>{begin();await paused;return campaignResponse('e2ozh2',campaignDonation('e2ozh2'));});
+ await started;
+ await assert.rejects(()=>savePublicCampaigns(f.raw,f.shop,{revision:config.etag,campaigns:DEFAULT_PUBLIC_CROWDFUNDR_CAMPAIGNS}),{status:409});
+ release();await run;
+ const before=await f.raw.getWithMetadata('crowdfundr/config'),failing={...f.shop,async setJSON(){throw Error('PRIVATE STORE FAILURE');}};
+ await assert.rejects(()=>savePublicCampaigns(f.raw,failing,{revision:before.etag,campaigns:DEFAULT_PUBLIC_CROWDFUNDR_CAMPAIGNS}),error=>error.status===503&&!error.message.includes('PRIVATE'));
+ assert.deepEqual(await f.raw.get('crowdfundr/config'),before.data);
+ assert.equal((await f.raw.get('crowdfundr/public-lease')).until,0);
+});
+
+test('registry primary commits remain consistent when ancillary status persistence fails',async()=>{
+ const f=await fixture();
+ await synchronize(f,response([{donation:donation()}]));
+ const config=await f.raw.getWithMetadata('crowdfundr/config'),write=f.raw.setJSON.bind(f.raw);
+ f.raw.setJSON=async(key,...args)=>{if(key==='crowdfundr/public-sync')throw Error('PRIVATE STATUS STORAGE DETAIL');return write(key,...args);};
+ const campaigns=[{...DEFAULT_PUBLIC_CROWDFUNDR_CAMPAIGNS[0],active:false},{...DEFAULT_PUBLIC_CROWDFUNDR_CAMPAIGNS[1],active:true}];
+ const result=await savePublicCampaigns(f.raw,f.shop,{revision:config.etag,campaigns});
+ assert.equal(result.saved,true);assert.equal(result.statusPending,true);assert.match(result.warning,/status could not be refreshed/);
+ assert.deepEqual((await f.raw.get('crowdfundr/config')).publicCampaigns,campaigns);
+ assert.deepEqual((await snapshot(f)).campaigns.map(({id,title,active})=>({id,title,active})),campaigns);
+ assert.equal((await f.raw.get('crowdfundr/public-lease')).until,0);
+ assert.ok(!JSON.stringify(result).includes('PRIVATE STATUS STORAGE DETAIL'));
+});
+
+test('enable and disable primary commits are not rolled back by a failed status write',async()=>{
+ const f=await fixture({enabled:false,snapshot:false}),write=f.raw.setJSON.bind(f.raw);
+ f.raw.setJSON=async(key,...args)=>{if(key==='crowdfundr/public-sync')throw Error('PRIVATE STATUS WRITE FAILURE');return write(key,...args);};
+ const enabled=await configurePublicCrowdfundr(f.raw,f.shop,{enabled:true,fetcher:response([{donation:donation()}])});
+ assert.equal(enabled.active,true);assert.equal(enabled.enabled,true);assert.equal(enabled.statusPending,true);
+ assert.equal((await f.raw.get('crowdfundr/config')).publicFeedEnabled,true);assert.equal((await snapshot(f)).enabled,true);
+ assert.equal((await f.raw.get('crowdfundr/public-lease')).until,0);
+ const disabled=await configurePublicCrowdfundr(f.raw,f.shop,{enabled:false});
+ assert.equal(disabled.active,false);assert.equal(disabled.enabled,false);assert.equal(disabled.statusPending,true);
+ assert.equal((await f.raw.get('crowdfundr/config')).publicFeedEnabled,false);assert.equal((await snapshot(f)).enabled,false);
+ assert.equal((await f.raw.get('crowdfundr/public-lease')).until,0);
+ assert.ok(!JSON.stringify([enabled,disabled]).includes('PRIVATE STATUS WRITE FAILURE'));
+});
+
+test('scheduled source commits return a safe status warning and always release the lease during a status outage',async()=>{
+ const f=await fixture(),write=f.raw.setJSON.bind(f.raw);
+ f.raw.setJSON=async(key,...args)=>{if(key==='crowdfundr/public-sync')throw Error('PRIVATE PROGRESS STORE');return write(key,...args);};
+ const result=await synchronize(f,response([{donation:donation({amount:25})}]));
+ assert.equal(result.active,true);assert.equal(result.statusPending,true);assert.equal(Object.values((await snapshot(f)).rows)[0].gross,2500);
+ assert.equal((await f.raw.get('crowdfundr/public-lease')).until,0);
+ const failed=await synchronize(f,async()=>new Response('PRIVATE PROVIDER BODY',{status:503}));
+ assert.equal(failed.active,false);assert.equal(failed.statusPending,true);assert.equal((await f.raw.get('crowdfundr/public-lease')).until,0);
+ assert.ok(!JSON.stringify([result,failed]).includes('PRIVATE'));
 });

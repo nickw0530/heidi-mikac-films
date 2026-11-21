@@ -1,6 +1,6 @@
 import {createHash,randomBytes} from 'node:crypto';
 import {safeSyncStatus} from './crowdfundr-sync.mjs';
-import {safePublicCrowdfundrStatus} from './crowdfundr-public.mjs';
+import {safePublicCrowdfundrStatus,publicCampaignsFromConfig} from './crowdfundr-public.mjs';
 
 export const crowdfundrOrigin='https://heidimikacfilms.com';
 export const crowdfundrCallback=crowdfundrOrigin+'/.netlify/functions/crowdfundr-callback';
@@ -63,7 +63,9 @@ export async function crowdfundrSettings(store){
   lastAttempt:current?sync?.lastAttempt||null:null,paymentCount:current&&Number.isInteger(sync?.paymentCount)?sync.paymentCount:null,
   fieldNames:current&&Array.isArray(sync?.fieldNames)?sync.fieldNames.filter(value=>typeof value==='string'&&/^[a-z_]{1,60}$/.test(value)):[],
   publicFeedEnabled:config?.data?.publicFeedEnabled===true,publicActive:config?.data?.publicFeedEnabled===true&&publicStatus.active,
-  publicLastSync:publicStatus.lastSync,publicLastError:publicStatus.lastError,publicCount:publicStatus.count};
+  publicLastSync:publicStatus.lastSync,publicLastError:publicStatus.lastError,publicCount:publicStatus.count,
+  publicCampaigns:publicCampaignsFromConfig(config?.data),publicCampaignStatus:publicStatus.campaigns,
+  publicPartial:publicStatus.partial===true,publicCurrentCount:publicStatus.currentCount};
 }
 
 export async function saveCrowdfundrSettings(store,input){

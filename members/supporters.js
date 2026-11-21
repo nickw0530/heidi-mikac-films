@@ -9,7 +9,7 @@ export function importSummary(summary={}){
 }
 
 export function transactionLabel(row){
-  return [row.name||'Anonymous supporter',row.source,row.reference||row.id].filter(Boolean).join(' · ');
+  return [row.name||'Anonymous supporter',row.source,row.campaignTitle,row.reference||row.id].filter(Boolean).join(' · ');
 }
 
 // All personal data stays within the existing authenticated portal. Dynamic
@@ -19,7 +19,7 @@ export async function mountSupporters(host,request){
   host.innerHTML=`
     <h3>Supporter wall management</h3>
     <p>Paid website merchandise appears here automatically as support, not a charitable donation. Do not record the same purchase again. Crowdfundr imports and manual support are combined with those orders, with each payment kept separately for duplicate checks.</p>
-    <p>Names and amounts require separate permission. Missing or private names appear as Anonymous. Pending, failed, refunded, hidden and duplicate payments do not count. A partial refund needs a confirmed refund amount before its remainder can count.</p>
+    <p>New website purchases offer a public-name choice and publish the merchandise support amount. Saved website preferences and Crowdfundr/manual name and amount permissions are preserved. Missing or private names appear as Anonymous. Pending, failed, refunded, hidden and duplicate payments do not count. A partial refund needs a confirmed refund amount before its remainder can count.</p>
     <button type="button" data-supporter-refresh>Refresh supporters</button>
     <p data-supporter-status role="status" aria-live="polite"></p>
     <details data-supporter-import>
@@ -136,7 +136,7 @@ export async function mountSupporters(host,request){
     for(const record of transactions){
       const row=rows.insertRow();
       const date=new Date(record.date),dateText=Number.isFinite(date.valueOf())?date.toLocaleString():'';
-      row.insertCell().textContent=[record.source==='crowdfundr-public'?'Crowdfundr public activity':record.source,dateText].filter(Boolean).join(' · ');
+      row.insertCell().textContent=[record.source==='crowdfundr-public'?'Crowdfundr public activity':record.source,record.campaignTitle,dateText].filter(Boolean).join(' · ');
       row.insertCell().textContent=record.name||'Anonymous supporter';
       row.insertCell().textContent=(record.source==='crowdfundr-public'&&!record.showAmount?'Private amount':money(record.gross))+' / '+(record.source==='crowdfundr-public'?'not reported':record.refunded==null?'unknown':money(record.refunded));
       row.insertCell().textContent=[record.status,record.hidden?'Hidden':'',record.duplicateOf?'Duplicate — excluded':'',record.warning||''].filter(Boolean).join(' · ');

@@ -1,6 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import {check,checkoutCart,dollars,merchStore,orderItems,paypalConfig,publicShop,readShop,updateShop} from '../lib/merch.mjs';
-import {paymentIdentity,publicSupporters} from '../lib/supporters.mjs';
+import {paymentIdentity,publicSupporters,supporterCampaigns} from '../lib/supporters.mjs';
 
 const headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'};
 const json=(data,status=200)=>Response.json(data,{status,headers});
@@ -184,7 +184,10 @@ export default async function handle(req){
     const url=new URL(req.url),action=url.searchParams.get('action');
     const production=['heidimikacfilms.com','www.heidimikacfilms.com'].includes(url.hostname);
     const config=paypalConfig(production),store=merchStore(production);
-    if(req.method==='GET'&&action==='supporters')return json({supporters:publicSupporters((await readShop(store)).shop)});
+    if(req.method==='GET'&&action==='supporters'){
+      const {shop}=await readShop(store),scope=url.searchParams.get('scope')||'lifetime';
+      return json({supporters:publicSupporters(shop,{scope}),campaigns:supporterCampaigns(shop)});
+    }
     if(req.method==='GET'&&!action)return json(publicShop((await readShop(store)).shop,config));
     check(req.method==='POST','Unsupported method.',405);
     check(req.headers.get('origin')===url.origin,'Origin rejected.',403);

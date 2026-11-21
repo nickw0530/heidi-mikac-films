@@ -16,7 +16,7 @@ import {captureOrder} from './merch.mjs';
 import {adminSupporters,previewSupporterCsv,importSupporterCsv,saveManualSupporter,moderateSupporter} from '../lib/supporters.mjs';
 import {crowdfundrSettings,saveCrowdfundrSettings,beginCrowdfundr,disconnectCrowdfundr} from '../lib/crowdfundr-oauth.mjs';
 import {syncCrowdfundr} from '../lib/crowdfundr-sync.mjs';
-import {syncPublicCrowdfundr,configurePublicCrowdfundr} from '../lib/crowdfundr-public.mjs';
+import {syncPublicCrowdfundr,configurePublicCrowdfundr,savePublicCampaigns} from '../lib/crowdfundr-public.mjs';
 import { getStore } from '@netlify/blobs';
 import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
@@ -463,14 +463,18 @@ export default async function handle(req, context) {
   requireThat((session.passwordVersion||0)===((await get('passwords/'+self))?.version||0),'Please sign in again.',401);
   if(action==='logout'&&post){await store.delete(sessionKey);return json({}, {'Set-Cookie':cookie('',0)});}
   const onlyAdmin=()=>requireThat(admin,'Administrator access required.',403);
-  if(['crowdfundrSettings','crowdfundrConnect','crowdfundrSync','crowdfundrDisconnect','crowdfundrPublicMode','crowdfundrPublicSync'].includes(action)){
+  if(['crowdfundrSettings','crowdfundrConnect','crowdfundrSync','crowdfundrDisconnect','crowdfundrPublicMode','crowdfundrPublicSync','crowdfundrCampaigns'].includes(action)){
     onlyAdmin();
     requireThat(production&&(!process.env.CONTEXT||process.env.CONTEXT==='production'),'Crowdfundr connection is available only on the published Heidi Mikac Films website.',403);
     if(action==='crowdfundrSettings')return json(post?await saveCrowdfundrSettings(rawStore,body):await crowdfundrSettings(rawStore));
     requireThat(post,'Use the Crowdfundr connection controls.',405);
+    if(action==='crowdfundrCampaigns'){
+      const result=await savePublicCampaigns(rawStore,merchStore(production),body);
+      return json({...await crowdfundrSettings(rawStore),...(result.statusPending?{statusPending:true,warning:result.warning}:{})});
+    }
     if(action==='crowdfundrPublicMode'){
       const result=await configurePublicCrowdfundr(rawStore,merchStore(production),body);
-      return json({...await crowdfundrSettings(rawStore),publicBusy:result.busy===true});
+      return json({...await crowdfundrSettings(rawStore),publicBusy:result.busy===true,...(result.statusPending?{statusPending:true,warning:result.warning}:{})});
     }
     if(action==='crowdfundrPublicSync')return json(await syncPublicCrowdfundr(rawStore,merchStore(production),{force:true}));
     if(action==='crowdfundrConnect')return await beginCrowdfundr(rawStore,sessionKey,url.origin);

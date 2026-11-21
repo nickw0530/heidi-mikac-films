@@ -62,11 +62,13 @@ export function recognitionName(value){
 }
 
 export function recognitionSettings(input){
-  if(input===undefined)return {public:false,name:''};
+  if(input===undefined)return {public:false,name:'',showAmount:true};
   check(input&&typeof input==='object'&&!Array.isArray(input)&&typeof input.public==='boolean','Choose whether to show your display name.');
   if(input.showAmount!==undefined)check(typeof input.showAmount==='boolean','Choose whether to show your support amount.');
+  // New checkout asks only about the public name. Keep an explicit amount
+  // preference from older clients, and never rewrite saved order preferences.
   return {...(input.public?{public:true,name:recognitionName(input.name)}:{public:false,name:''}),
-    ...(input.showAmount!==undefined?{showAmount:input.showAmount}:{})};
+    showAmount:input.showAmount??true};
 }
 
 // Old orders and offline sales contain one item at the top level.

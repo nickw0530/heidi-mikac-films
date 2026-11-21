@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mountSupporterWall,supporterCredits} from '../merch/supporters.js';
+import {mountSupporterWall,supporterCredits,currentCampaignHeading,SUPPORTER_CACHE_TTL} from '../merch/supporters.js';
 
 class Node{
   constructor(tag='div'){this.tag=tag;this.children=[];this.attributes={};this.events=new Map();this.dataset={};this.hidden=false;this.textContent='';this.replacements=0;this.style={setProperty(){}};}
@@ -12,13 +12,13 @@ class Node{
   emit(type){return this.events.get(type)?.();}
 }
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
-function fixture(fetcher,{reduced=false,hidden=false}={}){
-  const elements=Object.fromEntries(['supporter-wall','supporter-viewport','supporter-roll','supporters-empty','supporter-pause','supporter-status'].map(name=>['[data-'+name+']',new Node()]));
-  const wall=elements['[data-supporter-wall]'];wall.querySelector=selector=>elements[selector];
+function fixture(fetcher,{reduced=false,hidden=false,scope='current',now=()=>Date.now()}={}){
+  const elements=Object.fromEntries(['supporter-wall','supporter-viewport','supporter-roll','supporters-empty','supporter-pause','supporter-status','supporter-title','supporter-campaigns'].map(name=>['[data-'+name+']',new Node()]));
+  const wall=elements['[data-supporter-wall]'];wall.querySelector=selector=>elements[selector];wall.dataset.supporterScope=scope;
   const doc=new Node();doc.visibilityState=hidden?'hidden':'visible';doc.querySelector=selector=>elements[selector];doc.createElement=tag=>new Node(tag);
   const media=new Node();media.matches=reduced;
   const win=new Node();win.matchMedia=()=>media;win.setTimeout=()=>1;win.clearTimeout=()=>{};win.setInterval=(callback,delay)=>{win.tick=callback;win.interval=delay;return 2;};win.clearInterval=()=>{};
-  const mounted=mountSupporterWall({doc,win,fetcher});
+  const mounted=mountSupporterWall({doc,win,fetcher,now});
   return {elements,wall,doc,media,win,mounted};
 }
 const credits=()=>({supporters:[{name:'Ada Example',amount:1000,currency:'USD'}]});
@@ -81,5 +81,71 @@ test('failed refresh preserves last confirmed credits and reports stale updates'
   assert.equal(roll.children[0],original);
   assert.match(view.elements['[data-supporter-status]'].textContent,/Showing the last loaded credits/);
   fails=false;await view.mounted.refresh();assert.equal(view.elements['[data-supporter-status]'].textContent,'');
+  view.mounted.destroy();
+});
+
+test('home lifetime and merch current walls request distinct explicit scopes without mixing their credits',async()=>{
+  const requested=[];
+  const fetcher=async url=>{
+    const scope=new URL(url,'https://example.test').searchParams.get('scope');requested.push(scope);
+    return Response.json({supporters:[{name:scope==='lifetime'?'Lifetime Supporter':'Current Supporter',amount:scope==='lifetime'?3500:800,currency:'USD'}],campaigns:[{id:'e2ozh2',title:'Take Two: Written in the Dark Retake Fundraiser!',active:true}]});
+  };
+  const home=fixture(fetcher,{scope:'lifetime'}),merch=fixture(fetcher,{scope:'current'});await flush();
+  assert.deepEqual(requested,['lifetime','current']);
+  assert.equal(home.elements['[data-supporter-roll]'].children[0].children[0].children[0].textContent,'Lifetime Supporter');
+  assert.equal(merch.elements['[data-supporter-roll]'].children[0].children[0].children[0].textContent,'Current Supporter');
+  assert.equal(merch.elements['[data-supporter-title]'].textContent,'Take Two supporters');
+  assert.match(home.elements['[data-supporter-viewport]'].attributes['aria-label'],/^Lifetime/);
+  home.mounted.destroy();merch.mounted.destroy();
+});
+
+test('current campaign metadata updates the heading even when supporter credits stay unchanged',async()=>{
+  let campaigns=[{id:'e2ozh2',title:'Take Two: Written in the Dark',active:true}];
+  const view=fixture(async()=>Response.json({...credits(),campaigns}));await flush();
+  const roll=view.elements['[data-supporter-roll]'],replacements=roll.replacements;
+  assert.equal(view.elements['[data-supporter-title]'].textContent,'Take Two supporters');
+  campaigns=[...campaigns,{id:'another',title:'Another active film',active:true},{id:'old',title:'Old campaign',active:false}];
+  await view.mounted.refresh();
+  assert.equal(view.elements['[data-supporter-title]'].textContent,'Current campaigns');
+  assert.equal(view.elements['[data-supporter-campaigns]'].textContent,'Take Two: Written in the Dark · Another active film');
+  assert.equal(roll.replacements,replacements,'Campaign metadata changes do not restart an unchanged credit roll.');
+  assert.equal(currentCampaignHeading({campaigns:[{title:'Take Two old campaign',active:false}]}),'Current campaign supporters');
+  view.mounted.destroy();
+});
+
+test('failed updates remove cached credits at five minutes and recover only after a current response',async()=>{
+  let time=1000,fails=false;
+  const view=fixture(async()=>{if(fails)throw Error('Offline');return Response.json(credits());},{now:()=>time});await flush();
+  fails=true;time+=SUPPORTER_CACHE_TTL-1;
+  await view.mounted.refresh();assert.equal(view.elements['[data-supporter-viewport]'].hidden,false);
+  time++;await view.mounted.refresh();
+  assert.equal(view.elements['[data-supporter-viewport]'].hidden,true);assert.equal(view.elements['[data-supporter-pause]'].hidden,true);
+  assert.equal(view.elements['[data-supporters-empty]'].hidden,false);
+  assert.ok(view.elements['[data-supporter-roll]'].children.every(list=>list.children.length===0),'Expired names and amounts leave the DOM.');
+  assert.match(view.elements['[data-supporters-empty]'].textContent,/temporarily unavailable/);
+  fails=false;await view.mounted.refresh();
+  assert.equal(view.elements['[data-supporter-viewport]'].hidden,false);assert.equal(view.elements['[data-supporter-status]'].textContent,'');
+  view.mounted.destroy();
+});
+
+test('privacy cache expiry still clears hidden-page credits while network polling is suspended',async()=>{
+  let time=1000,calls=0;
+  const view=fixture(async()=>{calls++;return Response.json(credits());},{now:()=>time});await flush();
+  view.doc.visibilityState='hidden';time+=SUPPORTER_CACHE_TTL;
+  await view.mounted.refresh();
+  assert.equal(calls,1);assert.equal(view.elements['[data-supporter-viewport]'].hidden,true);
+  view.mounted.destroy();
+});
+
+test('a healthy empty response clears the unavailable message after privacy cache expiry',async()=>{
+  let time=1000,fails=false,data=credits();
+  const view=fixture(async()=>{if(fails)throw Error('Offline');return Response.json(data);},{now:()=>time,scope:'lifetime'});await flush();
+  fails=true;time+=SUPPORTER_CACHE_TTL;await view.mounted.refresh();
+  assert.match(view.elements['[data-supporters-empty]'].textContent,/temporarily unavailable/);
+  fails=false;data={supporters:[]};await view.mounted.refresh();
+  assert.equal(view.elements['[data-supporters-empty]'].textContent,'No public lifetime supporter credits are available yet.');
+  assert.equal(view.elements['[data-supporters-empty]'].hidden,false);
+  assert.equal(view.elements['[data-supporter-viewport]'].hidden,true);
+  assert.equal(view.elements['[data-supporter-status]'].textContent,'');
   view.mounted.destroy();
 });
