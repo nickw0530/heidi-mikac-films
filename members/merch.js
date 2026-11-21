@@ -1,3 +1,4 @@
+import {mountSupporters} from './supporters.js';
 const items=[['blu-ray','Written in the Light Blu-ray'],...['S','M','L','XL','XXL'].map(size=>['shirt-'+size.toLowerCase(),'Peach Tea Lady · '+size])];
 const currency=new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'});
 const money=cents=>currency.format(cents/100);
@@ -172,6 +173,10 @@ export async function mountMerch(panel,request){
       setTimeout(()=>URL.revokeObjectURL(url),1000);
     };
     fill(settings);render();
+    const supporterHost=document.createElement('section');
+    supporterHost.dataset.supporterAdmin='';
+    template.append(supporterHost);
+    await mountSupporters(supporterHost,request);
   }catch(error){
     delete panel.dataset.mounted;
     const retry=document.createElement('button');

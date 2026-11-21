@@ -1,4 +1,5 @@
 import {getStore} from '@netlify/blobs';
+import {publicSupporters} from './supporters.mjs';
 
 const key='shop';
 export const products=[
@@ -63,7 +64,9 @@ export function recognitionName(value){
 export function recognitionSettings(input){
   if(input===undefined)return {public:false,name:''};
   check(input&&typeof input==='object'&&!Array.isArray(input)&&typeof input.public==='boolean','Choose whether to show your display name.');
-  return input.public?{public:true,name:recognitionName(input.name)}:{public:false,name:''};
+  if(input.showAmount!==undefined)check(typeof input.showAmount==='boolean','Choose whether to show your support amount.');
+  return {...(input.public?{public:true,name:recognitionName(input.name)}:{public:false,name:''}),
+    ...(input.showAmount!==undefined?{showAmount:input.showAmount}:{})};
 }
 
 // Old orders and offline sales contain one item at the top level.
@@ -75,11 +78,15 @@ export function orderItems(order){
 
 export function supporterNames(shop){
   const seen=new Set(),names=[];
+  // Keep this legacy names-only response compatible, while applying the same
+  // cross-channel refund, duplicate and privacy decisions as the public wall.
+  const allowed=shop.supporterLedger?new Set(publicSupporters(shop).filter(row=>row.name!=='Anonymous').map(row=>row.name)):null;
   const sales=Object.values(shop.sales).filter(sale=>sale.status==='paid'&&sale.recognition?.public===true&&!sale.supporterHidden)
     .sort((a,b)=>(b.paidAt||0)-(a.paidAt||0));
   for(const sale of sales){
     let name;
     try{name=recognitionName(sale.recognition.name);}catch{continue;}
+    if(allowed&&!allowed.has(name))continue;
     const key=name.toLocaleLowerCase('en-US');
     if(seen.has(key))continue;
     seen.add(key);names.push(name);

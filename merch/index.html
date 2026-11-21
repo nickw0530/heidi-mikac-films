@@ -101,13 +101,23 @@
     </section>
     <section class="supporters-section" id="supporters" aria-labelledby="supporters-heading">
       <div><p class="support-kicker">The people behind the possibilities</p><h2 id="supporters-heading">Every story<br> has its <em>supporters.</em></h2><p>To everyone helping these films find their audience: thank you.</p></div>
-      <div class="supporter-wall"><h3>Our merch supporters</h3><p>Choose to share your name at checkout, or keep your support private. Both mean just as much.</p><ul class="supporter-names" data-supporters hidden aria-label="Supporters who chose public recognition"></ul><p class="supporter-empty" data-supporters-empty>Names appear here after a completed purchase when a supporter chooses to be listed.</p><a class="support-text-link" href="https://crowdfundr.com/e2ozh2" target="_blank" rel="noopener">Meet our Crowdfundr community <svg class="support-arrow" viewBox="0 0 20 20" aria-hidden="true"><path d="M5 15 15 5M5 5h10v10"/></svg></a></div>
+      <div class="supporter-wall" data-supporter-wall>
+        <p class="supporter-credit-label">With heartfelt thanks</p><h3>Part of our story.</h3>
+        <p>Our community of film supporters, from merch purchases to campaign contributions and support received directly.</p>
+        <div class="supporter-viewport" data-supporter-viewport tabindex="0" aria-label="Supporter credits. Pause the credits to browse every supporter." hidden><div class="supporter-roll" data-supporter-roll></div></div>
+        <p class="supporter-empty" data-supporters-empty>Loading our supporter credits…</p>
+        <button class="supporter-pause" type="button" data-supporter-pause aria-pressed="false" hidden>Pause credits</button>
+        <p class="supporter-wall-note">Names and cumulative amounts follow each supporter’s privacy choices. Gross support is shown before processing fees; merch excludes shipping. Purchases support our films and are not charitable donations.</p>
+        <p class="supporter-wall-note">Website and admin updates appear within seconds. Crowdfundr credits update after an import.</p>
+        <p class="supporter-sync" data-supporter-status role="status" aria-live="polite"></p>
+        <a class="support-text-link" href="https://crowdfundr.com/e2ozh2" target="_blank" rel="noopener">Meet our Crowdfundr community <svg class="support-arrow" viewBox="0 0 20 20" aria-hidden="true"><path d="M5 15 15 5M5 5h10v10"/></svg></a>
+      </div>
     </section>
     <section class="support-faq" aria-labelledby="faq-heading"><div><p class="support-kicker">A few helpful details</p><h2 id="faq-heading">Before you<br> check out.</h2></div><div>
       <details><summary>How does merch shipping work?</summary><p><span data-shipping-note>$5 U.S. shipping per order, even with multiple items.</span> Your selected shirt size and each item appear in your cart before you pay. For order questions, email <a href="mailto:hello@heidimikacfilms.com">hello@heidimikacfilms.com</a>.</p></details>
       <details><summary>Can I use PayPal, Venmo, or a card?</summary><p>Yes. Add your merch to the cart and continue to checkout to see the payment options available to you. Venmo appears for eligible buyers through PayPal Checkout.</p></details>
       <details><summary>Can I contribute without buying anything?</summary><p>Absolutely. Use <a href="#contribute">Make a contribution</a> to choose your amount on Crowdfundr. Contributions and campaign perks are checked out there; this merch cart is for purchases directly from Heidi Mikac Films.</p></details>
-      <details><summary>Will my name be public?</summary><p>Only if you choose. For this merch shop, public recognition is off by default. You can enter a display name at checkout, and only that name appears after payment. To remove it later, email <a href="mailto:hello@heidimikacfilms.com">hello@heidimikacfilms.com</a>. Crowdfundr has its own privacy choices during contribution checkout.</p></details>
+      <details><summary>Will my name or amount be public?</summary><p>You choose separately whether to share your name and merch support amount at checkout. Both are private by default. Support without a public name appears as Anonymous. Your email and address never appear on the wall. To change your preferences later, email <a href="mailto:hello@heidimikacfilms.com">hello@heidimikacfilms.com</a>. Crowdfundr privacy choices are respected when contributions are imported; imports are not a live connection.</p></details>
     </div></section>
   </div>
 </main>
@@ -121,7 +131,8 @@
       <div class="cart-totals"><div><span>Merch subtotal</span><span data-subtotal></span></div><div><span>U.S. shipping</span><span data-shipping></span></div><div class="cart-grand-total"><strong>Total</strong><strong data-total></strong></div></div>
       <form class="cart-recognition" data-recognition-form>
         <label class="recognition-choice"><input type="checkbox" name="public"><span>Show my chosen name on the supporter wall <small>Optional. Private is the default.</small></span></label>
-        <div class="recognition-name" data-recognition-name hidden><label for="supporter-name">Your public display name</label><input id="supporter-name" name="displayName" type="text" maxlength="60" autocomplete="nickname" placeholder="First name, nickname, or full name" disabled><p>Only this name will appear, after payment. Your email, address, and payment amount stay private.</p></div>
+        <div class="recognition-name" data-recognition-name hidden><label for="supporter-name">Your public display name</label><input id="supporter-name" name="displayName" type="text" maxlength="60" autocomplete="nickname" placeholder="First name, nickname, or full name" disabled><p>Only your chosen name appears after payment. Your email and address stay private.</p></div>
+        <label class="recognition-choice recognition-amount"><input type="checkbox" name="showAmount"><span>Show my merch support amount <small>Optional. Merchandise subtotal, excluding shipping. Purchases are not charitable donations.</small></span></label>
       </form>
       <button class="support-button cart-checkout-button" type="button" data-start-checkout>Continue to checkout <svg class="support-arrow" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 10h14M11 4l6 6-6 6"/></svg></button>
       <div class="cart-payment" data-payment-section hidden><div class="cart-payment-heading"><h3>Choose how to pay</h3><button type="button" class="cart-edit" data-edit-cart>Edit cart</button></div><p>PayPal, cards, and Venmo where available.</p><div data-paypal-buttons></div></div>
@@ -133,5 +144,5 @@
   </div>
 </dialog>
 <div class="cart-toast" data-cart-toast role="status" aria-live="polite" hidden></div>
-<script src="/site.js"></script><script type="module" src="/merch/shop.js"></script>
+<script src="/site.js"></script><script type="module" src="/merch/shop.js"></script><script type="module" src="/merch/supporters.js"></script>
 </body></html>

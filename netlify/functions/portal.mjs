@@ -13,6 +13,7 @@ import {offlineSigningKey,refreshOfflineCountersign} from '../lib/offline-signin
 import darkCatalog, {whereinCatalog} from '../lib/film-profiles.mjs';
 import {manualSale,merchStore,orderItems,paypalConfig,readShop,saveSettings,setSupporterVisibility,updateShop} from '../lib/merch.mjs';
 import {captureOrder} from './merch.mjs';
+import {adminSupporters,previewSupporterCsv,importSupporterCsv,saveManualSupporter,moderateSupporter} from '../lib/supporters.mjs';
 import { getStore } from '@netlify/blobs';
 import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
@@ -459,6 +460,25 @@ export default async function handle(req, context) {
   requireThat((session.passwordVersion||0)===((await get('passwords/'+self))?.version||0),'Please sign in again.',401);
   if(action==='logout'&&post){await store.delete(sessionKey);return json({}, {'Set-Cookie':cookie('',0)});}
   const onlyAdmin=()=>requireThat(admin,'Administrator access required.',403);
+  if(['supporterLedger','supporterPreview','supporterImport','supporterSave','supporterModerate'].includes(action)){
+    onlyAdmin();
+    const shopStore=merchStore(production);
+    if(action==='supporterLedger'){
+      requireThat(!post,'Use the supporter forms to make changes.',405);
+      const {shop,revision}=await readShop(shopStore);
+      return json({revision,transactions:adminSupporters(shop)});
+    }
+    requireThat(post,'Use the supporter management form.',405);
+    if(action==='supporterPreview'){
+      const {shop,revision}=await readShop(shopStore),preview=previewSupporterCsv(shop,body.csv);
+      return json({...preview,revision,rows:preview.rows.map(({identity,...row})=>row)});
+    }
+    const operation={supporterImport:importSupporterCsv,supporterSave:saveManualSupporter,supporterModerate:moderateSupporter}[action];
+    return json(await updateShop(shopStore,(shop,revision)=>{
+      requireThat(body.revision===revision,'Support or sales changed. Refresh and review before saving again.',409);
+      return operation(shop,body);
+    }));
+  }
   if(['merchSettings','merchSales','merchManualSale','merchCheckPayment','merchSupporterVisibility'].includes(action)){
     onlyAdmin();
     const shopStore=merchStore(production),config=paypalConfig(production);

@@ -24,7 +24,7 @@ function chosenName(value){
 export function createMerchShop({doc=document,win=window,fetcher=fetch,sdkLoader}={}){
   const find=selector=>doc.querySelector(selector);
   const dialog=find('#merch-cart'),list=find('[data-cart-items]'),status=find('[data-cart-status]');
-  const recognition=find('[data-recognition-form]'),optIn=recognition.elements.public,nameInput=recognition.elements.displayName;
+  const recognition=find('[data-recognition-form]'),optIn=recognition.elements.public,nameInput=recognition.elements.displayName,amountOptIn=recognition.elements.showAmount;
   const paymentSection=find('[data-payment-section]'),buttonArea=find('[data-paypal-buttons]');
   const checkoutButton=find('[data-start-checkout]'),checkButton=find('[data-check-payment]');
   const state={shop:null,cart:[],phase:'editing',generation:0,snapshot:null,pending:null,confirming:false,authorizing:false,instance:null,rendering:false,creating:null,createdIds:new Set(),recovered:false};
@@ -66,7 +66,7 @@ export function createMerchShop({doc=document,win=window,fetcher=fetch,sdkLoader
     cleanupPayment();
     state.pending={orderId:pending.orderId,items:cleanItems(pending.items)};
     if(!state.pending.items.length)state.pending.items=state.cart.map(item=>({...item}));
-    state.phase='pending';state.recovered=true;optIn.checked=false;nameInput.value='';
+    state.phase='pending';state.recovered=true;optIn.checked=false;amountOptIn.checked=false;nameInput.value='';
     setStatus('An earlier payment needs confirmation. Your PayPal order keeps the total you approved. Use Check payment before placing another order.');
     render();return true;
   }
@@ -138,14 +138,6 @@ export function createMerchShop({doc=document,win=window,fetcher=fetch,sdkLoader
     toastTimer=win.setTimeout(()=>{area.hidden=true;},4500);
   }
   function setStatus(message){status.textContent=message;}
-  function updateSupporters(){
-    const wall=find('[data-supporters]'),empty=find('[data-supporters-empty]');
-    wall.replaceChildren();
-    for(const name of (Array.isArray(state.shop?.supporters)?state.shop.supporters:[]).filter(value=>typeof value==='string').slice(0,30)){
-      const item=doc.createElement('li');item.textContent=name;wall.append(item);
-    }
-    wall.hidden=!wall.children.length;empty.hidden=Boolean(wall.children.length);
-  }
   function renderProducts(){
     for(const product of state.shop?.products||[]){
       const card=find('[data-product="'+product.id+'"]');if(!card)continue;
@@ -212,7 +204,7 @@ export function createMerchShop({doc=document,win=window,fetcher=fetch,sdkLoader
     find('[data-subtotal]').textContent=state.recovered?'See PayPal order':usd(amount.subtotal);
     find('[data-shipping]').textContent=state.recovered?'See PayPal order':usd(amount.shipping);
     find('[data-total]').textContent=state.recovered?'See PayPal order':usd(amount.total);
-    optIn.disabled=locked();nameInput.disabled=locked()||!optIn.checked;
+    optIn.disabled=locked();amountOptIn.disabled=locked();nameInput.disabled=locked()||!optIn.checked;
     find('[data-recognition-name]').hidden=!optIn.checked;
     recognition.hidden=Boolean(state.pending)&&state.recovered;
     checkoutButton.hidden=state.phase!=='editing';
@@ -254,7 +246,7 @@ export function createMerchShop({doc=document,win=window,fetcher=fetch,sdkLoader
   async function refreshShop(){
     const shop=await request();
     if(!Array.isArray(shop.products))throw Error('Product availability could not be loaded.');
-    state.shop=shop;updateSupporters();return shop;
+    state.shop=shop;return shop;
   }
   async function beginCheckout(){
     if(recoverPending()){openCart();return;}
@@ -272,7 +264,7 @@ export function createMerchShop({doc=document,win=window,fetcher=fetch,sdkLoader
       if(!state.shop.clientId||!amount.available||amount.total!==previous.total||amount.shipping!==previous.shipping){
         state.phase='editing';render();setStatus(!amount.available?'An item is no longer available. Update your cart before checking out.':!state.shop.clientId?'Online checkout is currently unavailable. Your cart is saved.':'Prices or shipping changed. Review the updated total, then continue.');return;
       }
-      state.snapshot=Object.freeze({items:Object.freeze(state.cart.map(item=>Object.freeze({...item}))),recognition:Object.freeze({public:optIn.checked,name:optIn.checked?publicName:''}),amount:Object.freeze(amount)});
+      state.snapshot=Object.freeze({items:Object.freeze(state.cart.map(item=>Object.freeze({...item}))),recognition:Object.freeze({public:optIn.checked,name:optIn.checked?publicName:'',showAmount:amountOptIn.checked}),amount:Object.freeze(amount)});
       state.phase='payment';setStatus('Loading secure checkout…');render();
       await renderPayment(generation);
     }catch(error){if(generation===state.generation)editCart(error.message);}
@@ -344,7 +336,8 @@ export function createMerchShop({doc=document,win=window,fetcher=fetch,sdkLoader
         const purchased=new Map(pending.items.map(item=>[item.sku,item.quantity]));
         state.cart=state.cart.flatMap(item=>{const quantity=Math.max(0,item.quantity-(purchased.get(item.sku)||0));return quantity?[{sku:item.sku,quantity}]:[];});
         clearPending();saveCart();cleanupPayment();state.phase='success';
-        optIn.checked=false;nameInput.value='';
+        optIn.checked=false;amountOptIn.checked=false;nameInput.value='';
+        if(win.dispatchEvent&&win.Event)win.dispatchEvent(new win.Event('hmf-supporters-refresh'));
         find('[data-order-reference]').textContent='Order reference '+(typeof result.reference==='string'?result.reference:pending.orderId)+'.';
         render();openCart();
         try{await refreshShop();render();}catch{}
@@ -369,7 +362,7 @@ export function createMerchShop({doc=document,win=window,fetcher=fetch,sdkLoader
       state.pending={orderId:pending.orderId,items:cleanItems(pending.items)};state.phase='pending';state.recovered=true;
       if(!state.pending.items.length)state.pending.items=state.cart.map(item=>({...item}));
     }
-    optIn.checked=false;nameInput.value='';
+    optIn.checked=false;amountOptIn.checked=false;nameInput.value='';
     win.addEventListener?.('focus',()=>{recoverPending();});
     win.addEventListener?.('storage',event=>{if(event.key===pendingKey)recoverPending();});
     for(const button of doc.querySelectorAll('[data-open-cart]'))button.addEventListener('click',openCart);
