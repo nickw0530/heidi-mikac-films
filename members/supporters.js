@@ -31,6 +31,27 @@ export function manualCampaignAssignment(selected,previous=null){
   return {campaignId:selected};
 }
 
+const creditName=value=>{
+  if(typeof value!=='string')return null;
+  const name=value.normalize('NFKC').trim().replace(/\s+/gu,' ');
+  return [...name].length<=120&&!/[<>\p{Cc}\p{Cf}\p{Cs}]/u.test(value)&&!/[<>\p{Cc}\p{Cf}\p{Cs}]/u.test(name)?name:null;
+};
+
+export function publicCreditNameEditable(row){
+  const name=creditName(row?.name);
+  return row?.showName===true&&!!name&&name.toLocaleLowerCase('en-US')!=='anonymous';
+}
+
+export function publicCreditNameChange(row,value){
+  if(!publicCreditNameEditable(row))return {};
+  const name=creditName(value);
+  if(name===null)throw Error('Enter a plain-text public credit name of up to 120 characters, or leave it blank.');
+  const selected=name||null,previous=creditName(row.displayName)||null;
+  if(selected===previous)return {};
+  if(selected&&(!(row.amount>0)||row.hidden||row.duplicateOf||row.archived))throw Error('Choose a visible, eligible payment before setting a public credit name. A saved preference can be cleared here.');
+  return {displayName:selected};
+}
+
 // All personal data stays within the existing authenticated portal. Dynamic
 // values are assigned as text, never interpolated into markup or persisted.
 export async function mountSupporters(host,request){
@@ -89,6 +110,10 @@ export async function mountSupporters(host,request){
       <p data-supporter-moderation-label></p>
       <label>Verified same supporter as<select name="sameSupporterAs"><option value="">Separate supporter / no verified match</option></select></label>
       <p>Choose only after confirming these names belong to the same person. Their eligible support totals combine; each payment keeps its own privacy and visibility settings.</p>
+      <div data-supporter-credit-name hidden>
+        <label>Public credit name (optional)<input name="displayName" maxlength="120" autocomplete="off" disabled></label>
+        <p>Leave blank to use the campaign or transaction name. This sets the name for the combined public credit without changing source transactions or name privacy.</p>
+      </div>
       <label>This is the same payment as<select name="duplicateOf"><option value="">Not a duplicate payment</option></select></label>
       <p>Choose only if these records describe the same payment. Repeat payments from one supporter are separate transactions and should both count.</p>
       <div data-supporter-anonymous-amount hidden>
@@ -171,6 +196,10 @@ export async function mountSupporters(host,request){
       const option=element('option','Existing verified match — record currently unavailable');option.value=row.sameSupporterAs;moderation.elements.sameSupporterAs.append(option);
     }
     moderation.elements.sameSupporterAs.value=row.sameSupporterAs||'';
+    const editCreditName=publicCreditNameEditable(row);
+    find('[data-supporter-credit-name]').hidden=!editCreditName;
+    moderation.elements.displayName.disabled=!editCreditName;
+    moderation.elements.displayName.value=editCreditName?row.displayName||'':'';
     populate(moderation.elements.duplicateOf,row.id);moderation.elements.duplicateOf.value=row.duplicateOf||'';
     const verifyAmount=needsAnonymousAmount(row),verified=anonymousAmount(row);
     find('[data-supporter-anonymous-amount]').hidden=!verifyAmount;
@@ -194,7 +223,7 @@ export async function mountSupporters(host,request){
       const date=new Date(record.date),dateText=Number.isFinite(date.valueOf())?date.toLocaleString():'';
       const campaignLabel=record.source==='manual'?manualCampaignChoices(campaigns,record.campaignId||'').find(choice=>choice.value===(record.campaignId||''))?.label:record.campaignTitle;
       row.insertCell().textContent=[record.source==='crowdfundr-public'?'Crowdfundr public activity':record.source,campaignLabel,dateText].filter(Boolean).join(' · ');
-      row.insertCell().textContent=record.name||'Anonymous supporter';
+      row.insertCell().textContent=[record.name||'Anonymous supporter',publicCreditNameEditable(record)&&record.displayName?'Public credit: '+record.displayName:''].filter(Boolean).join(' · ');
       const unknownPublicAmount=record.source==='crowdfundr-public'&&!record.showAmount&&!record.amountVerified;
       row.insertCell().textContent=(unknownPublicAmount?needsAnonymousAmount(record)?'Amount not verified':'Private amount':money(record.gross))+' / '+(record.source==='crowdfundr-public'?'not reported':record.refunded==null?'unknown':money(record.refunded));
       row.insertCell().textContent=[record.status,record.hidden?'Hidden':'',record.duplicateOf?'Duplicate — excluded':'',record.sameSupporterAs?'Verified supporter match':'',record.warning||''].filter(Boolean).join(' · ');
@@ -284,6 +313,7 @@ export async function mountSupporters(host,request){
       if(!moderating)throw Error('Choose a payment to review.');
       const input={id:moderating.id,revision,moderationRevision:moderating.moderationRevision,hidden:moderating.hidden===true,duplicateOf:moderation.elements.duplicateOf.value};
       if(moderation.elements.sameSupporterAs.value!==(moderating.sameSupporterAs||''))input.sameSupporterAs=moderation.elements.sameSupporterAs.value;
+      Object.assign(input,publicCreditNameChange(moderating,moderation.elements.displayName.value));
       if(needsAnonymousAmount(moderating)){
         const verified=cents(moderation.elements.anonymousGross.value);
         if(verified!==null&&(!Number.isSafeInteger(verified)||verified<=0||verified>2000000))throw Error('Enter the exact verified amount between $0.01 and $20,000, or leave it blank.');

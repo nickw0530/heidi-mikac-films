@@ -25,6 +25,9 @@ export function paymentIdentity(payer){
 const referenceKey=row=>row.reference&&row.processor?row.processor+':'+row.reference.trim():'';
 const balance=row=>row.status==='paid'||row.source==='crowdfundr-public'&&row.status==='public'?row.gross:row.status==='partially refunded'&&money(row.refunded)&&row.refunded>0&&row.refunded<row.gross?row.gross-row.refunded:0;
 const publicName=row=>{if(row.showName){try{return plain(row.name,120)||'Anonymous';}catch{}}return 'Anonymous';};
+const canUsePreferredName=row=>row.showName===true&&publicName(row)!=='Anonymous'&&!row.hidden&&!row.duplicateOf&&!row.archived;
+const canPreferName=row=>canUsePreferredName(row)&&money(balance(row))&&balance(row)>0;
+const newerPreference=(next,previous)=>next&&(!previous||next.updatedAt>previous.updatedAt||next.updatedAt===previous.updatedAt&&next.id>previous.id);
 // Native public activity intentionally contains no amount when the donor hid
 // it. Its zero sentinel is unknown, unlike stored website/manual/CSV balances.
 const amountKnown=row=>row.source!=='crowdfundr-public'||row.showAmount===true||row.amountVerified===true;
@@ -65,7 +68,9 @@ export function supporterTransactions(shop,{includeArchived=false}={}){
   const override=own(shop.supporterLedger?.moderation,row.id)||{};
   const anonymousGross=row.source==='crowdfundr-public'&&money(override.anonymousGross)&&override.anonymousGross>0?override.anonymousGross:null;
   const amountVerified=anonymousGross!==null&&row.showAmount!==true&&publicName(row)==='Anonymous';
-  return {...row,...(row.source==='crowdfundr-public'?{anonymousGross}:{}),amountVerified,...(amountVerified?{gross:anonymousGross}:{}),hidden:row.hidden||override.hidden===true||row.apiUnavailable===true||row.publicStale===true,duplicateOf:override.duplicateOf||'',sameSupporterAs:own(override,'sameSupporterAs')??row.sameSupporterAs??'',...(row.apiUnavailable||row.publicStale?{warning:'Current campaign privacy information is unavailable; credit is withheld until the next complete check.'}:{})};
+  let displayName=null;try{if(typeof override.displayName==='string')displayName=plain(override.displayName,120)||null;}catch{}
+  const displayNameUpdatedAt=Number.isSafeInteger(override.displayNameUpdatedAt)&&override.displayNameUpdatedAt>0?override.displayNameUpdatedAt:0;
+  return {...row,...(row.source==='crowdfundr-public'?{anonymousGross}:{}),displayName,displayNameUpdatedAt,amountVerified,...(amountVerified?{gross:anonymousGross}:{}),hidden:row.hidden||override.hidden===true||row.apiUnavailable===true||row.publicStale===true,duplicateOf:override.duplicateOf||'',sameSupporterAs:own(override,'sameSupporterAs')??row.sameSupporterAs??'',...(row.apiUnavailable||row.publicStale?{warning:'Current campaign privacy information is unavailable; credit is withheld until the next complete check.'}:{})};
  });
 }
 
@@ -152,7 +157,7 @@ export function publicSupporters(shop,{scope='lifetime'}={}){
  // Prefer verified website captures over imports, then imports over manual.
  rows.sort((a,b)=>({website:0,'crowdfundr-public':1,crowdfundr:2,manual:3}[a.source]-{website:0,'crowdfundr-public':1,crowdfundr:2,manual:3}[b.source])||a.id.localeCompare(b.id));
  const matched=matchedIdentities(all,shop.supporterLedger?.moderation);
- const credits=[];
+ const credits=[],namePreferences=new Map();
  for(const original of rows){
   let row=original,anonymousAmountKnown=amountKnown(row);const ref=referenceKey(row);
   if(row.duplicateOf||ref&&seen.has(ref))continue;
@@ -169,6 +174,13 @@ export function publicSupporters(shop,{scope='lifetime'}={}){
   }
   const publicCredit=row.source==='crowdfundr-public'&&row.status==='public';
   if(row.hidden||!money(row.gross)||!publicCredit&&!balance(row))continue;
+  // A reviewed public name follows this existing identity into either scope.
+  // Only eligible, deduplicated named payments can supply that preference;
+  // it never participates in identity/name matching or grants privacy consent.
+  if(row.displayName&&canUsePreferredName(row)){
+   const key=matched.identity(row),preference={name:row.displayName,updatedAt:row.displayNameUpdatedAt,id:row.id};
+   if(newerPreference(preference,namePreferences.get(key)))namePreferences.set(key,preference);
+  }
   // Reconcile copies before applying a display scope. A hidden/refunded or
   // private copy in another channel cannot be bypassed by a current-only view.
   if(scope==='current'&&!inCurrentCampaign(row)&&!copies?.some(inCurrentCampaign))continue;
@@ -179,26 +191,28 @@ export function publicSupporters(shop,{scope='lifetime'}={}){
   const name=publicName(row);
   // A private-name transaction cannot be tied to a named transaction publicly.
   const groupKey=name==='Anonymous'?'anonymous:'+row.id:'named:'+creditIdentity(row);
-  const group=groups.get(groupKey)||{name,amount:0,currency:'USD',date:0};
+  const group=groups.get(groupKey)||{name,amount:0,currency:'USD',date:0,preference:null};
   if((row.date||0)>=group.date)group.name=name;
+  const preference=name==='Anonymous'?null:namePreferences.get(matched.identity(row));
+  if(newerPreference(preference,group.preference))group.preference=preference;
   const showAmount=name==='Anonymous'?row.anonymousAmountKnown:row.showAmount;
   group.amount=group.amount===null||!showAmount?null:group.amount+balance(row);
   group.date=Math.max(group.date,row.date||0);groups.set(groupKey,group);
  }
- return [...groups.values()].sort((a,b)=>b.date-a.date||a.name.localeCompare(b.name)).map(({date,...publicRow})=>publicRow);
+ return [...groups.values()].map(group=>({...group,name:group.preference?.name||group.name})).sort((a,b)=>b.date-a.date||a.name.localeCompare(b.name)).map(({date,preference,...publicRow})=>publicRow);
 }
 // Moderation depends on the selected record, not the shop-wide revision that
 // changes whenever a scheduled public-feed check refreshes its timestamp.
 // Explicit keys keep this stable across object serialization and feed refreshes.
 function moderationRevision(row){
  const fields=['id','source','reference','processor','channel','status','gross','refunded','name','showName','showAmount','hidden',
-  'identity','date','duplicateOf','sameSupporterAs','apiUnavailable','publicStale','campaignId','archived','anonymousGross','amountVerified'];
+  'identity','date','duplicateOf','sameSupporterAs','apiUnavailable','publicStale','campaignId','archived','anonymousGross','amountVerified','displayName','displayNameUpdatedAt'];
  return hash(JSON.stringify(fields.map(key=>[key,row[key]??null])));
 }
 export function adminSupporters(shop){
  const campaigns=new Map(supporterCampaigns(shop).map(campaign=>[campaign.id,campaign]));
  return supporterTransactions(shop,{includeArchived:true}).map(row=>{
-  const {identity,...safe}=row;
+  const {identity,displayNameUpdatedAt,...safe}=row;
   const campaign=['crowdfundr','crowdfundr-public','manual'].includes(row.source)?campaigns.get(row.campaignId||(row.source==='manual'?'':legacyCampaign.id)):null;
   return {...safe,...(campaign?{campaignTitle:campaign.title}:{}),amount:balance(row),moderationRevision:moderationRevision(row)};
  }).sort((a,b)=>b.date-a.date||a.id.localeCompare(b.id));
@@ -330,6 +344,8 @@ export function moderateSupporter(shop,input){
  if(input.archived!==undefined)fail(row.source==='manual'&&typeof input.archived==='boolean','Only manual records can be deleted or restored.');
  if(input.anonymousGross!==undefined)fail(row.source==='crowdfundr-public'&&publicName(row)==='Anonymous'&&
   (input.anonymousGross===null||money(input.anonymousGross)&&input.anonymousGross>0),'Enter a verified positive USD amount for an anonymous Crowdfundr payment, or clear the verification.');
+ const displayName=input.displayName===undefined?undefined:input.displayName===null?null:plain(input.displayName,120)||null;
+ if(displayName)fail(canPreferName(row),'Choose an eligible named payment for a preferred public credit name.');
  const duplicateOf=input.duplicateOf===undefined?row.duplicateOf||'':input.duplicateOf||'';
  fail(!duplicateOf||duplicateOf!==input.id&&rows.some(row=>row.id===duplicateOf&&!row.duplicateOf),'Choose a different original transaction.');
  const sameSupporterAs=input.sameSupporterAs===undefined?row.sameSupporterAs||'':validateSupporterMatch(rows.filter(record=>!record.archived),input.id,input.sameSupporterAs);
@@ -338,6 +354,11 @@ export function moderateSupporter(shop,input){
  const state=ledger(shop);
  state.moderation[input.id]={...own(state.moderation,input.id),hidden:input.hidden,duplicateOf,sameSupporterAs};
  if(input.anonymousGross!==undefined)state.moderation[input.id].anonymousGross=input.anonymousGross;
+ if(displayName!==undefined){
+  state.moderation[input.id].displayName=displayName;
+  if(displayName)state.moderation[input.id].displayNameUpdatedAt=Math.max(Date.now(),row.displayNameUpdatedAt+1);
+  else delete state.moderation[input.id].displayNameUpdatedAt;
+ }
  if(input.sameSupporterAs!==undefined)saveSupporterMatchProof(state,rows,input.id,sameSupporterAs);
  if(row.source==='manual')shop.supporterLedger.transactions[input.id].hidden=input.hidden;
  if(input.archived!==undefined)shop.supporterLedger.transactions[input.id].archived=input.archived;
