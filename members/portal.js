@@ -487,7 +487,8 @@ async function openHomepagePromoSettings(panel){
    '<div data-promo-upload-current hidden><p>Current upload <strong data-promo-upload-name></strong></p><label><input type="checkbox" name="removeVideo"> Remove uploaded video</label></div>'+
    '<label>YouTube link <small>(optional with an upload)</small><input name="videoUrl" type="url" maxlength="500" placeholder="https://youtu.be/…"></label>'+
    '<label><input type="checkbox" name="autoplayMuted"> Automatically play a muted video preview</label>'+
-   '<p><small>Starts a muted preview when the homepage opens. Visitors can choose to play with sound. Browser autoplay limits and reduced-motion preferences are respected.</small></p>'+
+   '<p><small>Auto-play starts muted. Visitors use the Play/Pause and Sound controls below the preview. Browser autoplay limits and reduced-motion preferences are respected.</small></p>'+
+   '<p><small>YouTube may briefly show its branding while loading; an uploaded MP4 avoids YouTube player branding.</small></p>'+
    '<label>YouTube thumbnail<select name="thumbnail">'+promoThumbnailChoices.map(choice=>'<option value="'+choice.value+'">'+choice.label+'</option>').join('')+'</select></label>'+
    '<p><small>YouTube stills 1–3 may look softer than the main thumbnail. Choose a supplied image; exact video timestamps are not available here.</small></p>'+
    '<div data-promo-thumbnail-preview><img data-promo-thumbnail-image hidden width="320" height="180" style="max-width:100%;height:auto;aspect-ratio:16/9;object-fit:cover;background:#090909" decoding="async"><p data-promo-thumbnail-note role="status" aria-live="polite"></p></div>'+

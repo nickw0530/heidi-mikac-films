@@ -104,93 +104,143 @@ function applyPromoPoster(target, urls) {
   show();
 }
 
-function mountYouTubePlayer(promo, link, motion, youtubeId, autoplay) {
-  const host = document.createElement("div"), target = document.createElement("div");
-  host.className = "promo-youtube";
-  host.hidden = true;
-  host.append(target);
-  const fallback = document.createElement("a");
-  fallback.className = "promo-youtube-fallback";
-  fallback.href = "https://www.youtube.com/watch?v=" + youtubeId;
-  fallback.textContent = "Watch on YouTube ↗";
-  fallback.hidden = true;
+function promoPlaybackStatus(frame) {
   const status = document.createElement("p");
   status.className = "promo-youtube-status";
   status.setAttribute("role", "status");
   status.hidden = true;
-  link.parentNode.append(host, status, fallback);
-  let started = false, failed = false, player, readyTimer;
-  const unavailable = () => {
-    if (failed) return;
-    failed = true;
-    clearTimeout(readyTimer);
-    host.hidden = true;
-    link.hidden = false;
-    fallback.hidden = false;
-    status.hidden = false;
-    status.textContent = "The embedded video is unavailable. Watch it on YouTube instead.";
-    try { player?.destroy(); } catch {}
+  frame.parentNode.append(status);
+  return status;
+}
+
+function mountYouTubePlayer(frame, motion, sound, youtubeId, autoplay) {
+  const host = document.createElement("div");
+  host.className = "promo-youtube";
+  host.hidden = true;
+  host.inert = true;
+  host.setAttribute("inert", "");
+  frame.after(host);
+  const status = promoPlaybackStatus(frame);
+  let player, readyTimer, generation = 0, ready = false, loading = false, playing = false, hasPlayed = false, muted = true;
+  const paint = () => {
+    motion.hidden = false;
+    motion.disabled = loading;
+    motion.textContent = loading ? "Loading preview…" : playing ? "Pause preview" : hasPlayed ? "Resume preview" : "Play preview";
+    motion.setAttribute("aria-pressed", String(playing));
+    sound.hidden = false;
+    sound.disabled = !ready;
+    sound.textContent = muted ? "Unmute preview" : "Mute preview";
+    sound.setAttribute("aria-pressed", String(!muted));
   };
-  const start = muted => {
-    if (started || failed) return;
-    started = true;
-    link.hidden = true;
+  const unavailable = () => {
+    generation++;
+    clearTimeout(readyTimer);
+    loading = ready = playing = hasPlayed = false;
+    host.hidden = true;
+    frame.hidden = false;
+    status.hidden = false;
+    status.textContent = "The video preview is unavailable. Select Play preview to try again.";
+    try { player?.destroy(); } catch {}
+    player = undefined;
+    paint();
+  };
+  const play = () => {
+    playing = true;
+    status.hidden = true;
+    paint();
+    player.playVideo();
+  };
+  const start = automatic => {
+    if (loading) return;
+    const current = ++generation;
+    const failed = () => { if (current === generation) unavailable(); };
+    loading = true;
+    muted = true;
+    status.hidden = true;
+    frame.hidden = true;
     host.hidden = false;
-    fallback.hidden = false;
-    motion.hidden = true;
+    const target = document.createElement("div");
+    host.replaceChildren(target);
+    paint();
     loadYouTubeApi().then(api => {
-      if (failed) return;
-      readyTimer = setTimeout(unavailable, 12000);
+      if (current !== generation) return;
+      readyTimer = setTimeout(failed, 12000);
       player = new api.Player(target, {
         width: "100%", height: "100%", videoId: youtubeId,
-        playerVars: {autoplay: 0, controls: 1, enablejsapi: 1, playsinline: 1, loop: 1, playlist: youtubeId, origin: location.origin},
+        playerVars: {autoplay: 0, controls: 0, disablekb: 1, fs: 0, cc_load_policy: 1, enablejsapi: 1, playsinline: 1, loop: 1, playlist: youtubeId, origin: location.origin},
         events: {
           onReady: event => {
-            if (failed) return;
+            if (current !== generation) return;
             clearTimeout(readyTimer);
+            loading = false;
+            ready = true;
             const iframe = event.target.getIframe();
             iframe.title = "Homepage promotional video";
-            iframe.setAttribute("allow", "autoplay; encrypted-media; picture-in-picture; fullscreen");
-            iframe.setAttribute("allowfullscreen", "");
-            if (muted) event.target.mute();
-            if (!muted || !matchMedia("(prefers-reduced-motion: reduce)").matches) event.target.playVideo();
+            iframe.setAttribute("allow", "autoplay; encrypted-media");
+            iframe.removeAttribute("allowfullscreen");
+            iframe.setAttribute("tabindex", "-1");
+            iframe.setAttribute("aria-hidden", "true");
+            iframe.inert = true;
+            iframe.setAttribute("inert", "");
+            event.target.mute();
+            paint();
+            if (!automatic || !matchMedia("(prefers-reduced-motion: reduce)").matches) play();
           },
           onAutoplayBlocked: () => {
+            if (current !== generation) return;
+            playing = false;
             status.hidden = false;
-            status.textContent = "Playback did not start automatically. Use the video's Play button or watch on YouTube.";
+            status.textContent = "Playback is paused. Select Play preview to start it.";
+            paint();
           },
-          onStateChange: event => { if (event.data === 1) status.hidden = true; },
-          onError: unavailable
+          onStateChange: event => {
+            if (current !== generation) return;
+            if (event.data === 1) { playing = hasPlayed = true; status.hidden = true; }
+            else if ([0, 2, 5].includes(event.data)) playing = false;
+            paint();
+          },
+          onError: failed
         }
       });
-    }).catch(unavailable);
+    }).catch(failed);
   };
-  link.addEventListener("click", event => {
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button > 0 || failed) return;
-    event.preventDefault();
-    start(false);
+  motion.addEventListener("click", () => {
+    if (loading) return;
+    try {
+      if (!ready) start(false);
+      else if (playing) { player.pauseVideo(); playing = false; paint(); }
+      else play();
+    } catch { unavailable(); }
   });
+  sound.addEventListener("click", () => {
+    if (!ready) return;
+    try {
+      if (muted) player.unMute(); else player.mute();
+      muted = !muted;
+      paint();
+    } catch { unavailable(); }
+  });
+  paint();
   if (autoplay) start(true);
 }
 
 function mountPromoVideo(promo, youtubeId, videoPath, options = {}) {
-  const link = promo.querySelector(".promo-player");
+  const frame = promo.querySelector(".promo-player");
   const motion = promo.querySelector(".promo-motion");
+  const sound = promo.querySelector(".promo-sound");
   youtubeId = /^[\w-]{11}$/.test(youtubeId || "") ? youtubeId : "";
-  const youtubeUrl = youtubeId ? "https://www.youtube.com/watch?v=" + youtubeId : "";
   const uploadedVideo = videoPath && new URL(videoPath, location.origin).origin === location.origin ? videoPath : "";
-  if (!youtubeUrl && !uploadedVideo) return false;
+  if (!youtubeId && !uploadedVideo) return false;
 
   const bluRayPreview = !uploadedVideo && youtubeId === "f8t4gAIy5t0";
   const previewUrl = bluRayPreview ? "/assets/written-in-the-light-promo-preview.mp4" : uploadedVideo;
   const posters = promoPosterUrls(youtubeId, options.thumbnail, bluRayPreview);
-  link.href = youtubeUrl || uploadedVideo;
   function showPoster() {
-    if (!posters.length) return;
+    if (!posters.length || frame.querySelector("img")) return;
     const image = document.createElement("img");
     image.alt = "";
     applyPromoPoster(image, posters);
-    link.prepend(image);
+    frame.prepend(image);
   }
 
   let preview;
@@ -202,6 +252,10 @@ function mountPromoVideo(promo, youtubeId, videoPath, options = {}) {
     preview.muted = true;
     preview.defaultMuted = true;
     preview.playsInline = true;
+    preview.controls = false;
+    preview.disablePictureInPicture = true;
+    preview.disableRemotePlayback = true;
+    preview.setAttribute("tabindex", "-1");
     preview.autoplay = autoplay;
     preview.loop = true;
     preview.preload = !autoplay && posters.length ? "none" : "metadata";
@@ -216,50 +270,58 @@ function mountPromoVideo(promo, youtubeId, videoPath, options = {}) {
       captions.track.mode = "showing";
     }
     preview.setAttribute("aria-hidden", "true");
+    const status = promoPlaybackStatus(frame);
+    let failed = false;
+    const paint = () => {
+      motion.textContent = failed ? "Play preview" : !preview.paused ? "Pause preview" : preview.played.length ? "Resume preview" : "Play preview";
+      motion.setAttribute("aria-pressed", String(!failed && !preview.paused));
+      sound.hidden = false;
+      sound.disabled = failed;
+      sound.textContent = preview.muted ? "Unmute preview" : "Mute preview";
+      sound.setAttribute("aria-pressed", String(!preview.muted));
+    };
+    const play = () => preview.play().catch(() => {
+      status.hidden = false;
+      status.textContent = "Playback is paused. Select Play preview to try again.";
+      paint();
+    });
     motion.hidden = false;
     preview.addEventListener("playing", () => {
-      motion.textContent = "Pause preview";
+      status.hidden = true;
+      paint();
     });
-    preview.addEventListener("pause", () => {
-      motion.textContent = preview.played.length ? "Resume preview" : "Play preview";
-    });
+    preview.addEventListener("pause", paint);
+    preview.addEventListener("volumechange", paint);
     preview.addEventListener("error", () => {
-      preview.remove();
-      motion.hidden = true;
+      failed = true;
+      preview.pause();
+      preview.hidden = true;
+      status.hidden = false;
+      status.textContent = "The video preview is unavailable. Select Play preview to try again.";
       showPoster();
-    }, {once: true});
+      paint();
+    });
     if (uploadedVideo) preview.addEventListener("timeupdate", () => {
       if (preview.currentTime >= 12) preview.currentTime = 0;
     });
     motion.addEventListener("click", () => {
-      if (preview.paused) preview.play().catch(() => {});
+      if (failed) {
+        failed = false;
+        preview.hidden = false;
+        preview.muted = true;
+        frame.querySelector("img")?.remove();
+        preview.load();
+        play();
+      } else if (preview.paused) play();
       else preview.pause();
     });
+    sound.addEventListener("click", () => { if (!failed) { preview.muted = !preview.muted; paint(); } });
     preview.src = previewUrl;
-    link.prepend(preview);
+    frame.prepend(preview);
+    paint();
   } else {
     showPoster();
-    mountYouTubePlayer(promo, link, motion, youtubeId, autoplay);
-  }
-
-  const viewer = promo.querySelector(".promo-viewer");
-  if (!youtubeUrl && typeof viewer.showModal === "function") {
-    const fullVideo = viewer.querySelector("video");
-    let resumePreview = false;
-    link.addEventListener("click", event => {
-      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-      event.preventDefault();
-      resumePreview = preview && !preview.paused;
-      preview?.pause();
-      viewer.showModal();
-      fullVideo.src = uploadedVideo;
-      fullVideo.play().catch(() => {});
-    });
-    viewer.addEventListener("close", () => {
-      fullVideo.removeAttribute("src");
-      fullVideo.load();
-      if (resumePreview) preview.play().catch(() => {});
-    });
+    mountYouTubePlayer(frame, motion, sound, youtubeId, autoplay);
   }
   return true;
 }

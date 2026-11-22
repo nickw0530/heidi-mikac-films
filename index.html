@@ -78,16 +78,15 @@
 <section class="homepage-promo" id="homepage-promo" aria-labelledby="homepage-promo-title" hidden>
   <h1 id="homepage-promo-title"></h1>
   <div class="promo-media">
-    <a class="promo-player"><span class="promo-watch">Watch full video <span aria-hidden="true">↗</span></span></a>
+    <div class="promo-player"></div>
+  </div>
+  <div class="promo-controls" aria-label="Video preview controls">
     <button type="button" class="promo-motion" hidden>Play preview</button>
+    <button type="button" class="promo-sound" hidden>Sound on</button>
   </div>
   <div class="promo-actions">
     <a class="btn btn-primary" data-promo-button hidden></a>
   </div>
-  <dialog class="promo-viewer" aria-label="Full promo video">
-    <form method="dialog"><button type="submit">Close video</button></form>
-    <video controls playsinline></video>
-  </dialog>
 </section>
 <section class="hero" id="top">
   <div class="hero-montage" aria-hidden="true">

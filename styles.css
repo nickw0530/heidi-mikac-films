@@ -84,7 +84,7 @@ button{font:inherit}
 .hero-actions{display:flex;justify-content:center;gap:12px;flex-wrap:wrap}
 .hero-sub{font-size:14px;color:#c4b5ac;letter-spacing:.12em;text-transform:uppercase;margin-top:24px}
 
-.hero[hidden],.homepage-promo[hidden],.promo-actions a[hidden],.promo-player[hidden],.promo-youtube[hidden],.promo-youtube-fallback[hidden]{display:none}
+.hero[hidden],.homepage-promo[hidden],.promo-actions a[hidden],.promo-player[hidden],.promo-youtube[hidden]{display:none}
 .homepage-promo{
   background:radial-gradient(ellipse at 50% 30%,#2f181b 0%,var(--bg) 72%);
   padding:clamp(108px,12vw,165px) clamp(18px,5vw,64px) clamp(38px,6vw,82px);
@@ -110,46 +110,22 @@ button{font:inherit}
 }
 .promo-player img,.promo-player video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
 .promo-youtube{position:relative;width:100%;min-width:0;aspect-ratio:16/9;min-height:202px;border:1px solid var(--line);background:#090909;box-shadow:0 18px 60px #0008}
-.promo-youtube iframe{position:absolute;inset:0;width:100%;height:100%;display:block;border:0}
-.promo-youtube-fallback{display:inline-flex;align-items:center;min-height:44px;margin-top:8px;font-size:16px;text-decoration:underline;text-underline-offset:4px}
+.promo-youtube iframe{position:absolute;inset:0;width:100%;height:100%;display:block;border:0;pointer-events:none}
 .promo-youtube-status{font-size:16px;line-height:1.5;margin:8px 0 0;color:var(--muted)}
 .promo-player video{pointer-events:none}
 .promo-player video::cue{
   color:#fff;background-color:rgba(12,10,11,.92);
   font:600 clamp(16px,2vw,27px)/1.2 var(--sans)
 }
-.promo-watch,.promo-motion{
-  position:absolute;bottom:clamp(6px,1.25vw,16px);color:var(--text);background:#120f10e8;
+.promo-controls{display:flex;justify-content:center;flex-wrap:wrap;gap:10px;max-width:1040px;margin:10px auto 0}
+.promo-controls:not(:has(button:not([hidden]))){display:none}
+.promo-motion,.promo-sound{
+  color:var(--text);background:#120f10e8;border:1px solid #a29691;cursor:pointer;min-height:44px;
   font:600 16px/1.4 var(--sans);padding:10px 12px
 }
-.promo-watch{left:clamp(6px,1.25vw,16px)}
-.promo-player:hover .promo-watch,.promo-player:focus-visible .promo-watch{text-decoration:underline}
-.promo-motion{right:clamp(6px,1.25vw,16px);border:1px solid #a29691;cursor:pointer;min-height:44px}
-.promo-motion[hidden]{display:none}
-@media(max-width:640px){
-  .promo-media:has(track){padding-bottom:52px}
-  .promo-media:has(track) .promo-player{overflow:visible}
-  .promo-media:has(track) .promo-watch{
-    left:0;top:calc(100% + 9px);bottom:auto;min-height:44px;
-    display:flex;align-items:center;gap:4px;padding-block:0
-  }
-  .promo-media:has(track) .promo-motion{right:0;bottom:0}
-}
-@media(max-width:380px){
-  .promo-media:has(track){padding-bottom:108px}
-  .promo-media:has(track) .promo-watch{right:0;justify-content:center}
-  .promo-media:has(track) .promo-motion{left:0;width:100%}
-}
+.promo-motion[hidden],.promo-sound[hidden]{display:none}
 .promo-actions{display:flex;justify-content:center;flex-wrap:wrap;gap:12px;margin:24px auto 0}
 .promo-actions:has(a[hidden]){display:none}
-.promo-viewer{
-  width:min(960px,calc(100% - 32px));max-height:calc(100% - 32px);padding:14px;
-  border:1px solid var(--line);background:var(--bg);color:var(--text)
-}
-.promo-viewer::backdrop{background:#000c}
-.promo-viewer form{text-align:right;margin-bottom:10px}
-.promo-viewer button{padding:8px 12px;color:inherit;background:var(--panel-2);border:1px solid #a29691;cursor:pointer}
-.promo-viewer video{display:block;width:100%;max-height:calc(100dvh - 112px)}
 
 .container{width:min(1200px,calc(100% - 64px));margin:auto}
 
