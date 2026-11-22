@@ -35,38 +35,176 @@ function renderAnnouncement() {
     <a class="text-link" href="${safeHref(a.buttonUrl)}">${a.buttonText} <span aria-hidden="true">→</span></a>`;
 }
 
-function mountPromoVideo(promo, youtubeId, videoPath) {
+let youtubeApiPromise;
+function loadYouTubeApi() {
+  if (typeof window.YT?.Player === "function") return Promise.resolve(window.YT);
+  if (youtubeApiPromise) return youtubeApiPromise;
+  youtubeApiPromise = new Promise((resolve, reject) => {
+    const previous = window.onYouTubeIframeAPIReady;
+    let script = document.querySelector('script[src="https://www.youtube.com/iframe_api"]');
+    const owned = !script;
+    let settled = false;
+    const finish = error => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      script.removeEventListener("error", failed);
+      if (window.onYouTubeIframeAPIReady === ready) window.onYouTubeIframeAPIReady = previous;
+      if (error) {
+        if (owned) script.remove();
+        reject(error);
+      } else resolve(window.YT);
+    };
+    const failed = () => finish(Error("YouTube could not be loaded."));
+    const ready = () => {
+      try { if (typeof previous === "function") previous(); } catch {}
+      finish(typeof window.YT?.Player === "function" ? null : Error("YouTube is unavailable."));
+    };
+    const timer = setTimeout(failed, 10000);
+    window.onYouTubeIframeAPIReady = ready;
+    if (owned) {
+      script = document.createElement("script");
+      script.src = "https://www.youtube.com/iframe_api";
+      script.async = true;
+    }
+    script.addEventListener("error", failed, {once: true});
+    if (owned) document.head.append(script);
+  });
+  youtubeApiPromise.catch(() => { youtubeApiPromise = undefined; });
+  return youtubeApiPromise;
+}
+
+function promoPosterUrls(youtubeId, thumbnail, builtInPreview) {
+  if (!youtubeId) return [];
+  const choices = ["auto", "maxresdefault", "hqdefault", "1", "2", "3"];
+  const choice = choices.includes(thumbnail) ? thumbnail : "auto";
+  const base = "https://i.ytimg.com/vi/" + youtubeId + "/";
+  const poster = choice === "auto" ? builtInPreview ? "/assets/written-in-the-light-promo-poster.webp" : base + "mqdefault.jpg" : base + choice + ".jpg";
+  return [...new Set([poster, base + "hqdefault.jpg"])];
+}
+
+function applyPromoPoster(target, urls) {
+  if (!urls.length) return;
+  const image = target.tagName === "IMG" ? target : document.createElement("img");
+  let current = 0;
+  const show = () => {
+    if (target !== image) target.poster = urls[current];
+    image.src = urls[current];
+  };
+  const next = () => {
+    if (++current < urls.length) show();
+    else if (target === image) image.remove();
+    else target.removeAttribute("poster");
+  };
+  image.addEventListener("error", next);
+  image.addEventListener("load", () => {
+    // Missing max-resolution thumbnails can be a small placeholder with HTTP 200.
+    if (urls[current]?.endsWith("/maxresdefault.jpg") && image.naturalWidth < 480) next();
+  });
+  show();
+}
+
+function mountYouTubePlayer(promo, link, motion, youtubeId, autoplay) {
+  const host = document.createElement("div"), target = document.createElement("div");
+  host.className = "promo-youtube";
+  host.hidden = true;
+  host.append(target);
+  const fallback = document.createElement("a");
+  fallback.className = "promo-youtube-fallback";
+  fallback.href = "https://www.youtube.com/watch?v=" + youtubeId;
+  fallback.textContent = "Watch on YouTube ↗";
+  fallback.hidden = true;
+  const status = document.createElement("p");
+  status.className = "promo-youtube-status";
+  status.setAttribute("role", "status");
+  status.hidden = true;
+  link.parentNode.append(host, status, fallback);
+  let started = false, failed = false, player, readyTimer;
+  const unavailable = () => {
+    if (failed) return;
+    failed = true;
+    clearTimeout(readyTimer);
+    host.hidden = true;
+    link.hidden = false;
+    fallback.hidden = false;
+    status.hidden = false;
+    status.textContent = "The embedded video is unavailable. Watch it on YouTube instead.";
+    try { player?.destroy(); } catch {}
+  };
+  const start = muted => {
+    if (started || failed) return;
+    started = true;
+    link.hidden = true;
+    host.hidden = false;
+    fallback.hidden = false;
+    motion.hidden = true;
+    loadYouTubeApi().then(api => {
+      if (failed) return;
+      readyTimer = setTimeout(unavailable, 12000);
+      player = new api.Player(target, {
+        width: "100%", height: "100%", videoId: youtubeId,
+        playerVars: {autoplay: 0, controls: 1, enablejsapi: 1, playsinline: 1, loop: 1, playlist: youtubeId, origin: location.origin},
+        events: {
+          onReady: event => {
+            if (failed) return;
+            clearTimeout(readyTimer);
+            const iframe = event.target.getIframe();
+            iframe.title = "Homepage promotional video";
+            iframe.setAttribute("allow", "autoplay; encrypted-media; picture-in-picture; fullscreen");
+            iframe.setAttribute("allowfullscreen", "");
+            if (muted) event.target.mute();
+            if (!muted || !matchMedia("(prefers-reduced-motion: reduce)").matches) event.target.playVideo();
+          },
+          onAutoplayBlocked: () => {
+            status.hidden = false;
+            status.textContent = "Playback did not start automatically. Use the video's Play button or watch on YouTube.";
+          },
+          onStateChange: event => { if (event.data === 1) status.hidden = true; },
+          onError: unavailable
+        }
+      });
+    }).catch(unavailable);
+  };
+  link.addEventListener("click", event => {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button > 0 || failed) return;
+    event.preventDefault();
+    start(false);
+  });
+  if (autoplay) start(true);
+}
+
+function mountPromoVideo(promo, youtubeId, videoPath, options = {}) {
   const link = promo.querySelector(".promo-player");
   const motion = promo.querySelector(".promo-motion");
+  youtubeId = /^[\w-]{11}$/.test(youtubeId || "") ? youtubeId : "";
   const youtubeUrl = youtubeId ? "https://www.youtube.com/watch?v=" + youtubeId : "";
   const uploadedVideo = videoPath && new URL(videoPath, location.origin).origin === location.origin ? videoPath : "";
   if (!youtubeUrl && !uploadedVideo) return false;
 
   const bluRayPreview = !uploadedVideo && youtubeId === "f8t4gAIy5t0";
   const previewUrl = bluRayPreview ? "/assets/written-in-the-light-promo-preview.mp4" : uploadedVideo;
-  const poster = bluRayPreview ? "/assets/written-in-the-light-promo-poster.webp" :
-    youtubeId ? "https://i.ytimg.com/vi/" + youtubeId + "/mqdefault.jpg" : "";
+  const posters = promoPosterUrls(youtubeId, options.thumbnail, bluRayPreview);
   link.href = youtubeUrl || uploadedVideo;
   function showPoster() {
-    if (!poster) return;
+    if (!posters.length) return;
     const image = document.createElement("img");
     image.alt = "";
-    image.src = poster;
-    image.addEventListener("error", () => image.remove(), {once: true});
+    applyPromoPoster(image, posters);
     link.prepend(image);
   }
 
   let preview;
   const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const autoplay = !reducedMotion && (options.playback === "autoplay" || options.playback !== "click" && !!previewUrl);
   if (previewUrl) {
     preview = document.createElement("video");
-    if (poster) preview.poster = poster;
+    applyPromoPoster(preview, posters);
     preview.muted = true;
     preview.defaultMuted = true;
     preview.playsInline = true;
-    preview.autoplay = !reducedMotion;
+    preview.autoplay = autoplay;
     preview.loop = true;
-    preview.preload = reducedMotion && poster ? "none" : "metadata";
+    preview.preload = !autoplay && posters.length ? "none" : "metadata";
     if (bluRayPreview) {
       const captions = document.createElement("track");
       captions.kind = "captions";
@@ -101,6 +239,7 @@ function mountPromoVideo(promo, youtubeId, videoPath) {
     link.prepend(preview);
   } else {
     showPoster();
+    mountYouTubePlayer(promo, link, motion, youtubeId, autoplay);
   }
 
   const viewer = promo.querySelector(".promo-viewer");
@@ -136,8 +275,8 @@ async function renderHomepagePromo() {
       signal: AbortSignal.timeout(3500)
     });
     if (!response.ok) return;
-    const {enabled, videoId, videoPath, title, buttonLabel, buttonPath} = await response.json();
-    if (!enabled || !title || !mountPromoVideo(promo, /^[\w-]{11}$/.test(videoId || "") ? videoId : "", videoPath)) return;
+    const {enabled, videoId, videoPath, title, buttonLabel, buttonPath, playback, thumbnail} = await response.json();
+    if (!enabled || !title || !mountPromoVideo(promo, videoId, videoPath, {playback, thumbnail})) return;
 
     // Keep the product name together when the promo headline wraps.
     promo.querySelector("h1").textContent = title.replace(/\b(blu)-(rays?)\b/gi, "$1\u2011$2");

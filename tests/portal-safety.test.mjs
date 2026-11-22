@@ -59,7 +59,7 @@ test('only admins can change the site-wide homepage promo',async()=>{
  const settings='homepagePromoSettings',feed='homepagePromo';
  const initial=(await call(settings)).data;
  assert.deepEqual((await call(feed,{who:null})).data,{
-  enabled:true,videoId:'f8t4gAIy5t0',title:initial.title,buttonLabel:'Shop Merch',buttonPath:'/merch/'
+  enabled:true,videoId:'f8t4gAIy5t0',title:initial.title,buttonLabel:'Shop Merch',buttonPath:'/merch/',playback:'autoplay',thumbnail:'auto'
  });
  for(const [who,status] of [[null,401],['member',403]]){
   assert.equal((await call(settings,{who})).status,status);
@@ -78,7 +78,30 @@ test('only admins can change the site-wide homepage promo',async()=>{
  const enabled=await call(settings,{body:{...disabled.data,enabled:true,videoUrl:'https://www.youtube.com/shorts/abcdefghijk?feature=share',title:'Next promo',buttonLabel:'',buttonPath:''}});
  assert.equal(enabled.status,200);
  assert.equal(enabled.data.videoUrl,'https://youtu.be/abcdefghijk');
- assert.deepEqual((await call(feed,{who:null})).data,{enabled:true,videoId:'abcdefghijk',title:'Next promo',buttonLabel:'',buttonPath:''});
+ assert.deepEqual((await call(feed,{who:null})).data,{enabled:true,videoId:'abcdefghijk',title:'Next promo',buttonLabel:'',buttonPath:'',playback:'autoplay',thumbnail:'auto'});
+});
+
+test('promo presentation settings validate choices, survive older clients and publish only the selected options',async()=>{
+ const store=await fixture(),key='website/homepage-promo';
+ await store.setJSON(key,{enabled:true,videoId:'abcdefghijk',title:'Fictional trailer',buttonLabel:'',buttonPath:''});
+ const initial=(await call('homepagePromoSettings')).data;
+ assert.equal(initial.playback,'click','Existing ordinary YouTube links remain click to play.');
+ assert.equal(initial.thumbnail,'auto');
+ for(const field of ['playback','thumbnail'])for(const invalid of [null,true,{},[],field==='playback'?'autoplay-with-sound':'https://outside.example/image.jpg']){
+  const before=await store.get(key);
+  assert.equal((await call('homepagePromoSettings',{body:{...initial,[field]:invalid}})).status,400);
+  assert.deepEqual(await store.get(key),before,'An invalid option does not change the saved promotion.');
+ }
+ const saved=await call('homepagePromoSettings',{body:{...initial,playback:'autoplay',thumbnail:'2',thumbnailUrl:'https://outside.example/not-used.jpg'}});
+ assert.equal(saved.status,200);assert.equal(saved.data.playback,'autoplay');assert.equal(saved.data.thumbnail,'2');
+ assert.deepEqual((await call('homepagePromo',{who:null})).data,{
+  enabled:true,videoId:'abcdefghijk',title:'Fictional trailer',buttonLabel:'',buttonPath:'',playback:'autoplay',thumbnail:'2'
+ });
+ const {playback,thumbnail,...olderClient}=saved.data;
+ const updated=await call('homepagePromoSettings',{body:{...olderClient,title:'Updated fictional trailer'}});
+ assert.equal(updated.status,200);assert.equal(updated.data.playback,'autoplay');assert.equal(updated.data.thumbnail,'2');
+ assert.equal((await call('homepagePromoSettings',{body:{...saved.data,thumbnail:'3'}})).status,409,'Stale forms cannot overwrite presentation choices.');
+ assert.equal((await store.get(key)).thumbnail,'2');
 });
 
 test('the homepage serves only a complete, published MP4 and honors video byte ranges',async()=>{

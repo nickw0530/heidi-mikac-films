@@ -6,6 +6,7 @@ import {mountReports} from './reports.js';
 import {mountBulkActions} from './bulk-actions.js';
 import {mountOnboarding} from './onboarding.js';
 import {headshotAccept,selectHeadshot,prepareHeadshot,clearHeadshotPreview} from './headshot-editor.js';
+import {promoThumbnailChoices,promoEditorOptions,bindPromoOptions,refreshPromoThumbnail} from './homepage-promo.js';
 const officeTabs=[['overview','Overview'],['people','People'],['documents','Documents'],['messages','Messages & files'],['availability','Filming availability'],['calendar','Events'],['reports','Reports'],['website','Website'],['settings','Settings']];
 const castPlacements=[['','Website default'],['lead','Lead Cast'],['supporting','Supporting Cast'],['additional','Additional Cast'],['crew','Creative Team & Crew']];
 const directoryFilters=[
@@ -429,7 +430,10 @@ const homepagePromoPanel='<section data-homepage-promo-settings hidden><h2>Homep
 function updatePromoForm(f, settings){
  const {enabled,videoUrl,title,buttonLabel,buttonPath,revision,uploadedVideo,uploadMaxBytes,uploadPartBytes}=settings;
  const fields=f.elements;
+ const options=promoEditorOptions(settings);
  fields.enabled.defaultChecked=fields.enabled.checked=enabled;
+ fields.autoplayMuted.defaultChecked=fields.autoplayMuted.checked=options.playback==='autoplay';
+ for(const choice of fields.thumbnail.options)choice.defaultSelected=choice.selected=choice.value===options.thumbnail;
  for(const [name,value] of Object.entries({videoUrl,title,buttonLabel,buttonPath,revision})){
   fields[name].value=fields[name].defaultValue=value;
  }
@@ -441,6 +445,7 @@ function updatePromoForm(f, settings){
  f.querySelector('[data-promo-upload-name]').textContent=uploadedVideo?.name||'';
  f.querySelector('[data-promo-upload-current]').hidden=!uploadedVideo;
  f.querySelector('[data-promo-status]').textContent=enabled?'Promo is on.':'Promo is off.';
+ refreshPromoThumbnail(f);
 }
 
 const promoUploads=new WeakMap();
@@ -481,11 +486,15 @@ async function openHomepagePromoSettings(panel){
    '<label>Upload video <small>(MP4 up to <span data-promo-upload-limit></span>)</small><input name="promoFile" type="file" accept="video/mp4,.mp4"></label>'+
    '<div data-promo-upload-current hidden><p>Current upload <strong data-promo-upload-name></strong></p><label><input type="checkbox" name="removeVideo"> Remove uploaded video</label></div>'+
    '<label>YouTube link <small>(optional with an upload)</small><input name="videoUrl" type="url" maxlength="500" placeholder="https://youtu.be/…"></label>'+
-   '<p><small>The uploaded video plays a muted preview. Tapping the preview opens the YouTube link or plays the upload with sound.</small></p>'+
+   '<label><input type="checkbox" name="autoplayMuted"> Automatically play a muted video preview</label>'+
+   '<p><small>Starts a muted preview when the homepage opens. Visitors can choose to play with sound. Browser autoplay limits and reduced-motion preferences are respected.</small></p>'+
+   '<label>YouTube thumbnail<select name="thumbnail">'+promoThumbnailChoices.map(choice=>'<option value="'+choice.value+'">'+choice.label+'</option>').join('')+'</select></label>'+
+   '<p><small>YouTube stills 1–3 may look softer than the main thumbnail. Choose a supplied image; exact video timestamps are not available here.</small></p>'+
+   '<div data-promo-thumbnail-preview><img data-promo-thumbnail-image hidden width="320" height="180" style="max-width:100%;height:auto;aspect-ratio:16/9;object-fit:cover;background:#090909" decoding="async"><p data-promo-thumbnail-note role="status" aria-live="polite"></p></div>'+
    '<label>Button label <small>(optional)</small><input name="buttonLabel" maxlength="40" placeholder="Shop Merch"></label>'+
    '<label>Button page <small>(optional)</small><input name="buttonPath" maxlength="240" placeholder="/merch/"></label>',
    'Save homepage promo');
-  updatePromoForm(slot.querySelector('form'),settings);
+  const promoForm=slot.querySelector('form');bindPromoOptions(promoForm);updatePromoForm(promoForm,settings);
  }catch(error){
   const retry=document.createElement('button');
   retry.type='button';
@@ -1219,15 +1228,15 @@ listen('submit',async e=>{
  for(const control of photoInputs)control.disabled=true;
  try{
   if(a==='homepagePromoSettings'){
-   const fields=[...f.querySelectorAll('input')];
+   const fields=[...f.querySelectorAll('input,select')];
    const file=f.elements.promoFile.files[0];
-   const {promoFile,removeVideo,...values}=data;
+   const {promoFile,removeVideo,autoplayMuted,...values}=data;
    const status=f.querySelector('[data-promo-status]');
    const previousStatus=status.textContent;
    for(const field of fields)field.disabled=true;
    try{
     const upload=file?await uploadHomepagePromo(f,file,values.revision):null;
-    const settings=await request(a,{...values,enabled:f.elements.enabled.checked,removeVideo:!!removeVideo,upload});
+    const settings=await request(a,{...values,playback:autoplayMuted?'autoplay':'click',enabled:f.elements.enabled.checked,removeVideo:!!removeVideo,upload});
     updatePromoForm(f,settings);
     delete f.dataset.dirty;
     message.textContent=settings.enabled?'Homepage promo saved and visible.':'Homepage promo turned off.';

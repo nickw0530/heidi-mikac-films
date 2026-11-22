@@ -23,7 +23,7 @@ import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 
 import {promisify} from 'node:util';
 import {enqueue, mailReady, portalUrl} from '../lib/mail.mjs';
-import {homepagePromoKey, initialHomepagePromo, promoSettings, validatePromo, savePromoVideoPart, verifyPromoVideo, removePromoVideo, promoVideoResponse} from '../lib/homepage-promo.mjs';
+import {homepagePromoKey, initialHomepagePromo, promoPresentation, promoSettings, validatePromo, savePromoVideoPart, verifyPromoVideo, removePromoVideo, promoVideoResponse} from '../lib/homepage-promo.mjs';
 const derive=promisify(scrypt);
 async function credential(password){
  requireThat(typeof password==='string'&&password.length>=12&&password.length<=128,'Choose a password between 12 and 128 characters.');
@@ -243,7 +243,7 @@ export default async function handle(req, context) {
     if(!promo.enabled)return json({enabled:false});
     const {videoId,title,buttonLabel,buttonPath,video}=promo;
     const videoPath=video?'/.netlify/functions/portal?action=homepagePromoVideo&id='+video.id:'';
-    return json({enabled:true,videoId,title,buttonLabel,buttonPath,...(videoPath?{videoPath}:{})});
+    return json({enabled:true,videoId,title,buttonLabel,buttonPath,...promoPresentation(promo),...(videoPath?{videoPath}:{})});
   }
   if(!post&&action==='published'){
     // Hidden entries exist only to suppress a card already printed on a film website.
@@ -548,7 +548,7 @@ export default async function handle(req, context) {
     const changed='The promo changed since you opened it. Reload this page before saving again.';
     requireThat(body?.revision===(record?.etag??''),changed,409);
     const previousVideo=record?.data?.video;
-    const promo=validatePromo(body,requireThat,previousVideo);
+    const promo=validatePromo(body,requireThat,previousVideo,record?.data);
     if(body.upload)await verifyPromoVideo(store,promo.video,self,body.revision,requireThat);
     const saved=await store.setJSON(homepagePromoKey,promo,record?{onlyIfMatch:record.etag}:{onlyIfNew:true});
     requireThat(saved.modified,changed,409);

@@ -7,6 +7,9 @@ const uploadIdPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 const validVideoSize = size => Number.isSafeInteger(size) && size >= 12 && size <= uploadMaxBytes;
 const partCount = size => Math.ceil(size / uploadPartBytes);
 const partKey = (id, part) => `website/homepage-promo-video/${id}/${part}`;
+const playbacks = new Set(['click', 'autoplay']);
+const thumbnails = new Set(['auto', 'maxresdefault', 'hqdefault', '1', '2', '3']);
+const builtInPreviewId = 'f8t4gAIy5t0';
 
 // The first promotion is visible until an administrator saves their own settings.
 export const initialHomepagePromo = {
@@ -26,14 +29,27 @@ function youtubeVideoId(value) {
   return url.pathname.match(/^\/(?:shorts|live|embed)\/([\w-]+)\/?$/)?.[1];
 }
 
+export function promoPresentation(promo) {
+  return {
+    // Existing MP4 previews, including the original homepage promotion, keep
+    // their muted preview. Other existing YouTube promos stay click to play.
+    playback: playbacks.has(promo?.playback) ? promo.playback :
+      promo?.video || promo?.videoId === builtInPreviewId ? 'autoplay' : 'click',
+    // Auto retains the current local poster or default YouTube thumbnail.
+    thumbnail: thumbnails.has(promo?.thumbnail) ? promo.thumbnail : 'auto'
+  };
+}
+
 export function promoSettings(record) {
-  const {enabled, videoId, title, buttonLabel, buttonPath, video} = record?.data ?? initialHomepagePromo;
+  const promo = record?.data ?? initialHomepagePromo;
+  const {enabled, videoId, title, buttonLabel, buttonPath, video} = promo;
   return {
     enabled,
     videoUrl: videoId ? 'https://youtu.be/' + videoId : '',
     title,
     buttonLabel,
     buttonPath,
+    ...promoPresentation(promo),
     uploadedVideo: video ? {name: video.name, size: video.size} : null,
     uploadPartBytes,
     uploadMaxBytes,
@@ -41,13 +57,15 @@ export function promoSettings(record) {
   };
 }
 
-export function validatePromo(body, requireThat, previousVideo) {
+export function validatePromo(body, requireThat, previousVideo, previousPromo) {
   const text = value => typeof value === 'string' ? value.trim() : '';
   const videoUrl = text(body.videoUrl), title = text(body.title);
   const buttonLabel = text(body.buttonLabel), buttonPath = text(body.buttonPath);
   requireThat(typeof body.enabled === 'boolean', 'Choose whether the promo is visible.');
   requireThat(title.length <= 120, 'Keep the title to 120 characters.');
   requireThat(videoUrl.length <= 500, 'Enter a valid YouTube video link.');
+  requireThat(body.playback === undefined || playbacks.has(body.playback), 'Choose click to play or muted autoplay.');
+  requireThat(body.thumbnail === undefined || thumbnails.has(body.thumbnail), 'Choose one of the supplied YouTube thumbnails.');
 
   let videoId = '';
   if (videoUrl) {
@@ -67,7 +85,10 @@ export function validatePromo(body, requireThat, previousVideo) {
   requireThat(buttonLabel.length <= 40, 'Keep the button label to 40 characters.');
   requireThat(buttonPath.length <= 240 && (!buttonPath || /^\/(?!\/)[^\\\s\u0000-\u001f\u007f]*$/.test(buttonPath)),
     'Use a page path on this website, such as /merch/.');
-  return {enabled: body.enabled, videoId, title, buttonLabel, buttonPath, ...(video ? {video} : {})};
+  const presentation = promoPresentation({videoId, video,
+    playback: body.playback === undefined ? previousPromo?.playback : body.playback,
+    thumbnail: body.thumbnail === undefined ? previousPromo?.thumbnail : body.thumbnail});
+  return {enabled: body.enabled, videoId, title, buttonLabel, buttonPath, ...presentation, ...(video ? {video} : {})};
 }
 
 export async function savePromoVideoPart(store, req, params, admin, requireThat) {
