@@ -143,7 +143,8 @@ export function publicSupporters(shop,{scope='lifetime'}={}){
  fail(scope==='lifetime'||scope==='current','Choose lifetime or current campaign supporters.');
  const all=supporterTransactions(shop),publicMode=shop.supporterLedger?.publicFeed?.enabled===true;
  const activeCampaigns=new Set(supporterCampaigns(shop).filter(campaign=>campaign.active).map(campaign=>campaign.id));
- const inCurrentCampaign=row=>['crowdfundr','crowdfundr-public'].includes(row.source)&&activeCampaigns.has(row.campaignId||legacyCampaign.id);
+ const inCurrentCampaign=row=>['crowdfundr','crowdfundr-public'].includes(row.source)?activeCampaigns.has(row.campaignId||legacyCampaign.id):
+  row.source==='manual'&&!!row.campaignId&&activeCampaigns.has(row.campaignId);
  // The native public feed replaces imported/API Crowdfundr recognition as a
  // whole. Private transaction records remain available for administration.
  const rows=all.filter(row=>!publicMode||row.source!=='crowdfundr'),groups=new Map(),seen=new Set(),refs=new Map();
@@ -198,7 +199,7 @@ export function adminSupporters(shop){
  const campaigns=new Map(supporterCampaigns(shop).map(campaign=>[campaign.id,campaign]));
  return supporterTransactions(shop,{includeArchived:true}).map(row=>{
   const {identity,...safe}=row;
-  const campaign=['crowdfundr','crowdfundr-public'].includes(row.source)?campaigns.get(row.campaignId||legacyCampaign.id):null;
+  const campaign=['crowdfundr','crowdfundr-public','manual'].includes(row.source)?campaigns.get(row.campaignId||(row.source==='manual'?'':legacyCampaign.id)):null;
   return {...safe,...(campaign?{campaignTitle:campaign.title}:{}),amount:balance(row),moderationRevision:moderationRevision(row)};
  }).sort((a,b)=>b.date-a.date||a.id.localeCompare(b.id));
 }
@@ -293,9 +294,12 @@ export function importSupporterCsv(shop,input){
 }
 export function saveManualSupporter(shop,input){
  fail(typeof input.id==='string'&&/^manual:[a-f0-9-]{36}$/.test(input.id),'Reload the manual support form.');
- const state=ledger(shop),old=own(state.transactions,input.id);
+ const old=own(shop.supporterLedger?.transactions,input.id);
  fail(!old||old.source==='manual','Only manual support can be edited here.');
  fail(old?.archived!==true,'Restore this deleted manual record before editing it.',409);
+ const campaignId=input.campaignId===undefined?old?.campaignId||'':input.campaignId;
+ fail(typeof campaignId==='string'&&(input.campaignId===undefined||!campaignId||supporterCampaigns(shop).some(campaign=>campaign.id===campaignId)),
+  'Choose an existing campaign or keep this manual support in lifetime credits only.');
  fail(states.has(input.status)&&money(input.gross)&&input.gross>0,'Enter a valid status and gross USD amount.');
  fail(input.refunded==null||money(input.refunded)&&input.refunded<=input.gross,'Enter a refund within the original gross amount.');
  fail(input.status!=='partially refunded'||money(input.refunded)&&input.refunded>0&&input.refunded<input.gross,'Enter the confirmed partial refund amount.');
@@ -307,8 +311,9 @@ export function saveManualSupporter(shop,input){
  const reference=plain(input.reference||'',100),channel=plain(input.channel||'Offline / other',80);
  const sameSupporterAs=input.sameSupporterAs===undefined?old?.sameSupporterAs||'':input.sameSupporterAs||'';
  validateSupporterMatch(supporterTransactions(shop),input.id,sameSupporterAs);
- state.transactions[input.id]={id:input.id,source:'manual',reference,processor,channel,status:input.status,gross:input.gross,refunded:input.refunded??null,
-  name,showName:input.showName,showAmount:input.showAmount,hidden:input.hidden,identity:input.identityEmail?supporterIdentity(input.identityEmail):old?.identity||'',sameSupporterAs,date:old?.date||Date.now()};
+ const identity=input.identityEmail?supporterIdentity(input.identityEmail):old?.identity||'',state=ledger(shop);
+ state.transactions[input.id]={id:input.id,source:'manual',campaignId,reference,processor,channel,status:input.status,gross:input.gross,refunded:input.refunded??null,
+  name,showName:input.showName,showAmount:input.showAmount,hidden:input.hidden,identity,sameSupporterAs,date:old?.date||Date.now()};
  if(own(state.moderation,input.id))state.moderation[input.id].hidden=input.hidden;
  if(input.sameSupporterAs!==undefined&&(sameSupporterAs||own(state.moderation,input.id))){
   state.moderation[input.id]??={hidden:input.hidden,duplicateOf:''};

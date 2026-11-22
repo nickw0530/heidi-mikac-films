@@ -131,3 +131,27 @@ test('a CAS retry rechecks the target token and cannot overwrite a concurrent ch
  const current=(await call('supporterLedger')).data.transactions.find(row=>row.id===id);
  assert.equal(current.hidden,true);assert.equal(current.showName,false,'The concurrent privacy change is retained.');
 });
+
+test('admin ledger exposes a safe campaign registry and manual campaign saves retain authentication, revision and validation guards',async()=>{
+ const store=await fixture();await call('supporterLedger');
+ const shop=await store.get('shop');shop.supporterLedger={transactions:{},moderation:{},publicFeed:{enabled:true,rows:{},checkedAt:Date.now(),campaigns:[
+  {id:'e2ozh2',title:'Current route campaign',active:true,checkedAt:Date.now(),accessToken:'PRIVATE-REGISTRY-SECRET'},
+  {id:'b2mXyf',title:'Past route campaign',active:false,checkedAt:Date.now()}
+ ]}};await store.setJSON('shop',shop);
+ let ledger=(await call('supporterLedger')).data;
+ assert.deepEqual(ledger.campaigns,[{id:'e2ozh2',title:'Current route campaign',active:true},{id:'b2mXyf',title:'Past route campaign',active:false}]);
+ assert.ok(!JSON.stringify(ledger).includes('PRIVATE-REGISTRY-SECRET'));assert.ok(!JSON.stringify(ledger.campaigns).includes('checkedAt'));
+ const input={id:'manual:55555555-5555-4555-8555-555555555555',revision:ledger.revision,name:'Route campaign supporter',gross:3000,refunded:null,status:'paid',
+  channel:'Cash',reference:'synthetic-campaign-reference',processor:'',showName:true,showAmount:true,hidden:false,campaignId:'e2ozh2'};
+ assert.equal((await call('supporterSave',{who:'member',body:input})).status,403);
+ assert.equal((await call('supporterSave',{body:input,origin:'https://other.example'})).status,403);
+ assert.equal((await call('supporterSave',{body:input})).status,200);
+ ledger=(await call('supporterLedger')).data;const row=ledger.transactions.find(row=>row.id===input.id);
+ assert.equal(row.campaignId,'e2ozh2');assert.equal(row.campaignTitle,'Current route campaign');
+ assert.equal((await call('supporterSave',{body:{...input,campaignId:'b2mXyf'}})).status,409,'A campaign edit cannot bypass the shop revision guard.');
+ const before=await store.get('shop');
+ assert.equal((await call('supporterSave',{body:{...input,revision:ledger.revision,campaignId:'unknown-campaign'}})).status,400);
+ assert.deepEqual(await store.get('shop'),before,'An invalid campaign cannot mutate the existing payment.');
+ assert.equal((await call('supporterSave',{body:{...input,revision:ledger.revision,campaignId:''}})).status,200);
+ ledger=(await call('supporterLedger')).data;assert.equal(ledger.transactions.find(row=>row.id===input.id).campaignId,'');
+});

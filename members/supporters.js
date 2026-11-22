@@ -14,6 +14,23 @@ export function transactionLabel(row){
   return [row.name||'Anonymous supporter',row.source,row.campaignTitle,row.reference||row.id].filter(Boolean).join(' · ');
 }
 
+export function manualCampaignChoices(campaigns,selected=''){
+  const choices=[{value:'',label:'Lifetime support only'}];
+  for(const campaign of campaigns){
+    if(typeof campaign?.id!=='string'||!campaign.id||typeof campaign.title!=='string'||choices.some(choice=>choice.value===campaign.id))continue;
+    choices.push({value:campaign.id,label:(campaign.active?'Current':'Historic')+' · '+campaign.title});
+  }
+  if(selected&&!choices.some(choice=>choice.value===selected))choices.push({value:selected,label:'Unavailable campaign — lifetime only until reassigned'});
+  return choices;
+}
+
+export function manualCampaignAssignment(selected,previous=null){
+  // An unchanged open form cannot overwrite a campaign changed elsewhere,
+  // even when refreshing the ledger supplied a newer overall revision.
+  if(previous!==null&&selected===previous)return {};
+  return {campaignId:selected};
+}
+
 // All personal data stays within the existing authenticated portal. Dynamic
 // values are assigned as text, never interpolated into markup or persisted.
 export async function mountSupporters(host,request){
@@ -53,6 +70,7 @@ export async function mountSupporters(host,request){
           <label>Payment provider<select name="processor"><option value="">Other / offline</option><option value="paypal">PayPal</option><option value="stripe">Stripe</option></select></label>
           <label>Transaction reference<input name="reference" maxlength="100" autocomplete="off"></label>
           <label>Payment status<select name="status">${statuses.map(value=>'<option>'+value+'</option>').join('')}</select></label>
+          <label>Campaign<select name="campaignId"><option value="">Lifetime support only</option></select><small>Current campaigns also show this payment in their campaign wall. Historic or unassigned support stays lifetime only.</small></label>
           <label>Confirmed amount refunded ($)<input name="refunded" type="number" min="0" max="20000" step=".01" placeholder="Blank if unknown"></label>
           <label>Verified supporter email (optional; private)<input name="identityEmail" type="email" maxlength="254" autocomplete="off"></label>
           <label>Verified same supporter as (optional)<select name="sameSupporterAs"><option value="">Keep current identity / separate supporter</option></select></label>
@@ -97,7 +115,7 @@ export async function mountSupporters(host,request){
   const overall=find('[data-supporter-status]'),manual=find('[data-supporter-manual-form]'),fields=manual.elements;
   const moderation=find('[data-supporter-moderation]'),importForm=find('[data-supporter-preview-form]');
   const preview=find('[data-supporter-preview]'),confirm=find('[data-supporter-import-confirm]');
-  let revision,transactions=[],manualId='manual:'+crypto.randomUUID(),moderating=null,importState=null,previewGeneration=0;
+  let revision,transactions=[],campaigns=[],manualId='manual:'+crypto.randomUUID(),manualCampaignId=null,moderating=null,importState=null,previewGeneration=0;
   let pending=0;
   const rowNotices=new Map(),rowStatuses=new Map();
   function element(tag,text){const node=doc.createElement(tag);if(text!==undefined)node.textContent=String(text);return node;}
@@ -122,14 +140,21 @@ export async function mountSupporters(host,request){
     }
     select.value=previous;
   }
+  function populateCampaign(selected=fields.campaignId.value){
+    fields.campaignId.replaceChildren(...manualCampaignChoices(campaigns,selected).map(choice=>{
+      const option=element('option',choice.label);option.value=choice.value;return option;
+    }));
+    fields.campaignId.value=selected;
+  }
   function resetManual(){
-    manual.reset();manualId='manual:'+crypto.randomUUID();
+    manual.reset();manualId='manual:'+crypto.randomUUID();manualCampaignId=null;populateCampaign('');
     find('[data-supporter-edit-label]').textContent='New manual support record';
     fields.status.value='paid';populate(fields.sameSupporterAs,manualId);
     find('[data-supporter-manual-status]').textContent='';
   }
   function edit(row){
     resetManual();manualId=row.id;
+    manualCampaignId=row.campaignId||'';populateCampaign(manualCampaignId);
     find('[data-supporter-edit-label]').textContent='Editing '+transactionLabel(row);
     for(const key of ['name','channel','reference','processor','status'])fields[key].value=row[key]||'';
     fields.gross.value=Number.isInteger(row.gross)?(row.gross/100).toFixed(2):'';
@@ -167,7 +192,8 @@ export async function mountSupporters(host,request){
     for(const record of active){
       const row=rows.insertRow();
       const date=new Date(record.date),dateText=Number.isFinite(date.valueOf())?date.toLocaleString():'';
-      row.insertCell().textContent=[record.source==='crowdfundr-public'?'Crowdfundr public activity':record.source,record.campaignTitle,dateText].filter(Boolean).join(' · ');
+      const campaignLabel=record.source==='manual'?manualCampaignChoices(campaigns,record.campaignId||'').find(choice=>choice.value===(record.campaignId||''))?.label:record.campaignTitle;
+      row.insertCell().textContent=[record.source==='crowdfundr-public'?'Crowdfundr public activity':record.source,campaignLabel,dateText].filter(Boolean).join(' · ');
       row.insertCell().textContent=record.name||'Anonymous supporter';
       const unknownPublicAmount=record.source==='crowdfundr-public'&&!record.showAmount&&!record.amountVerified;
       row.insertCell().textContent=(unknownPublicAmount?needsAnonymousAmount(record)?'Amount not verified':'Private amount':money(record.gross))+' / '+(record.source==='crowdfundr-public'?'not reported':record.refunded==null?'unknown':money(record.refunded));
@@ -202,9 +228,10 @@ export async function mountSupporters(host,request){
       row.insertCell().append(button('Restore manual record',async()=>archiveManual(record,false)));
     }
     populate(fields.sameSupporterAs,manualId);
+    populateCampaign();
   }
   async function reload(){
-    const data=await request('supporterLedger');revision=data.revision;transactions=data.transactions||[];
+    const data=await request('supporterLedger');revision=data.revision;transactions=data.transactions||[];campaigns=Array.isArray(data.campaigns)?data.campaigns:[];
     cancelPreview();moderation.hidden=true;moderating=null;render();
   }
   importForm.elements.file.onchange=()=>{cancelPreview();find('[data-supporter-import-status]').textContent='';};
@@ -240,7 +267,8 @@ export async function mountSupporters(host,request){
     return busy(event.submitter,find('[data-supporter-manual-status]'),async()=>{
       const input={id:manualId,revision,name:fields.name.value,gross:cents(fields.gross.value),refunded:cents(fields.refunded.value),
         channel:fields.channel.value,processor:fields.processor.value,reference:fields.reference.value,status:fields.status.value,
-        showName:fields.showName.checked,showAmount:fields.showAmount.checked,hidden:fields.hidden.checked};
+        showName:fields.showName.checked,showAmount:fields.showAmount.checked,hidden:fields.hidden.checked,
+        ...manualCampaignAssignment(fields.campaignId.value,manualCampaignId)};
       if(fields.identityEmail.value.trim())input.identityEmail=fields.identityEmail.value.trim();
       if(fields.sameSupporterAs.value)input.sameSupporterAs=fields.sameSupporterAs.value;
       if(input.showName&&!input.name.trim())throw Error('Enter the permitted public name, or leave name permission unchecked.');

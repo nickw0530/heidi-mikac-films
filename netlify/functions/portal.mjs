@@ -13,7 +13,7 @@ import {offlineSigningKey,refreshOfflineCountersign} from '../lib/offline-signin
 import darkCatalog, {whereinCatalog} from '../lib/film-profiles.mjs';
 import {manualSale,merchStore,orderItems,paypalConfig,readShop,saveSettings,setSupporterVisibility,updateShop} from '../lib/merch.mjs';
 import {captureOrder} from './merch.mjs';
-import {adminSupporters,previewSupporterCsv,importSupporterCsv,saveManualSupporter,moderateSupporter} from '../lib/supporters.mjs';
+import {adminSupporters,supporterCampaigns,previewSupporterCsv,importSupporterCsv,saveManualSupporter,moderateSupporter} from '../lib/supporters.mjs';
 import {crowdfundrSettings,saveCrowdfundrSettings,beginCrowdfundr,disconnectCrowdfundr} from '../lib/crowdfundr-oauth.mjs';
 import {syncCrowdfundr} from '../lib/crowdfundr-sync.mjs';
 import {syncPublicCrowdfundr,configurePublicCrowdfundr,savePublicCampaigns} from '../lib/crowdfundr-public.mjs';
@@ -487,7 +487,7 @@ export default async function handle(req, context) {
     if(action==='supporterLedger'){
       requireThat(!post,'Use the supporter forms to make changes.',405);
       const {shop,revision}=await readShop(shopStore);
-      return json({revision,transactions:adminSupporters(shop)});
+      return json({revision,transactions:adminSupporters(shop),campaigns:supporterCampaigns(shop)});
     }
     requireThat(post,'Use the supporter management form.',405);
     if(action==='supporterPreview'){
