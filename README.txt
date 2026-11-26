@@ -7,7 +7,11 @@ SOURCE OF TRUTH
 Always work from the current main branch of this repository. Do not rebuild from an old ZIP or preview.
 
 DEPLOYMENT
-Netlify deploys automatically when changes are committed to main.
+Netlify deploys automatically when changes are committed to main. Every commit pushed to main is a paid Netlify production deploy, so publish in batches:
+1. Do a work session's changes on a branch, never straight on main.
+2. Check them on the free Netlify Deploy Preview (opening a pull request from the branch posts the preview link).
+3. Merge into main once, at the end of the work session, as a single publish.
+A commit that only changes notes like this file can add [skip netlify] to its commit message so it doesn't trigger a deploy.
 
 EDITABLE HOMEPAGE CONTENT
 site-content.js contains the current-production and upcoming-project copy/links.
