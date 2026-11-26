@@ -104,7 +104,7 @@ test('anonymous amount projection cannot bypass duplicate references, refunds, h
  saveManualSupporter(nativeShop,manual({gross:1000}));
  review(nativeShop,nativeId,{duplicateOf:manualId});assert.deepEqual(publicSupporters(nativeShop),[{name:'Anonymous',amount:1000,currency:'USD'}]);
  assert.equal(nativeShop.supporterLedger.moderation[nativeId].anonymousGross,1200);
- review(nativeShop,nativeId,{duplicateOf:''});nativeShop.supporterLedger.publicFeed.checkedAt=Date.now()-300001;
+ review(nativeShop,nativeId,{duplicateOf:''});nativeShop.supporterLedger.publicFeed.checkedAt=Date.now()-1200001;
  assert.deepEqual(publicSupporters(nativeShop),[{name:'Anonymous',amount:1000,currency:'USD'}]);
  nativeShop.supporterLedger.publicFeed.checkedAt=Date.now();nativeShop.supporterLedger.publicFeed.rows[nativeId].status='refunded';
  assert.deepEqual(publicSupporters(nativeShop),[{name:'Anonymous',amount:1000,currency:'USD'}]);

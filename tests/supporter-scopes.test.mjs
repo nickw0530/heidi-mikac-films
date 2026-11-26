@@ -83,12 +83,12 @@ test('privacy is independent between scopes for separate payments, while mixed l
 
 test('per-campaign freshness withholds only the stale source and never revives its imported private snapshot',()=>{
  const state=feed(blank(),[activity('current',active,10000),activity('past',past,5000)],
-  [campaign(active,true),campaign(past,false,{checkedAt:Date.now()-300001})]);
+  [campaign(active,true),campaign(past,false,{checkedAt:Date.now()-1200001})]);
  const copy=legacy('stale-copy',past,5000,{name:'Stale imported name'});state.supporterLedger.transactions[copy.id]=copy;
  manual(state);
  assert.equal(current(state)[0].amount,10000);assert.equal(lifetime(state)[0].amount,12500);
  assert.ok(!JSON.stringify(lifetime(state)).includes('Stale imported name'));
- state.supporterLedger.publicFeed.campaigns.find(row=>row.id===active).checkedAt=Date.now()-300001;
+ state.supporterLedger.publicFeed.campaigns.find(row=>row.id===active).checkedAt=Date.now()-1200001;
  assert.deepEqual(current(state),[]);assert.deepEqual(lifetime(state),[{name:'Scope Supporter',amount:2500,currency:'USD'}]);
 });
 

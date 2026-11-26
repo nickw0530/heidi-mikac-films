@@ -42,7 +42,7 @@ test('admin hiding applies to public activity and stale privacy cannot fall back
  const state=shop();imported(state,csv({}));state.supporterLedger.publicFeed={enabled:true,checkedAt:Date.now(),rows:{example:publicActivity()}};
  moderateSupporter(state,{id:'crowdfundr-public:example',hidden:true});assert.deepEqual(publicSupporters(state),[]);
  moderateSupporter(state,{id:'crowdfundr-public:example',hidden:false});assert.equal(publicSupporters(state).length,1);
- state.supporterLedger.publicFeed.checkedAt=Date.now()-300001;
+ state.supporterLedger.publicFeed.checkedAt=Date.now()-1200001;
  assert.deepEqual(publicSupporters(state),[]);assert.equal(adminSupporters(state).length,2);
 });
 

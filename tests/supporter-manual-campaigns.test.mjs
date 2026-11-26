@@ -95,7 +95,7 @@ test('deleted or explicitly duplicate assigned manual payments stay excluded and
 
 test('confirmed manual campaign support does not inherit public-feed freshness failures and website purchases remain lifetime-only',()=>{
  const shop=fixture();saveManualSupporter(shop,input({campaignId:currentId}));
- shop.supporterLedger.publicFeed.campaigns[0].checkedAt=Date.now()-300001;
+ shop.supporterLedger.publicFeed.campaigns[0].checkedAt=Date.now()-1200001;
  shop.sales.ORDER={status:'paid',subtotal:1000,recognition:{public:true,name:'Website-only supporter',showAmount:true},campaignId:currentId};
  assert.deepEqual(current(shop),credit(2500));assert.equal(lifetime(shop).length,2);
  assert.equal(adminSupporters(shop).find(row=>row.id==='website:ORDER').campaignTitle,undefined);
