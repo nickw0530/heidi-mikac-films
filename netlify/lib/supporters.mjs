@@ -62,7 +62,7 @@ export function supporterTransactions(shop,{includeArchived=false}={}){
  if(publicFeed?.enabled)for(const row of Object.values(publicFeed.rows||{})){
   const campaignId=row.campaignId||legacyCampaign.id;
   const checkedAt=Array.isArray(publicFeed.campaigns)?publicFeed.campaigns.find(campaign=>campaign.id===campaignId)?.checkedAt:publicFeed.checkedAt;
-  external.set(row.id,{...row,campaignId,publicStale:!Number.isFinite(checkedAt)||checkedAt>Date.now()+1000||Date.now()-checkedAt>300000});
+  external.set(row.id,{...row,campaignId,publicStale:!Number.isFinite(checkedAt)||checkedAt>Date.now()+1000||Date.now()-checkedAt>1200000});
  }
  return [...website,...external.values()].filter(row=>includeArchived||row.source!=='manual'||row.archived!==true).map(row=>{
   const override=own(shop.supporterLedger?.moderation,row.id)||{};

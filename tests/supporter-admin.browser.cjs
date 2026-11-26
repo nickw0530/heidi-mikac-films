@@ -195,7 +195,7 @@ const repo=require('node:path').resolve(__dirname,'..');
  await page.evaluate(()=>{Object.assign(window.crowdfundr,{privacyReady:true,active:true,lastSync:Date.now(),lastError:''});});
  await page.getByRole('button',{name:'Sync now',exact:true}).click();
  await page.getByText('Crowdfundr synchronization completed. The supporter wall refreshes within a few seconds.',{exact:true}).waitFor();
- assert.match(await page.locator('[data-crowdfundr-state]').innerText(),/Automatic checks run about every two minutes/);
+ assert.match(await page.locator('[data-crowdfundr-state]').innerText(),/Automatic checks run about every 15 minutes/);
  await page.evaluate(()=>{Object.assign(window.crowdfundr,{active:false,lastError:'Crowdfundr access is unavailable. Reconnect the approved app.'});});
  await page.getByRole('button',{name:'Sync now',exact:true}).click();
  await page.getByText(/Automatic publication remains paused/).waitFor();

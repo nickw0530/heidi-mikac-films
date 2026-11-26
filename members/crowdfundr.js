@@ -9,7 +9,7 @@ export async function mountCrowdfundr(host,request){
    <h3>Crowdfundr automatic connection</h3>
    <p data-crowdfundr-public-state role="status" aria-live="polite">Checking public campaign updates…</p>
    <p data-crowdfundr-public-time></p>
-   <p>All-time credits combine the listed past and current Crowdfundr campaigns. Current credits use only campaigns marked Current below. Names follow each contribution’s current privacy choices. Anonymous amounts can be verified from the owner's transaction records when Crowdfundr withholds them from the public feed. Complete feeds are checked about every two minutes; imported copies stay in your records and are not counted again.</p>
+   <p>All-time credits combine the listed past and current Crowdfundr campaigns. Current credits use only campaigns marked Current below. Names follow each contribution’s current privacy choices. Anonymous amounts can be verified from the owner's transaction records when Crowdfundr withholds them from the public feed. Complete feeds are checked about every 15 minutes; imported copies stay in your records and are not counted again.</p>
    <p>This mirrors public campaign activity. It does not confirm bank settlement or refund accounting. Record offline payments here, and use Hide payment if a refunded contribution remains in Crowdfundr’s public activity.</p>
    <button type="button" data-crowdfundr-public-enable>Enable automatic public credits</button>
    <button type="button" data-crowdfundr-public-sync disabled>Check public credits now</button>
@@ -95,7 +95,7 @@ export async function mountCrowdfundr(host,request){
   connect.textContent=data.connected?'Reauthorize read-only access':'Authorize read-only access';
   find('[data-crowdfundr-setup]').open=!data.clientId;
   find('[data-crowdfundr-state]').textContent=!data.connected?'Not connected. Use the CSV importer below until the automatic connection is authorized.':
-   data.active?'Connected read-only. Automatic checks run about every two minutes; verified changes appear on the wall within a few seconds after synchronization.':
+   data.active?'Connected read-only. Automatic checks run about every 15 minutes; verified changes appear on the wall within a few seconds after synchronization.':
    data.privacyReady?'Connected read-only. Automatic publication is paused because the latest check did not finish. Use Sync now to retry; the last confirmed supporter records remain in place.':
    'Connected read-only. Automatic publication is not activated because the name and amount privacy fields have not been validated. Existing CSV credits remain in place; use a newer CSV to update them.';
   find('[data-crowdfundr-sync-time]').textContent='Last completed synchronization: '+time(data.lastSync);

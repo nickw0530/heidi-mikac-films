@@ -10,7 +10,7 @@ export const DEFAULT_PUBLIC_CROWDFUNDR_CAMPAIGNS=Object.freeze([
 ]);
 const agent='HeidiMikacFilms-SupporterSync/1.0 (+https://heidimikacfilms.com)';
 const hash=value=>createHash('sha256').update(value).digest('hex');
-export const PUBLIC_CROWDFUNDR_TTL=300000;
+export const PUBLIC_CROWDFUNDR_TTL=1200000;
 const failure=Symbol('publicCrowdfundrFailure');
 const messages={
  unavailable:'The Crowdfundr public activity feed is temporarily unavailable. The next scheduled check will retry.',
@@ -168,7 +168,7 @@ async function saveSnapshots(shopStore,results,enabled){
 }
 function outcomeFor(previous,results,campaigns,now){
  const successes=results.filter(row=>row.result),errors=results.filter(row=>row.errorCode),errorCode=errors[0]?.errorCode||'';
- return {...previous,mode:'public',active:successes.length>0,lastAttempt:now,nextSync:now+120000,
+ return {...previous,mode:'public',active:successes.length>0,lastAttempt:now,nextSync:now+900000,
   lastSync:successes.length?Date.now():previous.lastSync,count:campaigns.filter(row=>fresh(row.checkedAt)).reduce((sum,row)=>sum+row.count,0),
   currentCount:campaigns.filter(row=>row.active&&fresh(row.checkedAt)).reduce((sum,row)=>sum+row.count,0),
   partial:errors.length>0,campaigns,errorCode,lastError:errorCode?messages[errorCode]:''};
@@ -179,7 +179,7 @@ export async function syncPublicCrowdfundr(store,shopStore,{force=false,fetcher=
  if(config?.data?.publicFeedEnabled!==true)return {...previous,enabled:false,active:false};
  if(!force&&previous.nextSync>now)return {...previous,enabled:true};
  const id=await lease(store);if(!id)return {...previous,enabled:true,busy:true};
- let outcome={...previous,mode:'public',active:false,lastAttempt:now,nextSync:now+120000};
+ let outcome={...previous,mode:'public',active:false,lastAttempt:now,nextSync:now+900000};
  try{
   try{
    const results=await campaignSnapshots(publicCampaignsFromConfig(config.data),fetcher,now+20000),current=await store.getWithMetadata(configKey,{type:'json'});
@@ -196,7 +196,7 @@ export async function configurePublicCrowdfundr(store,shopStore,{enabled,revisio
  const config=await store.getWithMetadata(configKey,{type:'json'}),previous=await safePublicCrowdfundrStatus(store),now=Date.now();
  if(revision!==undefined)check(revision===(config?.etag||''),'connection_changed');
  const id=await lease(store);if(!id)return {...previous,enabled:config?.data?.publicFeedEnabled===true,busy:true};
- let outcome={...previous,mode:'public',active:false,lastAttempt:now,nextSync:now+120000},writtenConfig,shopCommitted=false;
+ let outcome={...previous,mode:'public',active:false,lastAttempt:now,nextSync:now+900000},writtenConfig,shopCommitted=false;
  try{
   // Probe every page before enabling either setting; a failed first probe
   // leaves the existing CSV/manual supporter wall as it was.

@@ -216,7 +216,7 @@ test('provider HTTP failures, invalid JSON and repeated IDs across pages retain 
 
 test('scheduled function rejects local, preview, and unpublished deploys before opening production stores',async()=>{
  const {default:run,config}=await import('../netlify/functions/crowdfundr-sync.mjs');
- assert.equal(config.schedule,'*/2 * * * *');
+ assert.equal(config.schedule,'*/15 * * * *');
  const oldContext=process.env.CONTEXT,oldDev=process.env.NETLIFY_DEV;
  try{
   process.env.NETLIFY_DEV='true';assert.equal(await run(),undefined);

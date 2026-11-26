@@ -89,7 +89,7 @@ export async function syncCrowdfundr(store,shopStore,{force=false,fetcher=fetch}
  if(oldLease?.data?.until>now)return {connected:true,...previous,busy:true};
  const lease=await store.setJSON(leaseKey,{id:randomUUID(),until:now+30000},oldLease?{onlyIfMatch:oldLease.etag}:{onlyIfNew:true});
  if(!lease.modified)return {connected:true,...previous,busy:true};
- let outcome={connectionAt:connection.data.connectedAt,lastAttempt:now,nextSync:now+120000,active:false,privacyReady:false};
+ let outcome={connectionAt:connection.data.connectedAt,lastAttempt:now,nextSync:now+900000,active:false,privacyReady:false};
  try{
   const raw=await payments(connection.data.accessToken,fetcher,now+20000);
   const fieldNames=[...new Set(raw.flatMap(row=>Object.keys(row)))].filter(key=>/^[a-z_]{1,60}$/.test(key)).sort();
